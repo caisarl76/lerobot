@@ -359,6 +359,7 @@ def aggregate_datasets(
     chunk_size: int | None = None,
     concatenate_videos: bool = True,
     concatenate_data: bool = True,
+    symlink_videos: bool = False,
 ) -> None:
     """Aggregates multiple LeRobot datasets into a single unified dataset.
 
@@ -378,8 +379,12 @@ def aggregate_datasets(
         chunk_size: Maximum number of files per chunk (defaults to DEFAULT_CHUNK_SIZE)
         concatenate_videos: When False, keep one mp4 per source file instead of packing into shards.
         concatenate_data: When False, keep one parquet per source file instead of packing into shards.
+        symlink_videos: When True, symlink video files instead of copying them. Source files must remain available.
     """
     logger.info("Start aggregate_datasets")
+
+    if symlink_videos and concatenate_videos:
+        raise ValueError("symlink_videos=True requires concatenate_videos=False")
 
     if roots is not None and len(roots) != len(repo_ids):
         raise ValueError("repo_ids and roots must have the same length")
@@ -430,7 +435,13 @@ def aggregate_datasets(
 
     for src_meta in tqdm.tqdm(all_metadata, desc="Copy data and videos"):
         videos_idx = aggregate_videos(
-            src_meta, dst_meta, videos_idx, video_files_size_in_mb, chunk_size, concatenate_videos
+            src_meta,
+            dst_meta,
+            videos_idx,
+            video_files_size_in_mb,
+            chunk_size,
+            concatenate_videos,
+            symlink_videos,
         )
         data_idx = aggregate_data(
             src_meta, dst_meta, data_idx, data_files_size_in_mb, chunk_size, concatenate_data
@@ -456,6 +467,7 @@ def aggregate_videos(
     video_files_size_in_mb: float,
     chunk_size: int,
     concatenate_videos: bool = True,
+    symlink_videos: bool = False,
 ) -> VideoIndexState:
     """Aggregates video chunks from a source dataset into the destination dataset.
 
@@ -469,9 +481,19 @@ def aggregate_videos(
         video_files_size_in_mb: Maximum size for video files in MB (defaults to DEFAULT_VIDEO_FILE_SIZE_IN_MB)
         chunk_size: Maximum number of files per chunk (defaults to DEFAULT_CHUNK_SIZE)
         concatenate_videos: When False, keep one mp4 per source file instead of packing into shards.
+        symlink_videos: When True, symlink video files instead of copying them. Source files must remain available.
     Returns:
         dict: Updated videos_idx with current chunk and file indices.
     """
+    if symlink_videos and concatenate_videos:
+        raise ValueError("symlink_videos=True requires concatenate_videos=False")
+
+    def copy_video(src_path: Path, dst_path: Path) -> None:
+        if not symlink_videos:
+            shutil.copy(str(src_path), str(dst_path))
+            return
+        dst_path.symlink_to(src_path.resolve())
+
     for key in videos_idx:
         videos_idx[key]["episode_duration"] = 0
         # Track offset for each source (chunk, file) pair
@@ -520,7 +542,7 @@ def aggregate_videos(
                 videos_idx[key]["src_to_offset"][(src_chunk_idx, src_file_idx)] = 0
                 videos_idx[key]["src_to_dst"][(src_chunk_idx, src_file_idx)] = dst_key
                 dst_path.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy(str(src_path), str(dst_path))
+                copy_video(src_path, dst_path)
                 # Track duration of this destination file
                 dst_file_durations[dst_key] = src_duration
                 videos_idx[key]["episode_duration"] += src_duration
@@ -542,7 +564,7 @@ def aggregate_videos(
                     file_index=file_idx,
                 )
                 dst_path.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy(str(src_path), str(dst_path))
+                copy_video(src_path, dst_path)
                 # Track duration of this new destination file
                 dst_file_durations[dst_key] = src_duration
             else:

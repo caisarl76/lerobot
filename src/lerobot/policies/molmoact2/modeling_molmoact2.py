@@ -185,6 +185,7 @@ if TYPE_CHECKING or _transformers_available:
         MolmoAct2ForConditionalGeneration,
         MolmoAct2RMSNorm,
         MolmoAct2RotaryEmbedding,
+        _init_linear,
     )
 else:
     SAFE_WEIGHTS_INDEX_NAME = "model.safetensors.index.json"
@@ -194,6 +195,7 @@ else:
     MolmoAct2ForConditionalGeneration = None
     MolmoAct2RMSNorm = None
     MolmoAct2RotaryEmbedding = None
+    _init_linear = None
 
 if TYPE_CHECKING or (_transformers_available and _scipy_available):
     from .molmoact2_hf_model.action_tokenizer import UniversalActionProcessor
@@ -701,17 +703,6 @@ class MolmoAct2Policy(PreTrainedPolicy):
         # the action expert and other fp32-targeted modules instead of widening
         # already-rounded bf16 tensors.
         _strict_load_safetensors_weights(self.model, checkpoint_location)
-        hf_max_action_dim = int(getattr(self.model.config, "max_action_dim", -1))
-        if hf_max_action_dim != int(self.config.expected_max_action_dim):
-            raise ValueError(
-                "MolmoAct2 checkpoint max_action_dim mismatch: "
-                f"checkpoint={hf_max_action_dim}, expected={self.config.expected_max_action_dim}."
-            )
-        if hf_max_action_dim != 32:
-            raise ValueError(
-                f"MolmoAct2 released checkpoints must have max_action_dim=32, got {hf_max_action_dim}."
-            )
-
         if not hasattr(self.model.config, "max_action_horizon"):
             raise ValueError("MolmoAct2 HF checkpoints must define `max_action_horizon`.")
         self._override_loaded_max_action_horizon(int(self.config.chunk_size))
@@ -728,6 +719,7 @@ class MolmoAct2Policy(PreTrainedPolicy):
             checkpoint_action_mode,
             has_action_expert=bool(getattr(self.model.config, "add_action_expert", False)),
         )
+        self._adapt_loaded_action_projections()
 
         if self.config.freeze_embedding:
             self._freeze_input_embeddings()
@@ -736,6 +728,79 @@ class MolmoAct2Policy(PreTrainedPolicy):
         if self.config.gradient_checkpointing:
             self._enable_gradient_checkpointing()
         self.train(self.training)
+
+    def _adapt_loaded_action_projections(self) -> None:
+        """Adapt a strictly loaded base before LeRobot restores trained policy weights.
+
+        An already matching HF checkpoint keeps its learned projections. On
+        LeRobot reload the base topology is expanded here, then from_pretrained
+        restores the saved 78D weights over it, with no later reinitialization.
+        """
+        source_dim = getattr(self.model.config, "max_action_dim", None)
+        target_dim = self.config.expected_max_action_dim
+        if not self.config.adapt_action_projections:
+            if source_dim != target_dim or source_dim != 32:
+                raise ValueError(
+                    "MolmoAct2 checkpoint max_action_dim mismatch: "
+                    f"checkpoint={source_dim}, expected={target_dim}."
+                )
+            return
+        if source_dim not in {32, 78} or (source_dim != target_dim and (source_dim, target_dim) != (32, 78)):
+            raise ValueError(
+                f"Unsupported MolmoAct2 action projection adaptation: {source_dim} -> {target_dim}."
+            )
+
+        backbone = self._backbone()
+        expert = getattr(backbone, "action_expert", None)
+        input_projection = getattr(expert, "action_embed", None)
+        output_projection = getattr(getattr(expert, "final_layer", None), "linear", None)
+        expert_config = getattr(expert, "config", None)
+        hidden_size = getattr(expert_config, "hidden_size", None)
+        if (
+            not isinstance(input_projection, torch.nn.Linear)
+            or not isinstance(output_projection, torch.nn.Linear)
+            or input_projection.in_features != source_dim
+            or output_projection.out_features != source_dim
+            or input_projection.out_features != hidden_size
+            or output_projection.in_features != hidden_size
+            or getattr(expert, "hidden_size", None) != hidden_size
+            or input_projection.bias is None
+            or output_projection.bias is None
+        ):
+            raise ValueError("Malformed MolmoAct2 action expert projection topology.")
+        configs = [self.model.config, getattr(backbone, "config", None)]
+        configs.extend(getattr(config, "action_expert_config", None) for config in list(configs))
+        configs.append(expert_config)
+        if any(getattr(config, "max_action_dim", None) != source_dim for config in configs):
+            raise ValueError("Inconsistent MolmoAct2 action dimensions across checkpoint configurations.")
+        if any(getattr(config, "hidden_size", None) != hidden_size for config in configs[2:]):
+            raise ValueError("Inconsistent MolmoAct2 action expert hidden dimensions.")
+        if source_dim == target_dim:
+            return
+
+        new_input = torch.nn.Linear(
+            target_dim,
+            hidden_size,
+            device=input_projection.weight.device,
+            dtype=input_projection.weight.dtype,
+        )
+        new_output = torch.nn.Linear(
+            hidden_size,
+            target_dim,
+            device=output_projection.weight.device,
+            dtype=output_projection.weight.dtype,
+        )
+        _init_linear(new_input)
+        _init_linear(new_output, zero=True)
+        expert.action_embed = new_input
+        expert.final_layer.linear = new_output
+        for config in configs:
+            config.max_action_dim = target_dim
+        logger.info(
+            "Adapted MolmoAct2 continuous action projections from %s to %s dimensions.",
+            source_dim,
+            target_dim,
+        )
 
     def reset(self) -> None:
         """Clear the action queue and rollout generator between episodes."""

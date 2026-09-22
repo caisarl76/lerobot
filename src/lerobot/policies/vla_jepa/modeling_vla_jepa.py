@@ -16,10 +16,12 @@ from __future__ import annotations
 
 import logging
 from collections import deque
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import torch
 import torch.nn.functional as F  # noqa: N812
+from safetensors import safe_open
 from safetensors.torch import load_file
 from torch import Tensor, nn
 
@@ -39,6 +41,15 @@ from .action_head import VLAJEPAActionHead
 from .configuration_vla_jepa import VLAJEPAConfig
 from .qwen_interface import Qwen3VLInterface
 from .world_model import ActionConditionedVideoPredictor
+
+_LEGACY_UNUSED_VIDEO_PREDICTOR_KEYS = frozenset(
+    {
+        "model.video_predictor.state_encoder.weight",
+        "model.video_predictor.state_encoder.bias",
+        "model.video_predictor.extrinsics_encoder.weight",
+        "model.video_predictor.extrinsics_encoder.bias",
+    }
+)
 
 # ============================================================================
 # Native VLA-JEPA Model - follows original starVLA VLA_JEPA.py implementation
@@ -385,6 +396,17 @@ class VLAJEPAPolicy(PreTrainedPolicy):
     config_class = VLAJEPAConfig
     name = "vla_jepa"
 
+    @classmethod
+    def from_pretrained(
+        cls,
+        pretrained_name_or_path: str | Path,
+        *,
+        strict: bool = True,
+        **kwargs: Any,
+    ) -> VLAJEPAPolicy:
+        """Require all checkpoint weights except explicitly reinitialized mismatched heads."""
+        return super().from_pretrained(pretrained_name_or_path, strict=strict, **kwargs)
+
     def __init__(self, config: VLAJEPAConfig, **kwargs) -> None:
         super().__init__(config)
         config.validate_features()
@@ -522,19 +544,33 @@ class VLAJEPAPolicy(PreTrainedPolicy):
 
     @classmethod
     def _load_as_safetensor(cls, model: T, model_file: str, map_location: str, strict: bool) -> T:
-        reinit_prefixes = model.config.reinit_modules
+        reinit_prefixes = model.config.reinit_modules or ()
+        current = model.state_dict()
         if not reinit_prefixes:
-            return super()._load_as_safetensor(model, model_file, map_location, strict)
+            # Preserve the standard loader unless this checkpoint needs the legacy migration.
+            # Reading keys does not materialize checkpoint tensors or allocate CUDA memory.
+            with safe_open(model_file, framework="pt", device="cpu") as checkpoint:
+                obsolete_keys = (
+                    _LEGACY_UNUSED_VIDEO_PREDICTOR_KEYS.intersection(checkpoint.keys()) - current.keys()
+                )
+            if not obsolete_keys:
+                return super()._load_as_safetensor(model, model_file, map_location, strict)
 
         # `resolve_safetensors_device` is what keeps every rank from materializing the whole
         # checkpoint on GPU 0: safetensors maps the bare string "cuda" to cuda:0 regardless of
         # torch.cuda.current_device(), and `config.device` is exactly that bare string.
         state_dict = load_file(model_file, device=resolve_safetensors_device(map_location))
-        current = model.state_dict()
 
         reinitialized: list[str] = []
+        obsolete: list[str] = []
         filtered: dict = {}
         for key, value in state_dict.items():
+            # The predictor refactor removed its never-called state encoder and made its
+            # extrinsics encoder conditional. Only discard these exact legacy weights when
+            # absent from the current model; an active extrinsics encoder still loads strictly.
+            if key in _LEGACY_UNUSED_VIDEO_PREDICTOR_KEYS and key not in current:
+                obsolete.append(key)
+                continue
             if key in current and value.shape != current[key].shape:
                 if not any(key.startswith(p) for p in reinit_prefixes):
                     raise ValueError(
@@ -546,6 +582,9 @@ class VLAJEPAPolicy(PreTrainedPolicy):
                 )
             else:
                 filtered[key] = value
+
+        if obsolete:
+            logging.warning("Ignoring obsolete unused VLA-JEPA video predictor weights: %s", sorted(obsolete))
 
         if reinitialized:
             logging.warning(
