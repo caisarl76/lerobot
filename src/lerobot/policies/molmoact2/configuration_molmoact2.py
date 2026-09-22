@@ -313,8 +313,10 @@ class MolmoAct2Config(PreTrainedConfig):
     # image/prompt/state/action token layout. Override only for unusual long prompts.
     max_sequence_length: int | None = None
 
-    # Fixed by released MolmoAct2 checkpoints. We validate this at model load.
+    # Released checkpoints use 32. The explicit opt-in rebuilds only the two
+    # continuous action projections for the 78D G1 embodiment after strict load.
     expected_max_action_dim: int = 32
+    adapt_action_projections: bool = False
 
     # Flow-matching training knobs copied from the original MolmoAct2 training path.
     num_flow_timesteps: int = 8
@@ -434,7 +436,19 @@ class MolmoAct2Config(PreTrainedConfig):
                 f"n_action_steps ({self.n_action_steps}) cannot exceed chunk_size ({self.chunk_size})."
             )
         if self.expected_max_action_dim != 32:
-            raise ValueError("MolmoAct2 released checkpoints use expected_max_action_dim=32.")
+            if not self.adapt_action_projections:
+                raise ValueError(
+                    "MolmoAct2 released checkpoints use expected_max_action_dim=32; "
+                    "78D adaptation requires adapt_action_projections=true."
+                )
+            if self.expected_max_action_dim != 78:
+                raise ValueError("MolmoAct2 action projection adaptation supports only 32 or 78 dimensions.")
+        if self.adapt_action_projections and (
+            self.action_mode != "continuous" or self.inference_action_mode not in {None, "continuous"}
+        ):
+            raise ValueError(
+                "MolmoAct2 action projection adaptation requires continuous training and inference."
+            )
         if self.dtype not in {"float32", "bfloat16"}:
             raise ValueError(f"Unsupported dtype={self.dtype!r}. Expected 'float32' or 'bfloat16'.")
         if not 0 <= self.llm_residual_dropout <= 1:
@@ -530,3 +544,10 @@ class MolmoAct2Config(PreTrainedConfig):
                 shape=(self.expected_max_action_dim,),
             )
             self.output_features[ACTION] = action_feature
+
+        action_shape = self.output_features[ACTION].shape
+        if len(action_shape) != 1 or not 1 <= action_shape[0] <= self.expected_max_action_dim:
+            raise ValueError(
+                f"MolmoAct2 action feature shape {action_shape} must be a positive vector with "
+                f"at most {self.expected_max_action_dim} dimensions."
+            )

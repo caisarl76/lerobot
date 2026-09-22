@@ -997,84 +997,76 @@ class PI05Policy(PreTrainedPolicy):
         # Check if dataset_stats were provided in kwargs
         model = cls(config, **kwargs)
 
-        # Load state dict (expects keys with "model." prefix)
-        try:
-            print(f"Loading model from: {pretrained_name_or_path}")
-            try:
-                from transformers.utils import cached_file
+        from safetensors.torch import load_file
+        from transformers.utils import cached_file
 
-                resolved_file = cached_file(
-                    pretrained_name_or_path,
-                    "model.safetensors",
-                    cache_dir=kwargs.get("cache_dir"),
-                    force_download=kwargs.get("force_download", False),
-                    resume_download=kwargs.get("resume_download"),
-                    proxies=kwargs.get("proxies"),
-                    token=kwargs.get("token"),
-                    revision=kwargs.get("revision"),
-                    local_files_only=kwargs.get("local_files_only", False),
-                )
-                from safetensors.torch import load_file
-
-                original_state_dict = load_file(resolved_file)
-                print("✓ Loaded state dict from model.safetensors")
-            except Exception as e:
-                print(f"Could not load state dict from remote files: {e}")
-                print("Returning model without loading pretrained weights")
-                return model
-
-            # First, fix any key differences (see openpi model.py, _fix_pytorch_state_dict_keys)
-            fixed_state_dict = model._fix_pytorch_state_dict_keys(original_state_dict, model.config)
-
-            # Then add "model." prefix for all keys that don't already have it
-            remapped_state_dict = {}
-            remap_count = 0
-
-            for key, value in fixed_state_dict.items():
-                if not key.startswith("model."):
-                    new_key = f"model.{key}"
-                    remapped_state_dict[new_key] = value
-                    remap_count += 1
-                else:
-                    remapped_state_dict[key] = value
-
-            if remap_count > 0:
-                print(f"Remapped {remap_count} state dict keys")
-
-            remapped_state_dict = model._prepare_pretrained_state_dict(remapped_state_dict)
-
-            # Load the remapped state dict into the model
-            missing_keys, unexpected_keys = model.load_state_dict(remapped_state_dict, strict=strict)
-
-            if missing_keys:
-                print(f"Missing keys when loading state dict: {len(missing_keys)} keys")
-                if len(missing_keys) <= 5:
-                    for key in missing_keys:
-                        print(f"  - {key}")
-                else:
-                    for key in missing_keys[:5]:
-                        print(f"  - {key}")
-                    print(f"  ... and {len(missing_keys) - 5} more")
-
-            if unexpected_keys:
-                print(f"Unexpected keys when loading state dict: {len(unexpected_keys)} keys")
-                if len(unexpected_keys) <= 5:
-                    for key in unexpected_keys:
-                        print(f"  - {key}")
-                else:
-                    for key in unexpected_keys[:5]:
-                        print(f"  - {key}")
-                    print(f"  ... and {len(unexpected_keys) - 5} more")
-
-            if not missing_keys and not unexpected_keys:
-                print("All keys loaded successfully!")
-
-        except Exception as e:
-            print(f"Warning: Could not load state dict: {e}")
-
+        logging.info("Loading model from: %s", pretrained_name_or_path)
+        resolved_file = cached_file(
+            pretrained_name_or_path,
+            "model.safetensors",
+            cache_dir=cache_dir,
+            force_download=force_download,
+            resume_download=resume_download,
+            proxies=proxies,
+            token=token,
+            revision=revision,
+            local_files_only=local_files_only,
+        )
+        original_state_dict = load_file(resolved_file)
+        fixed_state_dict = model._fix_pytorch_state_dict_keys(original_state_dict, model.config)
+        remapped_state_dict = {
+            key if key.startswith("model.") else f"model.{key}": value
+            for key, value in fixed_state_dict.items()
+        }
+        remapped_state_dict = model._prepare_pretrained_state_dict(remapped_state_dict)
+        missing_keys, unexpected_keys = model.load_state_dict(remapped_state_dict, strict=strict)
+        if missing_keys:
+            logging.warning("Missing keys when loading state dict: %s", missing_keys)
+        if unexpected_keys:
+            logging.warning("Unexpected keys when loading state dict: %s", unexpected_keys)
         return model
 
     def _prepare_pretrained_state_dict(self, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
+        if getattr(self.config, "adapt_action_projections", False):
+            current = self.state_dict()
+            projection_keys = (
+                "model.action_in_proj.weight",
+                "model.action_in_proj.bias",
+                "model.action_out_proj.weight",
+                "model.action_out_proj.bias",
+            )
+            missing = [key for key in projection_keys if key not in state_dict]
+            if missing:
+                raise ValueError(f"Incomplete action projection checkpoint: missing {missing}")
+            input_weight = state_dict[projection_keys[0]]
+            if input_weight.ndim != 2 or input_weight.shape[1] < 1:
+                raise ValueError("Invalid action projection input weight shape")
+            source_dim = input_weight.shape[1]
+            expected_shapes = (
+                (current[projection_keys[0]].shape[0], source_dim),
+                tuple(current[projection_keys[1]].shape),
+                (source_dim, current[projection_keys[2]].shape[1]),
+                (source_dim,),
+            )
+            for key, expected in zip(projection_keys, expected_shapes, strict=True):
+                if tuple(state_dict[key].shape) != expected:
+                    raise ValueError(
+                        f"Invalid action projection shape for {key}: "
+                        f"expected {expected}, got {tuple(state_dict[key].shape)}"
+                    )
+            target_dim = current[projection_keys[0]].shape[1]
+            if source_dim != target_dim:
+                # The input bias has an unchanged shape, but belongs to the same
+                # learned projection and must be reset together with both weights.
+                for key in projection_keys:
+                    state_dict[key] = current[key]
+                logging.info(
+                    "Reinitialized action projections for action dimension %s -> %s: %s",
+                    source_dim,
+                    target_dim,
+                    ", ".join(projection_keys),
+                )
+
         # MEM's continuous proprioceptive projection is new relative to
         # lerobot/pi05_base. Preserve its fresh initialization on first load,
         # while loading learned values from subsequent MEM checkpoints.

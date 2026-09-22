@@ -37,7 +37,12 @@ from lerobot.processor import (
     make_default_policy_processor_steps,
     make_policy_processor_pipelines,
 )
-from lerobot.utils.constants import ACTION
+from lerobot.processor.factory import _reconnect_relative_absolute_steps, load_pretrained_policy_processors
+from lerobot.utils.constants import (
+    ACTION,
+    POLICY_POSTPROCESSOR_DEFAULT_NAME,
+    POLICY_PREPROCESSOR_DEFAULT_NAME,
+)
 
 
 @ProcessorStepRegistry.register(name="vla_jepa_image_prep")
@@ -60,7 +65,7 @@ class ImagePrepProcessorStep(ObservationProcessorStep):
     def observation(self, observation: dict) -> dict:
         new_observation = dict(observation)
         for key in observation:
-            if "image" not in key:
+            if "image" not in key or key.endswith("_is_pad"):
                 continue
             image = observation[key].float()
             if self.expand_channels and image.shape[-3] == 1:
@@ -88,7 +93,7 @@ class ImagePrepProcessorStep(ObservationProcessorStep):
 
     def transform_features(self, features):
         for key in features[PipelineFeatureType.OBSERVATION]:
-            if "image" not in key:
+            if "image" not in key or key.endswith("_is_pad"):
                 continue
             feat = features[PipelineFeatureType.OBSERVATION][key]
             # Match `to_pixel_values`: only a single channel is expanded to 3.
@@ -294,3 +299,56 @@ def make_vla_jepa_pre_post_processors(
         )
     output_steps.append(steps.to_cpu)
     return make_policy_processor_pipelines(input_steps=input_steps, output_steps=output_steps)
+
+
+def make_vla_jepa_pre_post_processors_from_pretrained(
+    config: VLAJEPAConfig,
+    pretrained_path: str,
+    *,
+    revision: str | None = None,
+    dataset_stats: dict[str, dict[str, torch.Tensor]] | None = None,
+    dataset_meta: Any | None = None,
+    preprocessor_overrides: dict[str, Any] | None = None,
+    postprocessor_overrides: dict[str, Any] | None = None,
+    preprocessor_config_filename: str = f"{POLICY_PREPROCESSOR_DEFAULT_NAME}.json",
+    postprocessor_config_filename: str = f"{POLICY_POSTPROCESSOR_DEFAULT_NAME}.json",
+) -> tuple[
+    PolicyProcessorPipeline[dict[str, Any], dict[str, Any]],
+    PolicyProcessorPipeline[PolicyAction, PolicyAction],
+]:
+    """Use the current embodiment for fine-tuning, and saved processors for resume/inference.
+
+    New dataset statistics identify an explicit fine-tuning request. Rebuilding also replaces
+    legacy LIBERO gripper steps, whose default dimension 6 is a continuous wrist joint on G1.
+    Without new stats the checkpoint's topology and normalization remain authoritative.
+    """
+    del dataset_meta
+    if dataset_stats is None:
+        return load_pretrained_policy_processors(
+            pretrained_path,
+            revision=revision,
+            preprocessor_overrides=preprocessor_overrides,
+            postprocessor_overrides=postprocessor_overrides,
+            preprocessor_config_filename=preprocessor_config_filename,
+            postprocessor_config_filename=postprocessor_config_filename,
+        )
+
+    preprocessor, postprocessor = make_vla_jepa_pre_post_processors(config, dataset_stats)
+    # Use the standard constructor-override path for rename maps, devices, and normalization,
+    # retaining the fresh dataset stats when no explicit stats override was supplied.
+    preprocessor = PolicyProcessorPipeline.from_config(
+        preprocessor.get_config(),
+        state_dict=preprocessor.state_dict(),
+        overrides=preprocessor_overrides,
+        to_transition=preprocessor.to_transition,
+        to_output=preprocessor.to_output,
+    )
+    postprocessor = PolicyProcessorPipeline.from_config(
+        postprocessor.get_config(),
+        state_dict=postprocessor.state_dict(),
+        overrides=postprocessor_overrides,
+        to_transition=postprocessor.to_transition,
+        to_output=postprocessor.to_output,
+    )
+    _reconnect_relative_absolute_steps(preprocessor, postprocessor)
+    return preprocessor, postprocessor

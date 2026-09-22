@@ -54,6 +54,9 @@ class PI05Config(PreTrainedConfig):
     # Shorter state and action vectors will be padded to these dimensions
     max_state_dim: int = 32
     max_action_dim: int = 32
+    # Reinitialize both action projections when loading a different action width.
+    # Matching-width checkpoints retain their learned projections, including on resume.
+    adapt_action_projections: bool = False
 
     # Flow matching parameters: see openpi `PI0Pytorch`
     num_inference_steps: int = 10

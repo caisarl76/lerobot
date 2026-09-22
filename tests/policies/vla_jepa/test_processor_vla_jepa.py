@@ -114,6 +114,17 @@ def test_image_prep_leaves_non_image_keys_untouched() -> None:
     assert torch.equal(out[OBS_STATE], state)
 
 
+def test_image_prep_preserves_native_video_padding_masks() -> None:
+    step = ImagePrepProcessorStep(resize_to=RESIZE)
+    video = torch.rand(BATCH_SIZE, 8, 3, IMAGE_SIZE, IMAGE_SIZE)
+    padding = torch.tensor([[False] * 6 + [True] * 2] * BATCH_SIZE)
+    key = f"{IMG_KEY}_is_pad"
+    out = step.observation({IMG_KEY: video, key: padding})
+    assert out[IMG_KEY].shape == (BATCH_SIZE, 8, 3, *RESIZE)
+    assert out[key] is padding
+    assert out[key].dtype == torch.bool
+
+
 def test_image_prep_config_roundtrip_via_registry() -> None:
     step = ImagePrepProcessorStep(resize_to=RESIZE, expand_channels=True)
     cfg = step.get_config()
