@@ -7,11 +7,12 @@ Evidence is simulation-only (MuJoCo); no real-robot claim.
 
 ## Decisions (user-confirmed)
 
-| Topic                       | Decision                                                                                                                                                                                                               |
-| --------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Converter speed limits      | **Off.** `prepare_sonic_dataset.py --arm-speed-limit none --hand-speed-limit none`. The old 1 rad/s arm / 2 rad/s hand slew limit caused most of the error.                                                            |
-| Episode start in evaluation | 1 s linear token blend from `LATENT_INITIAL_MOTION_TOKEN` to the episode's first token, 1 s hold.                                                                                                                      |
-| Token rate                  | Train on the 30 Hz dataset. At deploy, linearly interpolate the policy's 30 Hz tokens to 50 Hz (resample the predicted action chunk; interpolation needs the next token). Re-encoding at 50 Hz gave no gain (≤0.1 cm). |
+| Topic                       | Decision                                                                                                                                                                                                                                                       |
+| --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Converter speed limits      | **Off.** `prepare_sonic_dataset.py --arm-speed-limit none --hand-speed-limit none`. The old 1 rad/s arm / 2 rad/s hand slew limit caused most of the error.                                                                                                    |
+| Episode start in evaluation | 1 s linear token blend from `LATENT_INITIAL_MOTION_TOKEN` to the episode's first token, 1 s hold.                                                                                                                                                              |
+| Token rate                  | Train on the 30 Hz dataset. At deploy, linearly interpolate the policy's 30 Hz tokens to 50 Hz (resample the predicted action chunk; interpolation needs the next token). Re-encoding at 50 Hz gave no gain (≤0.1 cm).                                         |
+| Humanoid Everyday dataset   | **Accepted as-is (2026-09-24)** despite p95 5.21 cm, 0.2 cm over the 5 cm gate: 20% of sampled episodes exceed 5 cm on their own p95 (worst 8.6 cm); no episodes are excluded. The miss comes from SONIC tracking fast manipulation, not from source glitches. |
 
 Datasets built with limits off (existing `sonic78` datasets are unchanged):
 `/run-output/datasets/sonic78_nolimit` (3152 ep, 2,587,515 frames) and
@@ -23,12 +24,24 @@ Datasets built with limits off (existing `sonic78` datasets are unchanged):
 Offline harness (validated against the official deploy to within 0.2–0.8 cm), stored tokens, same episode picks
 (4 random per task + most clipped + most speed-limited; seed 0):
 
-| Dataset                                      | Palm p50 / p95 / max (cm) | Episodes > 5 cm | Lag  | Verdict            |
-| -------------------------------------------- | ------------------------- | --------------- | ---- | ------------------ |
-| Unitree `sonic78` (limited, tokens held)     | 1.45 / 3.40 / 17.6        | 14%             | 2 fr | pass               |
-| **Unitree `sonic78_nolimit` (interpolated)** | 1.42 / **3.07** / 9.3     | 7%              | 1 fr | **pass**           |
-| Humanoid Everyday `sonic78` (limited)        | 2.07 / 8.82 / 68.4        | 77%             | 3 fr | fail               |
-| **Humanoid Everyday `sonic78_nolimit`**      | 1.92 / **5.21** / 53.8    | 20%             | 1 fr | **fail by 0.2 cm** |
+| Dataset                                      | Palm p50 / p95 / max (cm) | Episodes > 5 cm | Lag  | Verdict                         |
+| -------------------------------------------- | ------------------------- | --------------- | ---- | ------------------------------- |
+| Unitree `sonic78` (limited, tokens held)     | 1.45 / 3.40 / 17.6        | 14%             | 2 fr | pass                            |
+| **Unitree `sonic78_nolimit` (interpolated)** | 1.42 / **3.07** / 9.3     | 7%              | 1 fr | **pass**                        |
+| Humanoid Everyday `sonic78` (limited)        | 2.07 / 8.82 / 68.4        | 77%             | 3 fr | fail                            |
+| **Humanoid Everyday `sonic78_nolimit`**      | 1.92 / **5.21** / 53.8    | 20%             | 1 fr | **accepted** (0.2 cm over gate) |
+
+The Humanoid Everyday p95 depends on which episodes are sampled: 5.21 cm on the 81-episode sample above, 4.59 cm on an 83-episode sample drawn in a two-dataset run (same seed). Treat it as about 4.6–5.2 cm, i.e. at the gate.
+
+Token feed to the 50 Hz decoder, compared on the same episodes (no-limit datasets, offline harness):
+
+| Feed                                                   | Unitree p95 (56 ep) | HE p95 (83 ep) | HE episodes > 5 cm | Lag  |
+| ------------------------------------------------------ | ------------------- | -------------- | ------------------ | ---- |
+| Hold each 30 Hz token (current robot code)             | 3.10 cm             | 4.72 cm        | 27%                | 2 fr |
+| Look-ahead linear interpolation (needs the next token) | 3.07 cm             | 4.59 cm        | 19%                | 1 fr |
+| Delayed interpolation (causal, controller-only)        | 3.19 cm             | 5.08 cm        | 35%                | 2 fr |
+
+Causal interpolation inside the controller adds 33 ms of latency and is worse than holding; only look-ahead interpolation helps.
 
 Official deploy (NVIDIA `g1_deploy_onnx_ref`, decoder only), six episodes × four variants in one session:
 no-limit cut the worst episode from 26.9 → 5.0 cm and wrist-orientation p95 from 61.5° → 13°, with no change
@@ -94,7 +107,6 @@ Reports: `2026-09-23-sonic-roundtrip-audit.html` (in this directory).
 
 ## Open items
 
-- Humanoid Everyday misses the gate by 0.2 cm. Options: accept it, or drop its episodes whose own p95 is over 5 cm (20%).
-- The robot-side 30 → 50 Hz token interpolation (chunk resampling) is not implemented yet.
+- Robot-side 30 → 50 Hz token interpolation: only the look-ahead form helps (see the feed table), so it needs the next token from the policy's action chunk. Not implemented yet.
 - The balance step after the POSE handoff needs repeated trials before any real-robot run.
 - Dex3 finger tracking is only indicative in sim; NVIDIA flags its hand model as unstable.
