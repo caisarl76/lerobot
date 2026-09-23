@@ -3,6 +3,7 @@
 limited_hold: stored sonic78 tokens (1 rad/s arm, 2 rad/s hand limits), held at 50 Hz.
 nolimit_hold / nolimit_interp: no-limit converter tokens at 30 Hz, held or linearly interpolated at 50 Hz.
 nolimit_50hz: original actions linearly interpolated to 50 Hz, then encoded at 50 Hz (a 50 Hz dataset).
+nolimit_chunked: 30 Hz tokens streamed like a VLA (40-token chunks every 0.4 s, 0.1 s old) via ChunkResampler.
 All no-limit variants share the 30 Hz no-limit hands (held), so only the token feed differs.
 """
 
@@ -41,6 +42,15 @@ for stem in sys.argv[3:]:
     )
     np.savez(
         out / f"nolimit_interp__{stem}.npz", tokens=tok30, hands=hands, token_fps=fps, interp=True, **common
+    )
+    np.savez(
+        out / f"nolimit_chunked__{stem}.npz",
+        tokens=tok30,
+        hands=hands,
+        token_fps=fps,
+        interp=False,
+        chunked=True,
+        **common,
     )
     np.savez(
         out / f"nolimit_50hz__{stem}.npz", tokens=tok50, hands=hands, token_fps=50.0, interp=False, **common

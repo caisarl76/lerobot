@@ -80,6 +80,19 @@ first episode after the POSE handoff and did not reproduce in the repeat run.
    `planner=false` (POSE mode), then protocol-v4 `pose` messages (`token_state`, `frame_index`, hand joints) at 50 Hz.
    The deploy logs `[Token Flow] Copied external tokens` when its encoder is bypassed.
 
+## Deploying a trained policy (decided 2026-09-24)
+
+Runtime: **NVIDIA's C++ `g1_deploy_onnx_ref`** (v1.1 decoder, TensorRT at 50 Hz, token watchdog, startup ramp,
+emergency stop), fed over ZMQ by a Python streamer, as in `gear_sonic/scripts/run_vla_inference.py`.
+LeRobot's `SonicWholeBodyController` is not used: it loads `lerobot/sonic_decoder`, which is not the v1.1 decoder
+paired with our tokens, and it holds the last token with no watchdog.
+
+- The streamer publishes at 50 Hz. For each tick it takes `ChunkResampler.token_at(t)` (`sonic_token_stream.py`),
+  which linearly interpolates the policy's 30 Hz chunk with look-ahead and holds the last token when a chunk runs out.
+- Do not use LeRobot's `interpolation_multiplier` for SONIC tokens: `ActionInterpolator` is the causal form
+  (blend from the previous action after a new one arrives), which measured worse than holding.
+- Hands: send the chunk's 14 Dex3 values (at the same source frame) in the protocol-v4 message.
+
 ## Scripts (`examples/g1_dex3_training/`)
 
 Written to run on H100 inside containers; `/code` = this directory, `/audit` = the output directory.
@@ -91,6 +104,7 @@ Written to run on H100 inside containers; `/code` = this directory, `/audit` = t
 | `sonic_roundtrip_{breakdown,temporal,paired,init,export}.py`                           | Error sources, error over time, with/without limiter, initial pose, viewer export.                                                                                                            |
 | `sonic_official_startup.py`                                                            | Records the official startup (video + telemetry).                                                                                                                                             |
 | `sonic_official_replay.py`, `sonic_replay_{extract,variants,compare,variant_table}.py` | Stream tokens into the official deploy and compare with the original actions.                                                                                                                 |
+| `sonic_token_stream.py`                                                                | `ChunkResampler`: 30 Hz policy token chunks → 50 Hz deploy ticks (look-ahead). Tested in `tests/datasets/test_g1_dex3_sonic_token_stream.py`.                                                 |
 | `sonic_nolimit_verify.py`                                                              | Checks a published no-limit dataset against its source and the replay-tested tokens.                                                                                                          |
 
 Offline audit of a no-limit dataset (lerobot image `4cbe2a3f7fc6`, python `/run-output/environment/venv/bin/python`,
