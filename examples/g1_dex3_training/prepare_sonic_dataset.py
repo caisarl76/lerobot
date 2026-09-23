@@ -90,7 +90,15 @@ def _verify_file(source, output):
         combine_tokens_and_hands(values[:, :64], values[:, 64:])
 
 
-def prepare(source_root: Path, output_root: Path, robot_xml: Path, *, encoder):
+def prepare(
+    source_root: Path,
+    output_root: Path,
+    robot_xml: Path,
+    *,
+    encoder,
+    arm_speed_limit=1.0,
+    hand_speed_limit=2.0,
+):
     """Build completely, verify persisted rows, then atomically publish the dataset."""
     from lerobot.datasets.compute_stats import aggregate_stats, get_feature_stats
 
@@ -159,7 +167,9 @@ def prepare(source_root: Path, output_root: Path, robot_xml: Path, *, encoder):
                     "source global indices mismatch",
                 )
                 actions = np.asarray(table["action"].to_pylist(), dtype=np.float32)
-                inputs, hands, report = build_encoder_inputs(actions, limits)
+                inputs, hands, report = build_encoder_inputs(
+                    actions, limits, arm_speed_limit=arm_speed_limit, hand_speed_limit=hand_speed_limit
+                )
                 encode_started = time.monotonic()
                 values = combine_tokens_and_hands(encoder.encode(inputs), hands)
                 report["encoding_seconds"] = time.monotonic() - encode_started
@@ -245,9 +255,22 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ("source-root", "output-root", "encoder-model", "observation-config", "robot-xml"):
         parser.add_argument(f"--{name}", type=Path, required=True)
+    for name, default in (("arm-speed-limit", "1.0"), ("hand-speed-limit", "2.0")):
+        parser.add_argument(f"--{name}", default=default, help="rad/s at 50Hz, or 'none' to disable")
     args = parser.parse_args()
+
+    def speed(v):
+        return None if v.lower() == "none" else float(v)
+
     encoder = SonicEncoder(args.encoder_model, args.observation_config)
-    prepare(args.source_root, args.output_root, args.robot_xml, encoder=encoder)
+    prepare(
+        args.source_root,
+        args.output_root,
+        args.robot_xml,
+        encoder=encoder,
+        arm_speed_limit=speed(args.arm_speed_limit),
+        hand_speed_limit=speed(args.hand_speed_limit),
+    )
 
 
 if __name__ == "__main__":
