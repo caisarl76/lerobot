@@ -9,7 +9,7 @@ row-major 6D heading rotations. All other observation terms are masked to zero.
 from __future__ import annotations
 
 import hashlib
-import xml.etree.ElementTree as ET
+import xml.etree.ElementTree as ET  # nosec B405 - parses the local, hash-recorded robot XML only
 from pathlib import Path
 
 import numpy as np
@@ -92,7 +92,7 @@ OBSERVATION_TERMS = (
 
 
 def load_joint_limits(xml_path: Path) -> np.ndarray:
-    root = ET.parse(xml_path).getroot()
+    root = ET.parse(xml_path).getroot()  # nosec B314 - trusted local robot model file
     compiler = root.find("compiler")
     if compiler is None or compiler.get("angle") != "radian":
         raise ValueError("robot XML must explicitly declare radians")
@@ -100,12 +100,20 @@ def load_joint_limits(xml_path: Path) -> np.ndarray:
     return np.asarray([list(map(float, joints[name].attrib["range"].split())) for name in ACTION_NAMES])
 
 
-def build_encoder_inputs(actions: np.ndarray, limits: np.ndarray):
+def build_encoder_inputs(
+    actions: np.ndarray,
+    limits: np.ndarray,
+    *,
+    arm_speed_limit: float | None = 1.0,
+    hand_speed_limit: float | None = 2.0,
+    fps: float = 30,
+):
     """Return source-aligned inputs, filtered hands, and an auditable conversion report.
 
-    Apply the reference adapter's 1rad/s arm and 2rad/s hand slew limits at 50Hz.
+    By default apply the reference adapter's 1rad/s arm and 2rad/s hand slew limits at 50Hz;
+    None disables a limit (joint-limit clipping always applies).
     Training adds no entry/settling interval and never borrows the next episode.
-    Original 30Hz rows select nearest 50Hz reference frames (<=6.67ms error).
+    Source rows (fps, default 30Hz) select nearest 50Hz reference frames (<=6.67ms error at 30Hz).
     """
     actions = np.asarray(actions, dtype=np.float64)
     limits = np.asarray(limits, dtype=np.float64)
@@ -114,12 +122,18 @@ def build_encoder_inputs(actions: np.ndarray, limits: np.ndarray):
     if limits.shape != (28, 2) or not np.isfinite(limits).all() or np.any(limits[:, 0] >= limits[:, 1]):
         raise ValueError("expected finite increasing limits [28,2]")
     clipped = np.clip(actions, limits[:, 0], limits[:, 1])
-    source_times = np.arange(len(actions), dtype=np.float64) / 30
+    source_times = np.arange(len(actions), dtype=np.float64) / fps
     dense_times = np.arange(int(np.ceil(source_times[-1] * 50)) + 1, dtype=np.float64) / 50
     desired = np.column_stack([np.interp(dense_times, source_times, clipped[:, i]) for i in range(28)])
     filtered = np.empty_like(desired)
     filtered[0] = desired[0]
-    max_step = np.r_[np.ones(14), np.full(14, 2.0)] / 50
+    max_step = (
+        np.r_[
+            np.full(14, np.inf if arm_speed_limit is None else arm_speed_limit),
+            np.full(14, np.inf if hand_speed_limit is None else hand_speed_limit),
+        ]
+        / 50
+    )
     for i in range(1, len(filtered)):
         filtered[i] = filtered[i - 1] + np.clip(desired[i] - filtered[i - 1], -max_step, max_step)
     body = np.tile(NOMINAL_BODY, (len(filtered), 1))
@@ -139,15 +153,15 @@ def build_encoder_inputs(actions: np.ndarray, limits: np.ndarray):
     hands = filtered[reference_rows, 14:].astype(np.float32)
     report = {
         "encoder_mode": 0,
-        "source_fps": 30,
+        "source_fps": fps,
         "reference_fps": 50,
         "preview_frames": 10,
         "preview_step": 5,
         "lower_body_assumption": "fixed_nominal_standing_legs_and_waist",
         "root_orientation_wxyz": [1, 0, 0, 0],
         "nominal_body_motor_order": NOMINAL_BODY.tolist(),
-        "arm_speed_limit_rad_s": 1.0,
-        "hand_speed_limit_rad_s": 2.0,
+        "arm_speed_limit_rad_s": arm_speed_limit,
+        "hand_speed_limit_rad_s": hand_speed_limit,
         "clipped_values": int(np.count_nonzero(clipped != actions)),
         "rate_limited_values": int(np.count_nonzero(np.abs(filtered - desired) > 1e-9)),
         "max_reference_time_error_s": float(np.max(np.abs(reference_rows / 50 - source_times))),

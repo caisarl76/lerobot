@@ -50,6 +50,28 @@ class SonicTargetTests(unittest.TestCase):
         arm_slot = int(np.flatnonzero(ISAAC_FROM_MOTOR == 15)[0])
         self.assertLessEqual(inputs[0, 4:294].reshape(10, 29)[1, arm_slot], 0.100001)
 
+    def test_speed_limits_can_be_disabled(self):
+        actions = np.zeros((31, 28))
+        actions[1:] = 0.4  # 12 rad/s step: far above both default limits
+        inputs, hands, report = build_encoder_inputs(
+            actions, self.limits, arm_speed_limit=None, hand_speed_limit=None
+        )
+        self.assertEqual(report["rate_limited_values"], 0)
+        self.assertIsNone(report["arm_speed_limit_rad_s"])
+        np.testing.assert_allclose(hands, actions[:, 14:], atol=1e-6)
+        arm_slot = int(np.flatnonzero(ISAAC_FROM_MOTOR == 15)[0])
+        np.testing.assert_allclose(inputs[1, 4:294].reshape(10, 29)[:, arm_slot], 0.4, atol=1e-6)
+
+    def test_fifty_hz_source_maps_rows_one_to_one(self):
+        actions = np.zeros((50, 28))
+        actions[:, 0] = np.arange(50) / 50 * 0.5
+        inputs, _, report = build_encoder_inputs(actions, self.limits, arm_speed_limit=None, fps=50)
+        self.assertEqual(report["max_reference_time_error_s"], 0)
+        arm_slot = int(np.flatnonzero(ISAAC_FROM_MOTOR == 15)[0])
+        np.testing.assert_allclose(
+            inputs[:, 4:294].reshape(50, 10, 29)[:, 0, arm_slot], actions[:, 0], atol=1e-6
+        )
+
     def test_one_frame_and_hand_order(self):
         actions = np.arange(28, dtype=float)[None] / 100
         inputs, hands, _ = build_encoder_inputs(actions, self.limits)

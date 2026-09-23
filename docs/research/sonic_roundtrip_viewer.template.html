@@ -1,0 +1,247 @@
+<title>SONIC Round-Trip Viewer</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Condensed:wght@500;600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+:root{
+  --ground:#F2F4F5; --panel:#FFFFFF; --ink:#16212B; --muted:#586674; --line:#D5DCE1; --grid:#E6EBEE;
+  --accent:#1D6A86; --fail:#B03636; --fail-bg:#F7E3E3; --pass:#2B7A4B; --pass-bg:#E3F1E8;
+  --s1:#2a78d6; --s2:#eb6834; --s3:#1baf7a; --s4:#eda100; --s5:#e87ba4;
+  --neg:#2a78d6; --pos:#eb6834; --zero:#EEF1F3;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    color-scheme:dark;
+    --ground:#0E141A; --panel:#151D25; --ink:#E2E8ED; --muted:#93A1AE; --line:#2A3641; --grid:#212C36;
+    --accent:#6DB6D2; --fail:#EE8080; --fail-bg:#3A1C1C; --pass:#6CC690; --pass-bg:#16301F;
+    --s1:#3987e5; --s2:#d95926; --s3:#199e70; --s4:#c98500; --s5:#d55181;
+    --neg:#3987e5; --pos:#d95926; --zero:#1E2831;
+  }
+}
+:root[data-theme="dark"]{
+  color-scheme:dark;
+  --ground:#0E141A; --panel:#151D25; --ink:#E2E8ED; --muted:#93A1AE; --line:#2A3641; --grid:#212C36;
+  --accent:#6DB6D2; --fail:#EE8080; --fail-bg:#3A1C1C; --pass:#6CC690; --pass-bg:#16301F;
+  --s1:#3987e5; --s2:#d95926; --s3:#199e70; --s4:#c98500; --s5:#d55181;
+  --neg:#3987e5; --pos:#d95926; --zero:#1E2831;
+}
+body{background:var(--ground);color:var(--ink);font:14px/1.5 "IBM Plex Sans",system-ui,sans-serif;padding-inline:16px;padding-block:28px 56px}
+main{max-width:1180px;margin:0 auto;display:grid;gap:22px}
+h1,h2{font-family:"IBM Plex Sans Condensed","Arial Narrow",sans-serif;font-weight:600;margin:0;text-wrap:balance}
+h1{font-size:28px;line-height:1.15} h2{font-size:18px}
+p{margin:0;max-width:78ch}
+.eyebrow{font:500 11.5px/1 "IBM Plex Mono",ui-monospace,monospace;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+header{display:grid;gap:10px}
+.muted{color:var(--muted)}
+.controls{display:flex;flex-wrap:wrap;gap:10px 20px;align-items:center;background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:12px 14px;position:sticky;top:env(safe-area-inset-top,0px);z-index:5}
+select{font:inherit;color:var(--ink);background:var(--ground);border:1px solid var(--line);border-radius:4px;padding:6px 8px;max-width:100%}
+select:focus-visible,input:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.legend{display:flex;flex-wrap:wrap;gap:6px 14px}
+.legend label{display:flex;align-items:center;gap:6px;cursor:pointer;user-select:none}
+.legend svg{flex:none}
+.stats{display:flex;flex-wrap:wrap;gap:8px}
+.chip{font:500 12.5px/1 "IBM Plex Mono",monospace;padding:6px 8px;border-radius:3px;border:1px solid var(--line);background:var(--panel);font-variant-numeric:tabular-nums}
+.chip.bad{color:var(--fail);background:var(--fail-bg);border-color:transparent}
+.chip.good{color:var(--pass);background:var(--pass-bg);border-color:transparent}
+section{display:grid;gap:10px}
+.cols{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+@media (max-width:760px){.cols{grid-template-columns:1fr}}
+.col{display:grid;gap:6px;align-content:start}
+.col h3{margin:0;font:600 13px/1.3 "IBM Plex Mono",monospace;letter-spacing:.05em;text-transform:uppercase;color:var(--muted)}
+.chart{background:var(--panel);border:1px solid var(--line);border-radius:4px;display:block;width:100%;height:auto;touch-action:none}
+.chart text{font:10px "IBM Plex Mono",monospace;fill:var(--muted)}
+.chart .ttl{font:500 11px "IBM Plex Sans",sans-serif;fill:var(--ink)}
+.heat{background:var(--panel);border:1px solid var(--line);border-radius:4px;padding:8px;display:grid;gap:6px}
+.heat canvas{width:100%;height:170px;image-rendering:pixelated;display:block}
+.scale{display:flex;align-items:center;gap:8px;font:11px "IBM Plex Mono",monospace;color:var(--muted)}
+.scale i{display:block;width:140px;height:8px;border-radius:2px;background:linear-gradient(90deg,var(--neg),var(--zero),var(--pos))}
+#tip{position:fixed;pointer-events:none;background:var(--panel);border:1px solid var(--line);border-radius:4px;padding:8px 10px;font:12px/1.45 "IBM Plex Mono",monospace;box-shadow:0 4px 14px rgb(0 0 0 / .12);z-index:10;font-variant-numeric:tabular-nums;min-width:190px}
+#tip b{font-family:"IBM Plex Sans",sans-serif;font-weight:600}
+#tip .row{display:flex;justify-content:space-between;gap:14px}
+#tip .sw{display:inline-block;width:10px;height:3px;margin-right:6px;vertical-align:middle}
+details summary{cursor:pointer;color:var(--muted)}
+</style>
+
+<main>
+<header>
+  <div class="eyebrow">Unitree G1 + Dex3 · SONIC v1.1 · MuJoCo closed loop</div>
+  <h1>Original action vs. SONIC round trip</h1>
+  <p class="muted">Blue is the dataset's original joint command. The other lines are the joint angles the simulated G1 actually reaches when driven by the SONIC tokens (encoder → token → decoder). Hover any chart for exact values at that moment; all charts share the time cursor.</p>
+</header>
+
+<div class="controls">
+  <select id="ep" aria-label="Episode"></select>
+  <div class="legend" id="legend"></div>
+</div>
+
+<div class="stats" id="stats"></div>
+
+<section>
+  <h2>Palm position error vs. original (cm)</h2>
+  <div id="err"></div>
+</section>
+
+<section>
+  <h2>Arm joints (rad)</h2>
+  <div class="cols"><div class="col" id="armL"><h3>Left arm</h3></div><div class="col" id="armR"><h3>Right arm</h3></div></div>
+</section>
+
+<section>
+  <h2>Converted SONIC action: 64 token values</h2>
+  <p class="muted">What the 78D converted dataset stores in place of the 14 arm joints. Tokens are a latent code on a 1/16 grid, not joint angles; they only become angles through the decoder above.</p>
+  <div class="heat"><canvas id="heat" width="600" height="64" aria-label="Token heatmap, 64 rows over time"></canvas>
+    <div class="scale"><span id="hmin"></span><i></i><span id="hmax"></span><span>· rows = token 0 (top) … 63</span></div></div>
+</section>
+
+<section>
+  <h2>Dex3 fingers (rad): original vs. stored in the converted action</h2>
+  <p class="muted">Fingers bypass SONIC; the converter copies them with a 2 rad/s speed limit.</p>
+  <div class="cols"><div class="col" id="handL"><h3>Left hand</h3></div><div class="col" id="handR"><h3>Right hand</h3></div></div>
+</section>
+
+<details><summary>How these were produced</summary>
+<p class="muted" style="margin-top:8px">"SONIC · current converter" decodes the tokens stored in the converted dataset (1 rad/s arm limit). "SONIC · no speed limit" re-encodes the same episode without the limiter. "SONIC · default-pose start" is the current converter, but the robot starts from SONIC's standing pose instead of the episode's first pose. "Limited reference" is what the converter asked the encoder for. Palm error is measured in the pelvis frame; the audit's gate is p95 &gt; 5 cm.</p>
+</details>
+</main>
+<div id="tip" hidden></div>
+
+<script type="application/json" id="data">__DATA__</script>
+<script>
+const D = JSON.parse(document.getElementById("data").textContent);
+const SERIES = [
+  {key:"original", label:"Original action", color:"--s1", w:2.2, dash:"", on:true, lock:true},
+  {key:"sonic", label:"SONIC · current converter", color:"--s2", w:1.6, dash:"", on:true, err:"current"},
+  {key:"sonic_nolimit", label:"SONIC · no speed limit", color:"--s3", w:1.6, dash:"6 3", on:true, err:"nolimit"},
+  {key:"limited", label:"Limited reference", color:"--s4", w:1.4, dash:"2 3", on:false},
+  {key:"sonic_defaultstart", label:"SONIC · default-pose start", color:"--s5", w:1.4, dash:"9 3", on:false, err:"defaultstart"},
+];
+const HAND = [
+  {key:"hand_original", label:"Original", color:"--s1", w:2.2, dash:""},
+  {key:"hand_stored", label:"Stored (converted)", color:"--s2", w:1.6, dash:""},
+];
+const M = {l:40, r:8, t:18, b:18};
+const sel = document.getElementById("ep");
+const tip = document.getElementById("tip");
+let ep, cursor = null, charts = [];
+
+D.episodes.forEach((e, i) => {
+  const o = document.createElement("option");
+  o.value = i; o.id = "ep-" + i;
+  o.textContent = `${e.dataset === "unitree" ? "Unitree" : "Humanoid Everyday"} · ep ${e.episode} · ${e.why} · p95 ${e.p95_cm.current} cm`;
+  sel.append(o);
+});
+
+function legend() {
+  const el = document.getElementById("legend");
+  el.innerHTML = "";
+  SERIES.forEach((s, i) => {
+    const l = document.createElement("label");
+    l.innerHTML = `<input type="checkbox" id="s-${s.key}" ${s.on ? "checked" : ""} ${s.lock ? "disabled" : ""}>
+      <svg width="26" height="8" aria-hidden="true"><line x1="1" y1="4" x2="25" y2="4" style="stroke:var(${s.color})" stroke-width="${s.w + .4}" stroke-dasharray="${s.dash}"/></svg>${s.label}`;
+    l.querySelector("input").addEventListener("change", ev => { s.on = ev.target.checked; render(); });
+    el.append(l);
+  });
+}
+
+const css = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+const NS = "http://www.w3.org/2000/svg";
+const mk = (tag, attrs, parent) => { const n = document.createElementNS(NS, tag); for (const k in attrs) n.setAttribute(k, attrs[k]); parent && parent.append(n); return n; };
+function nice(span, target) { const raw = span / target, p = 10 ** Math.floor(Math.log10(raw)); return [1, 2, 5, 10].map(m => m * p).find(v => v >= raw); }
+
+function chart(parent, title, series, getter, opts = {}) {
+  const W = opts.w || 520, H = opts.h || 132;
+  const n = ep.shown, fps = ep.fps, T = (n - 1) / fps;
+  const vis = series.filter(s => s.on !== false);
+  let lo = Infinity, hi = -Infinity;
+  vis.forEach(s => getter(s).forEach(v => { if (v < lo) lo = v; if (v > hi) hi = v; }));
+  if (opts.gate != null) { hi = Math.max(hi, opts.gate * 1.15); lo = 0; }
+  if (hi - lo < 0.05) { lo -= 0.05; hi += 0.05; }
+  const pad = (hi - lo) * 0.08; if (opts.gate == null) lo -= pad; hi += pad;
+  const x = t => M.l + (t / T) * (W - M.l - M.r), y = v => M.t + (1 - (v - lo) / (hi - lo)) * (H - M.t - M.b);
+  const svg = mk("svg", {viewBox: `0 0 ${W} ${H}`, class: "chart", role: "img", "aria-label": title});
+  const ys = nice(hi - lo, 3);
+  for (let v = Math.ceil(lo / ys) * ys; v <= hi; v += ys) {
+    mk("line", {x1: M.l, x2: W - M.r, y1: y(v), y2: y(v), style: "stroke:var(--grid)", "stroke-width": 1}, svg);
+    mk("text", {x: M.l - 5, y: y(v) + 3, "text-anchor": "end"}, svg).textContent = +v.toFixed(2);
+  }
+  const xs = nice(T, 6);
+  for (let t = 0; t <= T + 1e-9; t += xs) mk("text", {x: x(t), y: H - 5, "text-anchor": "middle"}, svg).textContent = t.toFixed(xs < 1 ? 1 : 0) + "s";
+  if (opts.gate != null) {
+    mk("line", {x1: M.l, x2: W - M.r, y1: y(opts.gate), y2: y(opts.gate), style: "stroke:var(--fail)", "stroke-width": 1, "stroke-dasharray": "4 3"}, svg);
+    mk("text", {x: W - M.r - 2, y: y(opts.gate) - 4, "text-anchor": "end", style: "fill:var(--fail)"}, svg).textContent = `gate ${opts.gate} cm`;
+  }
+  mk("text", {x: M.l, y: 12, class: "ttl"}, svg).textContent = title;
+  vis.forEach(s => {
+    const a = getter(s); let d = "";
+    for (let i = 0; i < n; i++) d += (i ? "L" : "M") + x(i / fps).toFixed(1) + " " + y(a[i]).toFixed(1);
+    mk("path", {d, fill: "none", style: `stroke:var(${s.color})`, "stroke-width": s.w, "stroke-dasharray": s.dash, "stroke-linejoin": "round", "vector-effect": "non-scaling-stroke"}, svg);
+  });
+  const cur = mk("line", {y1: M.t, y2: H - M.b, style: "stroke:var(--ink)", "stroke-width": 1, opacity: 0}, svg);
+  const move = ev => {
+    const r = svg.getBoundingClientRect(), px = (ev.clientX - r.left) / r.width * W;
+    const i = Math.max(0, Math.min(n - 1, Math.round((px - M.l) / (W - M.l - M.r) * T * fps)));
+    setCursor(i);
+    tip.hidden = false;
+    tip.innerHTML = `<b>${title}</b><div class="muted">t = ${(i / fps).toFixed(2)} s · frame ${i}</div>` +
+      vis.map(s => `<div class="row"><span><span class="sw" style="background:var(${s.color})"></span>${s.label}</span><span>${getter(s)[i].toFixed(3)}</span></div>`).join("");
+    const tw = tip.offsetWidth, th = tip.offsetHeight;
+    tip.style.left = Math.min(ev.clientX + 14, innerWidth - tw - 8) + "px";
+    tip.style.top = Math.min(ev.clientY + 14, innerHeight - th - 8) + "px";
+  };
+  svg.addEventListener("pointermove", move);
+  svg.addEventListener("pointerleave", () => { tip.hidden = true; setCursor(null); });
+  charts.push({cur, x, fps});
+  parent.append(svg);
+}
+
+function setCursor(i) {
+  cursor = i;
+  charts.forEach(c => { if (i == null) c.cur.setAttribute("opacity", 0); else { const X = c.x(i / c.fps); c.cur.setAttribute("x1", X); c.cur.setAttribute("x2", X); c.cur.setAttribute("opacity", .45); } });
+  const hc = document.getElementById("heatcur");
+  if (hc) hc.style.left = i == null ? "-9px" : (i / (ep.shown - 1) * 100) + "%";
+}
+
+function heat() {
+  const cv = document.getElementById("heat"), n = ep.shown, t = ep.tokens16;
+  cv.width = n; cv.height = 64;
+  const g = cv.getContext("2d"), img = g.createImageData(n, 64);
+  let m = 1; t.forEach(r => r.forEach(v => { if (Math.abs(v) > m) m = Math.abs(v); }));
+  const rgb = h => { h = h.replace("#", ""); return [0, 2, 4].map(k => parseInt(h.slice(k, k + 2), 16)); };
+  const neg = rgb(css("--neg")), pos = rgb(css("--pos")), zero = rgb(css("--zero"));
+  for (let i = 0; i < n; i++) for (let j = 0; j < 64; j++) {
+    const v = t[i][j] / m, c = v < 0 ? neg : pos, a = Math.abs(v), o = (j * n + i) * 4;
+    for (let k = 0; k < 3; k++) img.data[o + k] = zero[k] + (c[k] - zero[k]) * a;
+    img.data[o + 3] = 255;
+  }
+  g.putImageData(img, 0, 0);
+  document.getElementById("hmin").textContent = (-m / 16).toFixed(2);
+  document.getElementById("hmax").textContent = "+" + (m / 16).toFixed(2);
+}
+
+function render() {
+  ep = D.episodes[+sel.value];
+  charts = [];
+  const st = document.getElementById("stats");
+  const chip = (lab, v) => `<span class="chip ${v > 5 ? "bad" : "good"}">${lab}: p95 ${v.toFixed(2)} cm</span>`;
+  st.innerHTML = `<span class="chip">${ep.task} · ${ep.fps} fps · ${(ep.frames / ep.fps).toFixed(1)} s${ep.shown < ep.frames ? ` (first ${(ep.shown / ep.fps).toFixed(0)} s shown)` : ""}</span>` +
+    chip("current converter", ep.p95_cm.current) + chip("no speed limit", ep.p95_cm.nolimit) + chip("default-pose start", ep.p95_cm.defaultstart);
+  const err = document.getElementById("err"); err.innerHTML = "";
+  chart(err, "Worse hand, reached vs. original", SERIES.filter(s => s.err && s.on), s => ep.palm_err_cm[s.err], {gate: 5, w: 1060, h: 190});
+  for (const [id, off] of [["armL", 0], ["armR", 7]]) {
+    const el = document.getElementById(id); el.querySelectorAll("svg").forEach(s => s.remove());
+    for (let j = 0; j < 7; j++) chart(el, D.arm_names[off + j].replace(/_joint$/, "").replace(/^(left|right)_/, ""), SERIES, s => ep[s.key].map(r => r[off + j]));
+  }
+  for (const [id, off] of [["handL", 0], ["handR", 7]]) {
+    const el = document.getElementById(id); el.querySelectorAll("svg").forEach(s => s.remove());
+    for (let j = 0; j < 7; j++) chart(el, D.hand_names[off + j].replace(/_joint$/, "").replace(/^(left|right)_hand_/, ""), HAND, s => ep[s.key].map(r => r[off + j]));
+  }
+  heat();
+  setCursor(cursor);
+}
+
+legend();
+sel.addEventListener("change", render);
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", render);
+new MutationObserver(render).observe(document.documentElement, {attributes: true, attributeFilter: ["data-theme"]});
+sel.value = 1; // worst Unitree episode first: the interesting case
+render();
+</script>

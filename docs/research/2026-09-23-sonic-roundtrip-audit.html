@@ -1,0 +1,230 @@
+<title>SONIC Round-Trip Audit</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Condensed:wght@500;600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+:root{
+  --ground:#F2F4F5; --panel:#FFFFFF; --ink:#16212B; --muted:#586674; --line:#D5DCE1;
+  --accent:#1D6A86; --pass:#2B7A4B; --fail:#B03636; --warn:#9A6410;
+  --pass-bg:#E3F1E8; --fail-bg:#F7E3E3; --warn-bg:#F6ECD9; --code:#E8EDF0;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    color-scheme:dark;
+    --ground:#0E141A; --panel:#151D25; --ink:#E2E8ED; --muted:#93A1AE; --line:#2A3641;
+    --accent:#6DB6D2; --pass:#6CC690; --fail:#EE8080; --warn:#E0AE5A;
+    --pass-bg:#16301F; --fail-bg:#3A1C1C; --warn-bg:#35280F; --code:#1C262F;
+  }
+}
+:root[data-theme="dark"]{
+  color-scheme:dark;
+  --ground:#0E141A; --panel:#151D25; --ink:#E2E8ED; --muted:#93A1AE; --line:#2A3641;
+  --accent:#6DB6D2; --pass:#6CC690; --fail:#EE8080; --warn:#E0AE5A;
+  --pass-bg:#16301F; --fail-bg:#3A1C1C; --warn-bg:#35280F; --code:#1C262F;
+}
+body{background:var(--ground);color:var(--ink);font:15px/1.55 "IBM Plex Sans",system-ui,sans-serif;padding-inline:20px;padding-block:40px 64px}
+main{max-width:960px;margin:0 auto;display:grid;gap:36px}
+h1,h2{font-family:"IBM Plex Sans Condensed","Arial Narrow",sans-serif;font-weight:600;text-wrap:balance;margin:0}
+h1{font-size:34px;line-height:1.15}
+h2{font-size:22px}
+p{margin:0;max-width:68ch}
+.eyebrow{font:500 12px/1 "IBM Plex Mono",ui-monospace,monospace;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+header{display:grid;gap:12px}
+.lede{font-size:17px}
+section{display:grid;gap:14px}
+code,.mono{font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:13px}
+code{background:var(--code);padding:1px 5px;border-radius:3px}
+.pipe{display:flex;flex-wrap:wrap;gap:6px;align-items:center;font:500 13px/1.3 "IBM Plex Mono",monospace}
+.pipe span{background:var(--panel);border:1px solid var(--line);padding:6px 10px;border-radius:4px}
+.pipe i{color:var(--muted);font-style:normal}
+.pipe .hot{border-color:var(--warn);background:var(--warn-bg)}
+.verdicts{display:grid;grid-template-columns:repeat(auto-fit,minmax(270px,1fr));gap:12px}
+.v{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:16px;display:grid;gap:8px;align-content:start}
+.v h3{margin:0;font:600 16px/1.3 "IBM Plex Sans",sans-serif}
+.pill{justify-self:start;font:600 12px/1 "IBM Plex Mono",monospace;letter-spacing:.06em;padding:5px 8px;border-radius:3px}
+.pass{color:var(--pass);background:var(--pass-bg)} .fail{color:var(--fail);background:var(--fail-bg)} .warn{color:var(--warn);background:var(--warn-bg)}
+.big{font:600 28px/1 "IBM Plex Sans Condensed",sans-serif;font-variant-numeric:tabular-nums}
+.big small{font-size:14px;color:var(--muted);font-weight:500}
+.v p{font-size:13.5px;color:var(--muted)}
+.tbl{overflow-x:auto;background:var(--panel);border:1px solid var(--line);border-radius:6px}
+table{border-collapse:collapse;width:100%;font-size:13.5px;font-variant-numeric:tabular-nums}
+th,td{padding:8px 12px;text-align:right;border-bottom:1px solid var(--line);white-space:nowrap}
+th:first-child,td:first-child{text-align:left}
+thead th{font:500 11.5px/1.3 "IBM Plex Mono",monospace;letter-spacing:.05em;text-transform:uppercase;color:var(--muted)}
+tbody tr:last-child td{border-bottom:0}
+td.f{color:var(--fail);font-weight:600} td.p{color:var(--pass);font-weight:600}
+ul{margin:0;padding-left:20px;display:grid;gap:6px;max-width:72ch}
+.callout{background:var(--warn-bg);border-left:3px solid var(--warn);padding:14px 16px;border-radius:0 6px 6px 0;display:grid;gap:8px}
+pre{margin:0;background:var(--code);padding:14px;border-radius:6px;overflow-x:auto;font:12.5px/1.5 "IBM Plex Mono",monospace}
+.note{font-size:13px;color:var(--muted)}
+a{color:var(--accent)}
+</style>
+
+<main>
+<header>
+  <div class="eyebrow">Offline audit · Unitree G1 + Dex3 · SONIC v1.1 · 2026-09-23</div>
+  <h1>Do SONIC tokens bring the hand back to where the dataset put it?</h1>
+  <p class="lede">For the arms, yes: encode → token → decode lands the palm within 3–4.5 cm (p95) of the trajectory the tokens were built from. What misses the 5 cm gate is the converter's speed limiter, which slows fast arm motions before encoding. It is SONIC-independent and fixable.</p>
+</header>
+
+<section class="callout" style="background:var(--pass-bg);border-left-color:var(--pass)">
+  <h2>Update: no-speed-limit datasets built and audited</h2>
+  <p>Chosen path: no arm/hand speed limit in the converter, train on 30 Hz, and at deploy linearly interpolate the policy's 30 Hz tokens to 50 Hz. In the official deploy, interpolation matched tokens encoded at 50 Hz to within 0.1 cm, so a 50 Hz dataset is not needed. Datasets: <code>/run-output/datasets/sonic78_nolimit</code> (3152 ep) and <code>/run-output/humanoid_everyday_g1_20260923/datasets/sonic78_nolimit</code> (4064 ep). Both are published, counts match the source, and 0 values were rate-limited; the stored tokens for the six replay-tested episodes are bit-identical to what ran through the deploy.</p>
+  <div class="tbl"><table>
+    <thead><tr><th>Palm vs original, pelvis frame</th><th>p50</th><th>p95</th><th>Max</th><th>Episodes &gt;5 cm</th><th>Worst episode</th><th>Lag</th><th>Verdict</th></tr></thead>
+    <tbody>
+      <tr><td>Unitree · limited, held (56 ep)</td><td>1.45</td><td>3.40</td><td>17.6</td><td>14%</td><td>12.2 cm</td><td>2 fr</td><td class="p">PASS</td></tr>
+      <tr><td><b>Unitree · no limit, interpolated</b></td><td>1.42</td><td><b>3.07</b></td><td>9.3</td><td>7%</td><td>6.5 cm</td><td>1 fr</td><td class="p">PASS</td></tr>
+      <tr><td>Humanoid Everyday · limited, held (81 ep)</td><td>2.07</td><td>8.82</td><td>68.4</td><td>77%</td><td>23.4 cm</td><td>3 fr</td><td class="f">FAIL</td></tr>
+      <tr><td><b>Humanoid Everyday · no limit, interpolated</b></td><td>1.92</td><td><b>5.21</b></td><td>53.8</td><td>20%</td><td>8.6 cm</td><td>1 fr</td><td class="f">FAIL (by 0.2 cm)</td></tr>
+    </tbody>
+  </table></div>
+  <p>No falls anywhere. Dex3 values now track the source (Unitree max deviation 1.61 → 0.18 rad; residual from sampling at the nearest 50 Hz tick). HE's small remaining overshoot is not caused by source glitches (excluding 1 s after every &gt;6 rad/s jump barely moves it); it is SONIC tracking HE's fast manipulation. HE maximum error comes from single-frame pose jumps in the source commands.</p>
+</section>
+
+<section>
+  <h2>What was measured</h2>
+  <div class="pipe">
+    <span>28D / 43D joint action</span><i>→</i>
+    <span class="hot">clip + 1 rad/s arm slew (converter)</span><i>→</i>
+    <span>v1.1 encoder</span><i>→</i>
+    <span>64D token @ source fps</span><i>→</i>
+    <span>v1.1 decoder @ 50 Hz, MuJoCo closed loop</span><i>→</i>
+    <span>palm point via FK</span>
+  </div>
+  <p>Stored tokens are read from the converted parquet and held at 50 Hz between source frames. The decoder runs closed loop against the official <code>scene_43dof.xml</code> plant at 200 Hz with the <code>policy_parameters.hpp</code> gains. The history resets each episode and a 1 s standing warm-up runs first. The palm point is the mean of the index_0 and middle_0 link origins, so it does not depend on finger angles. Gate: <b>p95 reached-palm error vs. the original dataset command &gt; 5 cm ⇒ fail</b>, measured in the pelvis frame.</p>
+</section>
+
+<section>
+  <h2>Verdicts</h2>
+  <div class="verdicts">
+    <div class="v">
+      <span class="pill pass">PASS</span>
+      <h3>Unitree merged <code>sonic78</code></h3>
+      <div class="big">3.40 cm <small>p95 · 56 ep · 43,096 frames</small></div>
+      <p>Stored tokens = fresh encoder output, bit-exact. 8 / 56 episodes exceed 5 cm individually: all fast object-placement motions where the speed limiter causes most of the error.</p>
+    </div>
+    <div class="v">
+      <span class="pill fail">FAIL · exploratory</span>
+      <h3>Humanoid Everyday <code>sonic78.incomplete</code></h3>
+      <div class="big">9.16 cm <small>p95 · 75 ep · 39,212 frames</small></div>
+      <p>Measured against the limited trajectory: 4.48 cm, a pass. The 1 rad/s limiter alone moves the target 7.4 cm (p95), up to 72 cm. Conversion was still running (3200/4064), so this is not the final artifact.</p>
+    </div>
+    <div class="v">
+      <span class="pill warn">ARMS PASS · WORLD INCONCLUSIVE</span>
+      <h3>43D <code>g1_teleop</code> (4 fruit tasks)</h3>
+      <div class="big">3.34 cm <small>p95 · 16 ep · 20 fps</small></div>
+      <p>No stored 43D→SONIC conversion exists, so these tokens are freshly encoded from real 29D body actions. In sim the pelvis moved 0.4–68 cm, which makes world-frame error meaningless until leg-action semantics are known.</p>
+    </div>
+  </div>
+</section>
+
+<section>
+  <h2>Where the error comes from</h2>
+  <div class="tbl"><table>
+    <thead><tr><th>Palm error, pelvis frame (cm)</th><th>Unitree p95</th><th>Unitree max</th><th>HE p95</th><th>HE max</th><th>43D p95</th></tr></thead>
+    <tbody>
+      <tr><td>Reached vs original command (gate)</td><td class="p">3.40</td><td>17.6</td><td class="f">9.16</td><td>72.7</td><td class="p">3.34</td></tr>
+      <tr><td>Reached vs limited reference (SONIC only)</td><td>3.06</td><td>9.7</td><td>4.48</td><td>11.8</td><td>3.34</td></tr>
+      <tr><td>Limited vs original command (converter only)</td><td>0.78</td><td>17.1</td><td>7.39</td><td>71.6</td><td>0.18</td></tr>
+      <tr><td>Decoded PD setpoint vs original (not a pose)</td><td>53.5</td><td>71.1</td><td>45.5</td><td>76.2</td><td>41.0</td></tr>
+      <tr><td>World frame, pelvis frozen at t=0</td><td>9.10</td><td>18.4</td><td>19.1</td><td>129.8</td><td>42.3</td></tr>
+    </tbody>
+  </table></div>
+  <ul>
+    <li><b>The decoder's output is a PD setpoint, not a joint pose.</b> With the official soft gains (arm kp ≈ 14 Nm/rad), the policy commands 0.2–0.9 rad past the target to fight gravity. Comparing decoded actions directly against dataset joints is invalid; the pose the robot actually reaches is the right comparison.</li>
+    <li><b>Lag:</b> the best cross-correlation shift is 2 source frames (≈67 ms) for Unitree and 3 for HE. At the best lag, the mean palm error drops to 1.7 cm (Unitree) and 2.6 cm (HE).</li>
+    <li><b>Clipping is harmless.</b> All clipped values are Dex3 finger joints exceeding the limit by ≤ 0.001 rad. Arms are never clipped.</li>
+    <li><b>The speed limiter is the cause.</b> 2–7% of HE arm frames exceed 1 rad/s. Re-running the 12 worst episodes without the limiter: HE p95 falls from 15–24 cm to <b>4.07 cm</b> and Unitree from 6.7–12.2 cm to <b>5.49 cm</b>, with no falls.</li>
+  </ul>
+</section>
+
+<section>
+  <h2>Error is event-driven, not accumulating</h2>
+  <div class="tbl"><table>
+    <thead><tr><th>Mean palm error (cm) by elapsed time</th><th>0–1 s</th><th>1–5 s</th><th>5–10 s</th><th>10–20 s</th><th>20–40 s</th><th>40 s+</th></tr></thead>
+    <tbody>
+      <tr><td>Unitree: SONIC only</td><td>1.82</td><td>1.90</td><td>2.19</td><td>2.04</td><td>1.89</td><td>1.90</td></tr>
+      <tr><td>Unitree: vs original</td><td>2.08</td><td>2.21</td><td>2.52</td><td>2.47</td><td>2.03</td><td>1.97</td></tr>
+      <tr><td>HE: SONIC only</td><td>2.46</td><td>2.49</td><td>2.68</td><td>2.83</td><td>3.18</td><td>3.44</td></tr>
+      <tr><td>HE: vs original</td><td>2.84</td><td>3.87</td><td>3.66</td><td>5.18</td><td>6.56</td><td>9.58</td></tr>
+    </tbody>
+  </table></div>
+  <ul>
+    <li><b>Unitree has no drift.</b> The SONIC-only error slope has a median of 0.004 cm per 10 s, and the first and last quarters of episodes are equal (1.92 vs 1.97 cm).</li>
+    <li><b>Errors arrive in short bursts at fast motions.</b> Unitree has 96 bursts over 5 cm, with a median length of 0.33 s. 92% start within 1 s of a source arm motion faster than 1 rad/s, 76% are mostly speed-limiter error, and 82% fall back below 2 cm within 2 s.</li>
+    <li><b>SONIC's own error barely depends on speed:</b> p95 is 3.45 cm at &lt; 0.5 rad/s and 3.96 cm at 2–3 rad/s. The limiter's error climbs from 0.1 to 10.5 cm across the same range.</li>
+    <li><b>HE error does grow late in episodes, and that growth is the limiter.</b> During long, fast motions the limited trajectory falls behind and never catches up before the episode ends. The SONIC-only part drifts slightly, from 2.5 to 3.4 cm over 40 s.</li>
+    <li><b>HE has real single-frame pose jumps:</b> 119 frames faster than 6 rad/s in 75 episodes, up to 30 rad/s (≈1 rad in one frame). Unitree has 4.</li>
+  </ul>
+</section>
+
+<section>
+  <h2>Same episodes, with and without the speed limiter</h2>
+  <div class="tbl"><table>
+    <thead><tr><th>Median across episodes (worst)</th><th>Unitree limited</th><th>Unitree unlimited</th><th>HE limited</th><th>HE unlimited</th></tr></thead>
+    <tbody>
+      <tr><td>Palm p95 vs original, cm</td><td>3.23 (11.4)</td><td>2.79 (6.5)</td><td class="f">8.33 (27.2)</td><td>3.81 (7.4)</td></tr>
+      <tr><td>Episodes over 5 cm</td><td>7 / 32</td><td>4 / 32</td><td>23 / 30</td><td>6 / 30</td></tr>
+      <tr><td>Reached arm joint speed, rad/s</td><td>1.73 (2.18)</td><td>2.20 (3.78)</td><td>1.77 (2.10)</td><td>3.02 (4.86)</td></tr>
+      <tr><td>Decoder setpoint rate, rad/s</td><td>6.2 (10.0)</td><td>6.9 (15.5)</td><td>8.9 (13.1)</td><td>12.0 (20.9)</td></tr>
+      <tr><td>Torso tilt, deg</td><td>2.8 (4.6)</td><td>2.8 (4.2)</td><td>2.6 (5.9)</td><td>2.7 (5.9)</td></tr>
+      <tr><td>Torque saturation / falls</td><td>0 / 0</td><td>0 / 0</td><td>0 / 0</td><td>0 / 0</td></tr>
+    </tbody>
+  </table></div>
+  <p>Sample: 2 episodes per task (up to 15 tasks) plus the most-clipped and most speed-limited, run both ways (Unitree 32 pairs, HE 30 pairs). In sim, removing the arm limiter costs nothing in balance or torque, and the robot still never moves an arm faster than 4.9 rad/s: the decoder and the 10 Hz PD smooth out even 30 rad/s source jumps.</p>
+</section>
+
+<section class="callout">
+  <h2>Dex3 fingers never go through SONIC</h2>
+  <p>The 14 hand channels are copied into the 78D action after a 2 rad/s speed limit. Stored vs. source: p95 0.003 rad (Unitree) and 0.098 rad (HE), but up to <b>1.61 rad</b> during fast grasps. A trained VLA would learn grasps that close later than the teleoperator commanded. The token check cannot validate the hands; this pass-through check is the only evidence for them.</p>
+</section>
+
+<section>
+  <h2>Decision needed</h2>
+  <ul>
+    <li><b>Unitree sonic78</b> is usable on this criterion, but it bakes the 1 rad/s arm / 2 rad/s hand limiter into the training targets.</li>
+    <li><b>Humanoid Everyday</b> fails under the current converter. Either raise or remove the limiter (the ablation passes at 4.07 cm), or accept the slowed targets and gate against the limited reference instead (4.48 cm).</li>
+    <li>The limiter copies the reference VLA adapter's setting. A token-output VLA has no joint-space limiter at runtime (no encoder runs on the robot), so the training data is the only place this cap would act.</li>
+    <li><b>Recommendation:</b> drop the 1 rad/s arm cap, but keep a guard against source glitches: a ~5 rad/s cap, or drop/repair episodes with single-frame jumps. Evidence is sim-only; the hand limiter is a separate decision this audit cannot test.</li>
+  </ul>
+</section>
+
+<section>
+  <h2>Limits of this evidence</h2>
+  <ul>
+    <li>Plant is MuJoCo sim2sim, not the real robot. Dex3 fingers are unactuated in sim, and the scene's hand model is flagged unstable by NVIDIA.</li>
+    <li>28D data has no legs or root: tokens encode nominal standing legs and identity heading. <b>No locomotion target is validated.</b></li>
+    <li>Calibration: a constant standing pose tracks at 1.04 cm p95. The dance example was invalid (identity heading on a turning motion) and was excluded.</li>
+    <li>Sampling: 4 random episodes per task (≤ 20 tasks) plus the 4 most-clipped and 4 most speed-limited from the converter reports; seed 0.</li>
+    <li>HE numbers come from a dataset still being written; re-run after <code>prepare-sonic78.exit</code> = 0.</li>
+    <li>Sim XML and converter XML have identical body joints (ranges, axes, offsets). They differ only in Dex3 geometry, which shifts the palm point by a constant 2.2 cm on both sides of the comparison.</li>
+  </ul>
+</section>
+
+<section>
+  <h2>Provenance &amp; reproduce</h2>
+  <div class="tbl"><table>
+    <tbody>
+      <tr><td>Encoder v1.1</td><td class="mono">fb97de22819b2057…cf8365bae</td></tr>
+      <tr><td>Decoder v1.1</td><td class="mono">34bae8570d4a4421…c91c67509</td></tr>
+      <tr><td>observation_config.yaml</td><td class="mono">4a67713b310932e5…c5bbea995f12e59f0</td></tr>
+      <tr><td>Converter sonic_targets.py (prod = local HEAD)</td><td class="mono">90cb3210179d3b0d…97838356cc</td></tr>
+      <tr><td>Converter XML</td><td class="mono">8b68d8f06674c5c1…fba9fabba5080b55ea67ee1dd12cf630cd</td></tr>
+      <tr><td>Sim robot XML</td><td class="mono">58c82f77753db54f…d8587db6cfc442f9a75f2bc444c6</td></tr>
+    </tbody>
+  </table></div>
+  <pre>
+# worktree ../lerobot-sonic-roundtrip, branch audit/sonic-roundtrip
+# H100 container jihun-sonic-roundtrip-20260923 (CPU, all inputs read-only)
+python /code/sonic_roundtrip_audit.py --out /audit/results --per-task 4 --extremes 4
+python /code/sonic_roundtrip_audit.py summarize /audit/results
+python /code/sonic_roundtrip_breakdown.py /audit/results
+python /code/sonic_roundtrip_audit.py --out /audit/results --sets unitree humanoid_everyday \
+       --noslew /audit/results/breakdown.json
+python /code/sonic_roundtrip_temporal.py /audit/results
+python /code/sonic_roundtrip_audit.py --out /audit/safety --sets unitree humanoid_everyday \
+       --per-task 2 --max-tasks 15 --extremes 4 --noslew all
+python /code/sonic_roundtrip_paired.py /audit/safety
+# outputs: /mnt/data01/jhkim/model_weight/sonic_roundtrip_20260923/results/{summary,breakdown}.json, episodes/*.npz</pre>
+</section>
+</main>
