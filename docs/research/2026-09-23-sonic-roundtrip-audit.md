@@ -92,6 +92,11 @@ paired with our tokens, and it holds the last token with no watchdog.
 - Do not use LeRobot's `interpolation_multiplier` for SONIC tokens: `ActionInterpolator` is the causal form
   (blend from the previous action after a new one arrives), which measured worse than holding.
 - Hands: send the chunk's 14 Dex3 values (at the same source frame) in the protocol-v4 message.
+- Verified in the official deploy (2026-09-24, same six episodes, no-limit tokens): the chunked stream (40-token
+  chunks every 0.4 s from 0.1 s old observations, `ChunkResampler`) matched ideal look-ahead within 0.02 cm on every
+  episode. Median palm p95: hold 4.49 cm, ideal 4.05 cm, chunked 4.05 cm; tilt ≤ 4.0°, all feet in contact.
+  The stand-in chunks come from the dataset, so consecutive chunks agree; chunks from a real policy that disagree
+  at boundaries still need testing with a trained policy.
 
 ## Scripts (`examples/g1_dex3_training/`)
 

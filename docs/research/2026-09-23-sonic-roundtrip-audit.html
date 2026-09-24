@@ -80,6 +80,7 @@ a{color:var(--accent)}
   </table></div>
   <p>No falls anywhere. Dex3 values now track the source (Unitree max deviation 1.61 → 0.18 rad; residual from sampling at the nearest 50 Hz tick). HE's small remaining overshoot is not caused by source glitches (excluding 1 s after every &gt;6 rad/s jump barely moves it); it is SONIC tracking HE's fast manipulation. HE maximum error comes from single-frame pose jumps in the source commands.</p>
   <p><b>Decision (2026-09-24): Humanoid Everyday <code>sonic78_nolimit</code> is accepted for training as-is</b>, with this result on record: pooled palm p95 5.21 cm (0.2 cm over the 5 cm gate), 20% of sampled episodes over 5 cm on their own p95, worst episode 8.6 cm, no episodes excluded. The value depends on the episode sample (4.59 cm on an 83-episode sample), so treat it as about 4.6–5.2 cm. For the 50 Hz token feed, only look-ahead interpolation helps (HE p95 4.72 → 4.59 cm vs. holding); causal interpolation inside the controller is worse (5.08 cm).</p>
+  <p><b>Deploy streaming (2026-09-24):</b> runtime is NVIDIA's C++ <code>g1_deploy_onnx_ref</code> fed over ZMQ. In the official deploy, a VLA-like chunked stream (40-token chunks every 0.4 s, <code>ChunkResampler</code> look-ahead to 50 Hz) matched ideal look-ahead within 0.02 cm on all six replay episodes (median palm p95 4.05 cm vs 4.49 cm when holding tokens), with unchanged stability.</p>
 </section>
 
 <section>
