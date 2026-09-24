@@ -84,6 +84,21 @@ a{color:var(--accent)}
 </section>
 
 <section>
+  <h2>Update: a trained policy streamed through the official deploy (2026-09-25)</h2>
+  <p>ACT and Diffusion policies trained on <code>sonic78_nolimit</code> ran on two held-out episodes (2155, 6; 5% held-out split) through NVIDIA's deploy in MuJoCo, fed by <code>sonic_policy_streamer.py</code>. Images come from the recorded episode. "Closed loop" feeds the policy the sim robot's state; "recorded state" feeds the dataset's <code>observation.state</code>, which separates what SONIC does from what the policy does.</p>
+  <div class="tbl"><table>
+    <thead><tr><th>Palm p50 / p95 (cm), ep 2155 · ep 6</th><th>Closed loop</th><th>Recorded state</th></tr></thead>
+    <tbody>
+      <tr><td>ACT · <code>sonic78_nolimit</code></td><td>10.7/21.6 · 7.6/17.7</td><td>2.6/6.9 · 2.6/12.9</td></tr>
+      <tr><td><b>ACT · relabelled state (<code>sonic78_nolimit_sonicstate</code>)</b></td><td><b>7.4/16.6 · 6.7/20.4</b></td><td><b>2.1/5.7 · 2.3/9.7</b></td></tr>
+      <tr><td>Diffusion · <code>sonic78_nolimit</code></td><td>11.5/21.8 · 12.1/24.4</td><td>–</td></tr>
+    </tbody>
+  </table></div>
+  <p><b>SONIC executes the policy's tokens well.</b> With recorded state, the error is close to the round-trip error. Closed-loop drift comes from the policy: it copies its state input, and in closed loop the robot's SONIC-chosen arm posture disagrees with the recorded images. Relabelling <code>observation.state</code> arms with the pose SONIC reaches narrows that gap and is best in both columns. Diffusion (two-frame state history) drifts as much as ACT and was the least stable run (ep 6: tilt 4.7°, foot contacts down to 5). The real robot should land between the two columns, depending on how far its state departs from the training state.</p>
+  <p><b>Deploy decisions:</b> the POSE handoff is gradual: the planner's current token, then a 2 s blend to the standing token. An instant switch unloaded a foot in 5/5 runs; 2 s kept all contacts in 3/3, and all 10 streamed episodes stayed standing. The right Dex3 hand uses the dataset order (thumb, index, middle) on the real robot; only NVIDIA's MuJoCo bridge needs the index↔middle swap.</p>
+</section>
+
+<section>
   <h2>What was measured</h2>
   <div class="pipe">
     <span>28D / 43D joint action</span><i>→</i>

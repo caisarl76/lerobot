@@ -1,18 +1,21 @@
 # G1 Dex3 → SONIC v1.1 conversion: round-trip audit, decisions, and how to reproduce
 
-Status as of 2026-09-24. Question: does converting joint-action datasets (28D: arms 14 + Dex3 hands 14) into
+Status as of 2026-09-25. Question: does converting joint-action datasets (28D: arms 14 + Dex3 hands 14) into
 SONIC tokens (78D: token 64 + hands 14) keep the hand where the original action put it? Gate: p95 palm
 position error vs. the original command > 5 cm in the pelvis frame ⇒ unusable for VLA fine-tuning.
 Evidence is simulation-only (MuJoCo); no real-robot claim.
 
 ## Decisions (user-confirmed)
 
-| Topic                       | Decision                                                                                                                                                                                                                                                       |
-| --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Converter speed limits      | **Off.** `prepare_sonic_dataset.py --arm-speed-limit none --hand-speed-limit none`. The old 1 rad/s arm / 2 rad/s hand slew limit caused most of the error.                                                                                                    |
-| Episode start in evaluation | 1 s linear token blend from `LATENT_INITIAL_MOTION_TOKEN` to the episode's first token, 1 s hold.                                                                                                                                                              |
-| Token rate                  | Train on the 30 Hz dataset. At deploy, linearly interpolate the policy's 30 Hz tokens to 50 Hz (resample the predicted action chunk; interpolation needs the next token). Re-encoding at 50 Hz gave no gain (≤0.1 cm).                                         |
-| Humanoid Everyday dataset   | **Accepted as-is (2026-09-24)** despite p95 5.21 cm, 0.2 cm over the 5 cm gate: 20% of sampled episodes exceed 5 cm on their own p95 (worst 8.6 cm); no episodes are excluded. The miss comes from SONIC tracking fast manipulation, not from source glitches. |
+| Topic                       | Decision                                                                                                                                                                                                                                                                                                                |
+| --------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Converter speed limits      | **Off.** `prepare_sonic_dataset.py --arm-speed-limit none --hand-speed-limit none`. The old 1 rad/s arm / 2 rad/s hand slew limit caused most of the error.                                                                                                                                                             |
+| Episode start in evaluation | 1 s linear token blend from `LATENT_INITIAL_MOTION_TOKEN` to the episode's first token, 1 s hold.                                                                                                                                                                                                                       |
+| Token rate                  | Train on the 30 Hz dataset. At deploy, linearly interpolate the policy's 30 Hz tokens to 50 Hz (resample the predicted action chunk; interpolation needs the next token). Re-encoding at 50 Hz gave no gain (≤0.1 cm).                                                                                                  |
+| POSE handoff (deploy)       | **Gradual (2026-09-25).** Send the planner's current `token_state` first, then blend to `LATENT_INITIAL_MOTION_TOKEN` over 2 s (`--handoff-blend-s 2`, `HANDOFF_BLEND_S=2`). An instant switch unloaded a foot in 5/5 runs (arm speed up to 30.7 rad/s); 2 s kept all 8 contacts in 3/3 (1.2 rad/s); 4 s swayed in 1/3. |
+| Dex3 right-hand order       | **Dataset order (thumb, index, middle) on the real robot.** NVIDIA's MuJoCo bridge maps index↔middle slots, so sim runs use `--dex3-right-order swap`.                                                                                                                                                                 |
+| Policy state input          | **Relabelled state** (`sonic78_nolimit_sonicstate`): `observation.state` arms replaced by the arm pose SONIC reaches. Best closed loop and open loop in the held-out A/B below.                                                                                                                                         |
+| Humanoid Everyday dataset   | **Accepted as-is (2026-09-24)** despite p95 5.21 cm, 0.2 cm over the 5 cm gate: 20% of sampled episodes exceed 5 cm on their own p95 (worst 8.6 cm); no episodes are excluded. The miss comes from SONIC tracking fast manipulation, not from source glitches.                                                          |
 
 Datasets built with limits off (existing `sonic78` datasets are unchanged):
 `/run-output/datasets/sonic78_nolimit` (3152 ep, 2,587,515 frames) and
@@ -98,6 +101,29 @@ paired with our tokens, and it holds the last token with no watchdog.
   The stand-in chunks come from the dataset, so consecutive chunks agree; chunks from a real policy that disagree
   at boundaries still need testing with a trained policy.
 
+## Streaming a trained policy (2026-09-25)
+
+`sonic_policy_streamer.py` feeds a LeRobot SONIC-token policy (78D, 30 Hz chunks) into the official deploy;
+`sonic_official_sim_host.py` runs MuJoCo + deploy and performs the confirmed startup (Init Done → start/planner →
+key 9 → Backspace → settle) through gate files; `sonic_stream_eval.py` scores a run against FK of the original
+joint action. Images come from the recorded episode (`--images dataset`), so there is no sim-camera gap.
+
+Held-out episodes 2155 and 6 (5% held-out split, seed 1000), palm p50 / p95 in cm, pelvis frame:
+
+| Policy                                | Closed loop (robot state) | Recorded state (`--state-source dataset`) |
+| ------------------------------------- | ------------------------- | ----------------------------------------- |
+| ACT, `sonic78_nolimit`                | 10.7/21.6 · 7.6/17.7      | 2.6/6.9 · 2.6/12.9                        |
+| **ACT, `sonic78_nolimit_sonicstate`** | **7.4/16.6 · 6.7/20.4**   | **2.1/5.7 · 2.3/9.7**                     |
+| Diffusion, `sonic78_nolimit`          | 11.5/21.8 · 12.1/24.4     | –                                         |
+
+- SONIC executes the policy's tokens well (recorded-state runs are near the round-trip error). The closed-loop
+  drift comes from the policy: it copies its state input (open-loop ablation `sonic_state_ablation.py`), and in
+  closed loop the robot state disagrees with the recorded images. Relabelling the state reduces the drift.
+- Diffusion (2-frame state history) drifts as much as ACT and was the least stable run (ep 6: tilt 4.7°,
+  contacts down to 5). DDPM inference takes ~0.7 s per chunk; use `--max-chunk-age-s 2`.
+- All streamed episodes stayed standing (10/10 with the 2 s handoff). Expect the real robot between the
+  closed-loop and recorded-state columns, depending on how far its state departs from the training state.
+
 ## Scripts (`examples/g1_dex3_training/`)
 
 Written to run on H100 inside containers; `/code` = this directory, `/audit` = the output directory.
@@ -110,6 +136,9 @@ Written to run on H100 inside containers; `/code` = this directory, `/audit` = t
 | `sonic_official_startup.py`                                                            | Records the official startup (video + telemetry).                                                                                                                                             |
 | `sonic_official_replay.py`, `sonic_replay_{extract,variants,compare,variant_table}.py` | Stream tokens into the official deploy and compare with the original actions.                                                                                                                 |
 | `sonic_token_stream.py`                                                                | `ChunkResampler`: 30 Hz policy token chunks → 50 Hz deploy ticks (look-ahead). Tested in `tests/datasets/test_g1_dex3_sonic_token_stream.py`.                                                 |
+| `sonic_policy_streamer.py`, `sonic_official_sim_host.py`                               | Stream a trained policy into the official deploy; sim host with the confirmed startup and recording.                                                                                          |
+| `sonic_stream_eval.py`, `sonic_policy_openloop.py`, `sonic_state_ablation.py`          | Score a streamed run; open-loop policy check; which state part throws the policy off.                                                                                                         |
+| `sonic_state_relabel.py`                                                               | `simulate` + `build`: relabel `observation.state` arms with the SONIC-reached pose (`sonic78_nolimit_sonicstate`, 3152 ep, no falls).                                                         |
 | `sonic_nolimit_verify.py`                                                              | Checks a published no-limit dataset against its source and the replay-tested tokens.                                                                                                          |
 
 Offline audit of a no-limit dataset (lerobot image `4cbe2a3f7fc6`, python `/run-output/environment/venv/bin/python`,
@@ -126,6 +155,6 @@ Reports: `2026-09-23-sonic-roundtrip-audit.html` (in this directory).
 
 ## Open items
 
-- Robot-side 30 → 50 Hz token interpolation: only the look-ahead form helps (see the feed table), so it needs the next token from the policy's action chunk. Not implemented yet.
-- The balance step after the POSE handoff needs repeated trials before any real-robot run.
+- Real-robot test of the relabelled ACT policy with the 2 s handoff; compare against the two columns above.
+- Whether other policies and Humanoid Everyday move to relabelled state (HE would be built from its `sonic78_nolimit`).
 - Dex3 finger tracking is only indicative in sim; NVIDIA flags its hand model as unstable.

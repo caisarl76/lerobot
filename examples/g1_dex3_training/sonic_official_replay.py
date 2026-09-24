@@ -113,6 +113,27 @@ os.close(slave)
 ctx = zmq.Context()
 pub = ctx.socket(zmq.PUB)
 pub.bind("tcp://*:5556")
+# Gradual handoff (user decision 2026-09-24): start POSE mode from the planner's current token, then blend to the
+# standing token over HANDOFF_BLEND_S seconds. 0 keeps the original jump straight to the standing token.
+HANDOFF_S = float(os.environ.get("HANDOFF_BLEND_S", "0"))
+state_sub = ctx.socket(zmq.SUB)
+state_sub.setsockopt_string(zmq.SUBSCRIBE, "g1_debug")
+state_sub.setsockopt(zmq.CONFLATE, 1)
+state_sub.connect("tcp://localhost:5557")
+
+
+def deploy_token():
+    """The token the deploy is decoding right now (g1_debug token_state), or None."""
+    import msgpack
+
+    try:
+        raw = state_sub.recv(zmq.NOBLOCK)
+    except zmq.Again:
+        return None
+    tok = np.asarray(msgpack.unpackb(raw[len("g1_debug") :], raw=False).get("token_state", []), np.float32)
+    return tok if tok.shape == (64,) else None
+
+
 lines, events, sim_t = [], [], [0.0]
 log_f = open(OUT / "deploy.log", "w")  # noqa: SIM115 - written by the reader thread for the whole run
 
@@ -301,7 +322,7 @@ rec = {
         "floor_contacts",
     )
 }
-t_init, sched_i, next_tick, done = None, None, 0.0, False
+t_init, sched_i, next_tick, done, planner_tok = None, None, 0.0, False, None
 mark("sim + deploy started")
 wall0 = time.monotonic()
 try:
@@ -334,10 +355,23 @@ try:
                 sim.handle_keyboard_button("backspace")
                 mark("sim key 'Backspace': reset onto ground")
                 view["phase"] = "settling on ground (planner idle)"
+            if HANDOFF_S > 0 and dt >= 11 and "latent" not in view:
+                latest = deploy_token()  # keep the newest token until the switch
+                planner_tok = latest if latest is not None else planner_tok
             if dt >= 12 and "latent" not in view:
                 view["latent"] = 1
-                send_token(init_tok, zero_h, frame=0)
-                mark("latent initial token sent")
+                if HANDOFF_S > 0:
+                    if planner_tok is None:
+                        raise RuntimeError("no token_state from the deploy for the gradual handoff")
+                    send_token(planner_tok, zero_h, frame=0)
+                    n = int(HANDOFF_S * 50)
+                    schedule[:0] = [("handoff blend", -1, -1, (1 - a) * planner_tok + a * init_tok, zero_h, None)
+                                    for a in np.linspace(0, 1, n + 1)[1:]]  # fmt: skip
+                    mark(f"planner token sent; {HANDOFF_S:g} s blend to the standing token "
+                         f"(token distance {float(np.abs(planner_tok - init_tok).max()):.3f})")  # fmt: skip
+                else:
+                    send_token(init_tok, zero_h, frame=0)
+                    mark("latent initial token sent")
             if dt >= 13 and "pose" not in view:
                 view["pose"] = 1
                 command(True, False, "command: POSE mode (streamed tokens)")
