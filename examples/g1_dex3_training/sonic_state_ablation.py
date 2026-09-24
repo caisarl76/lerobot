@@ -13,24 +13,9 @@ import numpy as np
 import torch
 
 sys.path.insert(0, "/workspace/lerobot/examples/g1_dex3_training")
-from sonic_policy_streamer import ChunkPolicy
+from sonic_policy_streamer import ChunkPolicy, dataset_obs
 
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
-
-
-def _obs(ds, k, n):
-    """Last n dataset frames up to k (oldest first): states, images, task."""
-    items = [ds[max(k - i, 0)] for i in reversed(range(n))]
-    imgs = [
-        {key: (it[key].permute(1, 2, 0).numpy() * 255).round().astype(np.uint8) for key in policy.image_keys}
-        for it in items
-    ]
-    return (
-        [it["observation.state"].numpy().astype(np.float32) for it in items],
-        imgs,
-        str(items[-1].get("task", "")),
-    )
-
 
 path, root, ep, log = sys.argv[1], sys.argv[2], int(sys.argv[3]), sys.argv[4]
 policy = ChunkPolicy(path, "cuda" if torch.cuda.is_available() else "cpu")
@@ -47,7 +32,7 @@ variants = {
 }
 err = {v: {"tokens": [], "hands": []} for v in variants}
 for k in sorted(sim_state)[::5]:
-    hist_states, hist_imgs, task = _obs(ds, k, policy.n_obs)
+    hist_states, hist_imgs, task = dataset_obs(ds, k, policy.n_obs, policy.image_keys)
     d = hist_states[-1]
     target = ds[k]["action"].numpy()
     for name, build in variants.items():  # only the newest state is swapped; history stays recorded

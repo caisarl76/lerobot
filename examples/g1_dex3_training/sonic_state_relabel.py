@@ -140,7 +140,7 @@ def build(a):
     for f in sorted((tmp / "meta/episodes").rglob("*.parquet")):
         t = pq.read_table(f)
         ids = t["episode_index"].to_pylist()
-        for key in ("min", "max", "mean", "std", "count"):
+        for key in ep_stats[ids[0]]:  # min/max/mean/std/count and the q01..q99 quantiles
             name = f"stats/observation.state/{key}"
             if name in t.column_names:
                 vals = pa.array([np.asarray(ep_stats[e][key]).tolist() for e in ids])
@@ -149,9 +149,8 @@ def build(a):
     s = np.concatenate(all_states).astype(np.float64)
     stats = json.loads((tmp / "meta/stats.json").read_text())
     stats["observation.state"] = {
-        "min": s.min(0).tolist(), "max": s.max(0).tolist(), "mean": s.mean(0).tolist(), "std": s.std(0).tolist(),
-        "count": [len(s)], "q01": np.quantile(s, 0.01, axis=0).tolist(), "q99": np.quantile(s, 0.99, axis=0).tolist(),
-    }  # fmt: skip
+        k: np.asarray(v).tolist() for k, v in get_feature_stats(s, axis=0, keepdims=False).items()
+    }
     (tmp / "meta/stats.json").write_text(json.dumps(stats, indent=2))
     prov = {
         "source_dataset": str(src),

@@ -23,11 +23,15 @@ import struct
 import threading
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-import msgpack
 import numpy as np
 import torch
-import zmq
+
+from lerobot.utils.import_utils import _zmq_available, require_package
+
+if TYPE_CHECKING or _zmq_available:
+    import zmq
 
 try:
     from .sonic_token_stream import ChunkResampler
@@ -100,15 +104,22 @@ class StateSubscriber:
         self.sock.setsockopt_string(zmq.SUBSCRIBE, "g1_debug")
         self.sock.setsockopt(zmq.CONFLATE, 1)
         self.sock.connect(f"tcp://{host}:{port}")
-        self.msg = None
+        self.msg, self.t = None, None
 
     def latest(self) -> dict | None:
+        import msgpack  # shipped with the deploy images, not a lerobot dependency
+
         try:
             raw = self.sock.recv(zmq.NOBLOCK)
             self.msg = msgpack.unpackb(raw[len("g1_debug") :], raw=False)
+            self.t = time.monotonic()
         except zmq.Again:
             pass
         return self.msg
+
+    def age(self) -> float:
+        """Seconds since the last g1_debug message (inf before the first)."""
+        return float("inf") if self.t is None else time.monotonic() - self.t
 
 
 class DatasetImages:
@@ -126,6 +137,17 @@ class DatasetImages:
         item = self.ds[k]
         imgs = {key: (item[key].permute(1, 2, 0).numpy() * 255).round().astype(np.uint8) for key in self.keys}
         return k, imgs, item["observation.state"].numpy().astype(np.float32), str(item.get("task", ""))
+
+
+def dataset_obs(ds, k: int, n: int, image_keys: list[str]) -> tuple[list[np.ndarray], list[dict], str]:
+    """Last n dataset frames up to k (oldest first): states, images (HWC uint8), task. For offline diagnostics."""
+    items = [ds[max(k - i, 0)] for i in reversed(range(n))]
+    imgs = [
+        {key: (it[key].permute(1, 2, 0).numpy() * 255).round().astype(np.uint8) for key in image_keys}
+        for it in items
+    ]
+    states = [it["observation.state"].numpy().astype(np.float32) for it in items]
+    return states, imgs, str(items[-1].get("task", ""))
 
 
 class ChunkPolicy:
@@ -196,6 +218,12 @@ def main():
         help="end the episode if no new chunk arrives for this long (keep below the chunk's duration)",
     )
     p.add_argument(
+        "--max-state-age-s",
+        type=float,
+        default=0.2,
+        help="end the episode if the deploy's g1_debug robot state is older than this (telemetry lost)",
+    )
+    p.add_argument(
         "--state-source",
         choices=["robot", "dataset"],
         default="robot",
@@ -215,6 +243,7 @@ def main():
         help="swap: right hand index<->middle between dataset order and the deploy's slot order (NVIDIA MuJoCo)",
     )
     a = p.parse_args()
+    require_package("pyzmq", extra="pyzmq-dep", import_name="zmq")
     if a.dex3_right_order == "swap":
         RIGHT_ORDER[:] = RIGHT_SWAP
 
@@ -337,6 +366,10 @@ def main():
             print(f"[streamer] {pending.pop('error')}", flush=True)
         if t_ep - last_chunk_t > a.max_chunk_age_s:
             print(f"[streamer] no valid chunk for {a.max_chunk_age_s:g} s: ending episode", flush=True)
+            break
+        state.latest()
+        if state.age() > a.max_state_age_s:  # never plan or stream on frozen joints
+            print(f"[streamer] robot state {state.age():.2f} s old: ending episode", flush=True)
             break
         if t_ep >= next_replan and (worker is None or not worker.is_alive()):
             snapshot = robot_states(t_ep)
