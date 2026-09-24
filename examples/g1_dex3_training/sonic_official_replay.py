@@ -34,6 +34,7 @@ from gear_sonic.utils.teleop.zmq.zmq_planner_sender import (  # noqa: E402
     pack_pose_message,
 )
 from sonic_targets import NOMINAL_BODY  # noqa: E402
+from sonic_token_stream import ChunkResampler  # noqa: E402
 
 OUT = Path(sys.argv[1])
 EPISODES = [Path(p) for p in sys.argv[2:]]
@@ -178,11 +179,20 @@ for e_i, e in enumerate(eps):
         schedule.append(("blend in", e_i, 0, (1 - a) * init_tok + a * tok[0], a * hands[0], orig[0, :14]))
     schedule += [("hold first frame", e_i, 0, tok[0], hands[0], orig[0, :14])] * 50
     token_fps, interp = float(e.get("token_fps", fps)), bool(e.get("interp", False))
+    chunked = bool(e.get("chunked", False))
+    resampler, next_chunk_t = ChunkResampler(fps), 0.0
     n_src = len(orig)
     n_ticks = int(np.floor((n_src - 1) / fps * 50)) + 1
     for j in range(n_ticks):
         k = min(int(np.floor(j * fps / 50 + 1e-9)), n_src - 1)  # source frame: original + hands held
-        if token_fps == 50:  # tokens encoded at 50 Hz: one per tick
+        if chunked:  # VLA-like stream: 40-token chunk every 0.4 s from a 0.1 s old observation
+            t = j / 50
+            if t + 1e-9 >= next_chunk_t:
+                s0 = min(int(np.floor(max(next_chunk_t - 0.1, 0.0) * fps + 1e-9)), len(tok) - 1)
+                resampler.set_chunk(tok[s0 : s0 + 40], t0=s0 / fps)
+                next_chunk_t += 0.4
+            tok_j = resampler.token_at(t)
+        elif token_fps == 50:  # tokens encoded at 50 Hz: one per tick
             tok_j = tok[min(j, len(tok) - 1)]
         elif interp:  # 30 Hz tokens linearly interpolated at the 50 Hz tick time
             xk = j * fps / 50

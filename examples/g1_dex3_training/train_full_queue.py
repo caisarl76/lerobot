@@ -7,6 +7,7 @@ import json
 import shutil
 import subprocess
 import sys
+from contextlib import ExitStack
 from pathlib import Path
 
 from examples.g1_dex3_training.prune_smoke import prune_superseded_smoke
@@ -38,7 +39,9 @@ def _smoke_guard(root: Path, name: str, width: int) -> None:
         raise ValueError(f"Smoke action shape does not match {name}: {shape}")
 
 
-def _config_guard(root: Path, name: str, space: str, width: int) -> Path:
+def _config_guard(
+    root: Path, name: str, space: str, width: int, exclude_episodes: list[int] | None = None
+) -> Path:
     path = root / "configs" / f"{name}_{space}_full.json"
     config = _json(path)
     dataset = config.get("dataset", {})
@@ -49,7 +52,9 @@ def _config_guard(root: Path, name: str, space: str, width: int) -> Path:
         raise ValueError(f"Full config has episodes for {name}_{space}")
     if dataset.get("root") != str(root / "datasets" / space):
         raise ValueError(f"Wrong dataset root in {path}")
-    if dataset.get("exclude_episodes") is not None or dataset.get("eval_split") != 0.0:
+    if dataset.get("exclude_episodes") != exclude_episodes:
+        raise ValueError(f"Episode exclusions in {path} must match the approved list: {exclude_episodes}")
+    if dataset.get("eval_split") != 0.0:
         raise ValueError(f"Invalid dataset split settings in {path}")
     if policy.get("input_features", {}).get("observation.state", {}).get("shape") != [28]:
         raise ValueError(f"Wrong state width in {path}")
@@ -92,23 +97,34 @@ def _run(command: list[str], log_path: Path) -> int:
     return completed.returncode
 
 
-def run_queue(root: Path) -> int:
+def run_queue(
+    root: Path, action_space: str | None = None, exclude_episodes: list[int] | None = None
+) -> int:
     root = root.resolve()
     if not root.is_dir():
         raise ValueError(f"Run root is not a directory: {root}")
-    lock_path = root / "full-training.lock"
-    with lock_path.open("w") as lock:
-        try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError as exc:
-            raise RuntimeError("Another full-training queue is already running") from exc
+    if action_space is not None and action_space not in dict(SPACES):
+        raise ValueError(f"Unknown action space: {action_space}")
+    if exclude_episodes is not None and (
+        any(type(episode) is not int or episode < 0 for episode in exclude_episodes)
+        or len(set(exclude_episodes)) != len(exclude_episodes)
+    ):
+        raise ValueError("Excluded episode IDs must be non-negative unique integers")
+    spaces = SPACES if action_space is None else ((action_space, dict(SPACES)[action_space]),)
+    with ExitStack() as locks:
+        for space, _ in spaces:
+            lock = locks.enter_context((root / f"full-training-{space}.lock").open("a"))
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as exc:
+                raise RuntimeError(f"Another {space} full-training queue is already running") from exc
 
         jobs = []
         for policy in POLICIES:
-            for space, width in SPACES:
+            for space, width in spaces:
                 name = f"{policy}_{space}_full"
                 _smoke_guard(root, f"{policy}_{space}", width)
-                config = _config_guard(root, policy, space, width)
+                config = _config_guard(root, policy, space, width, exclude_episodes=exclude_episodes)
                 jobs.append((name, config))
         for name, config in jobs:
             if _completed(root, name):
@@ -151,8 +167,13 @@ def run_queue(root: Path) -> int:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run-root", type=Path, default=Path("/run-output"))
+    parser.add_argument("--action-space", choices=tuple(dict(SPACES)))
+    parser.add_argument(
+        "--exclude-episodes", type=int, nargs="+", help="Approved merged episode IDs; configs must match."
+    )
     try:
-        return run_queue(parser.parse_args().run_root)
+        args = parser.parse_args()
+        return run_queue(args.run_root, args.action_space, args.exclude_episodes)
     except Exception as exc:
         print(f"train queue failed: {exc}", file=sys.stderr, flush=True)
         return 1

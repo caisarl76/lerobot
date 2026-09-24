@@ -331,8 +331,10 @@ def roundtrip(
     for j in range(last_tick + 1):
         k = min(int(np.floor(j * fps / 50 + 1e-9)), n - 1)
         tok = tokens[k]
-        if interp:  # source-rate tokens linearly interpolated at the 50 Hz tick (deploy-side resampling)
-            w = j * fps / 50 - k
+        w = j * fps / 50 - k
+        if interp == "delayed":  # causal: blend k-1 -> k over the period after token k arrives (+1 frame)
+            tok = (1 - w) * tokens[max(k - 1, 0)] + w * tokens[k]
+        elif interp:  # look-ahead: blend k -> k+1 (needs the next token, e.g. from the action chunk)
             tok = (1 - w) * tokens[k] + w * tokens[min(k + 1, n - 1)]
         q, dq, quat, gyro = robot.state()
         target = dec(tok, q, dq, quat, gyro)
@@ -664,7 +666,9 @@ def plan(args):
                     )
                 )
     if args.conv_suffix or args.interp:  # same episode picks; stored tokens from a variant dataset
-        tag = (args.conv_suffix or "") + ("_interp" if args.interp else "")
+        tag = (args.conv_suffix or "") + {"delayed": "_interpdelayed", True: "_interp", False: ""}[
+            args.interp
+        ]
         jobs = [
             (
                 k,
@@ -716,7 +720,14 @@ def main():
     p.add_argument("--workers", type=int, default=16)
     p.add_argument("--limit", type=int)
     p.add_argument("--conv-suffix", help="read stored tokens from <sonic78 dir><suffix>, e.g. _nolimit")
-    p.add_argument("--interp", action="store_true", help="linearly interpolate source-rate tokens to 50 Hz")
+    p.add_argument(
+        "--interp",
+        nargs="?",
+        const=True,
+        default=False,
+        choices=[True, "delayed"],
+        help="linearly interpolate source-rate tokens to 50 Hz (look-ahead); 'delayed' = causal, one frame later",
+    )
     p.add_argument(
         "--start",
         choices=["placed", "hang", "hang_leadin"],

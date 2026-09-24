@@ -42,6 +42,91 @@ def test_config_guard_rejects_episodes(tmp_path):
         queue._config_guard(tmp_path, "act", "joint28", 28)
 
 
+def test_queue_runs_only_the_selected_action_space(tmp_path, monkeypatch):
+    for policy in queue.POLICIES:
+        _config(tmp_path, policy)
+        smoke = tmp_path / "runs" / f"{policy}_joint28_smoke"
+        smoke.mkdir(parents=True)
+        (smoke / "final_model_validation.json").write_text(
+            json.dumps({"verified": True, "final_step": 20, "predicted_shape": [1, 100, 28]})
+        )
+    monkeypatch.setattr(queue.shutil, "disk_usage", lambda _: SimpleNamespace(free=queue.MIN_FREE))
+    commands = []
+
+    def train(command, **kwargs):
+        commands.append(command)
+        return SimpleNamespace(returncode=7)
+
+    monkeypatch.setattr(queue.subprocess, "run", train)
+    assert queue.run_queue(tmp_path, action_space="joint28") == 7
+    assert commands == [
+        [
+            queue.sys.executable,
+            "-m",
+            "lerobot.scripts.lerobot_train",
+            f"--config_path={tmp_path / 'configs/act_joint28_full.json'}",
+        ]
+    ]
+
+
+def _ready_queue(root: Path, excluded_episodes: list[int] | None):
+    for policy in queue.POLICIES:
+        for space, width in queue.SPACES:
+            _config(root, policy, space, width)
+            config_path = root / "configs" / f"{policy}_{space}_full.json"
+            config = json.loads(config_path.read_text())
+            config["dataset"]["exclude_episodes"] = excluded_episodes
+            config_path.write_text(json.dumps(config))
+            smoke = root / "runs" / f"{policy}_{space}_smoke"
+            smoke.mkdir(parents=True)
+            (smoke / "final_model_validation.json").write_text(
+                json.dumps({"verified": True, "final_step": 20, "predicted_shape": [1, 100, width]})
+            )
+
+
+def test_queue_accepts_explicitly_approved_episode_exclusion(tmp_path, monkeypatch):
+    _ready_queue(tmp_path, [2202])
+    monkeypatch.setattr(queue.shutil, "disk_usage", lambda _: SimpleNamespace(free=queue.MIN_FREE))
+    commands = []
+
+    def train(command, **kwargs):
+        commands.append(command)
+        return SimpleNamespace(returncode=7)
+
+    monkeypatch.setattr(queue.subprocess, "run", train)
+    assert queue.run_queue(tmp_path, action_space="joint28", exclude_episodes=[2202]) == 7
+    assert commands[0][-1] == f"--config_path={tmp_path / 'configs/act_joint28_full.json'}"
+
+
+@pytest.mark.parametrize("excluded_episodes", [[-1], [True], [2202, 2202]])
+def test_queue_rejects_invalid_exclusion_list(tmp_path, monkeypatch, excluded_episodes):
+    _ready_queue(tmp_path, excluded_episodes)
+    monkeypatch.setattr(queue.shutil, "disk_usage", lambda _: SimpleNamespace(free=queue.MIN_FREE))
+    monkeypatch.setattr(queue.subprocess, "run", lambda *args, **kwargs: pytest.fail("training started"))
+    with pytest.raises(ValueError, match="non-negative unique integers"):
+        queue.run_queue(tmp_path, action_space="joint28", exclude_episodes=excluded_episodes)
+
+
+@pytest.mark.parametrize("approved,actual", [(None, [2202]), ([2202], None), ([2202], [2202, 2203])])
+def test_queue_checks_every_config_against_approved_exclusions(tmp_path, monkeypatch, approved, actual):
+    _ready_queue(tmp_path, approved)
+    path = tmp_path / "configs/fastwam_joint28_full.json"
+    config = json.loads(path.read_text())
+    config["dataset"]["exclude_episodes"] = actual
+    path.write_text(json.dumps(config))
+    monkeypatch.setattr(queue.subprocess, "run", lambda *args, **kwargs: pytest.fail("training started"))
+    with pytest.raises(ValueError, match="exclusions"):
+        queue.run_queue(tmp_path, action_space="joint28", exclude_episodes=approved)
+
+
+@pytest.mark.parametrize("action_space", [None, "joint28"])
+def test_queue_refuses_an_overlapping_action_space_lock(tmp_path, action_space):
+    with (tmp_path / "full-training-joint28.lock").open("a") as lock:
+        queue.fcntl.flock(lock, queue.fcntl.LOCK_EX | queue.fcntl.LOCK_NB)
+        with pytest.raises(RuntimeError, match="Another joint28"):
+            queue.run_queue(tmp_path, action_space=action_space)
+
+
 @pytest.mark.parametrize("matching", [False, True])
 def test_completed_requires_matching_weights_digest(tmp_path, matching):
     run = tmp_path / "runs/act_joint28_full"
@@ -65,7 +150,7 @@ def test_completed_requires_matching_weights_digest(tmp_path, matching):
 
 def test_run_stops_after_training_failure(tmp_path, monkeypatch):
     monkeypatch.setattr(queue, "_smoke_guard", lambda *args: None)
-    monkeypatch.setattr(queue, "_config_guard", lambda root, policy, space, width: root / "config.json")
+    monkeypatch.setattr(queue, "_config_guard", lambda root, policy, space, width, **kwargs: root / "config.json")
     monkeypatch.setattr(queue, "_completed", lambda *args: False)
     monkeypatch.setattr(queue.shutil, "disk_usage", lambda _: SimpleNamespace(free=queue.MIN_FREE))
     calls = []
@@ -84,7 +169,7 @@ def test_run_stops_after_training_failure(tmp_path, monkeypatch):
 def test_all_guards_run_before_any_subprocess(tmp_path, monkeypatch):
     seen = []
     monkeypatch.setattr(queue, "_smoke_guard", lambda root, name, width: seen.append(("smoke", name)))
-    monkeypatch.setattr(queue, "_config_guard", lambda root, policy, space, width: root / "config.json")
+    monkeypatch.setattr(queue, "_config_guard", lambda root, policy, space, width, **kwargs: root / "config.json")
     monkeypatch.setattr(queue, "_completed", lambda *args: False)
     monkeypatch.setattr(queue.shutil, "disk_usage", lambda _: SimpleNamespace(free=queue.MIN_FREE))
     monkeypatch.setattr(queue, "_run", lambda *args: pytest.fail("subprocess started"))
@@ -96,7 +181,7 @@ def test_all_guards_run_before_any_subprocess(tmp_path, monkeypatch):
 def test_successfully_completed_run_is_skipped(tmp_path, monkeypatch):
     monkeypatch.setattr(queue, "prune_superseded_smoke", lambda *args: None)
     monkeypatch.setattr(queue, "_smoke_guard", lambda *args: None)
-    monkeypatch.setattr(queue, "_config_guard", lambda root, policy, space, width: root / "config.json")
+    monkeypatch.setattr(queue, "_config_guard", lambda root, policy, space, width, **kwargs: root / "config.json")
     monkeypatch.setattr(queue, "_completed", lambda *args: True)
     monkeypatch.setattr(queue, "_run", lambda *args: pytest.fail("completed run was started"))
     assert queue.run_queue(tmp_path) == 0
@@ -104,7 +189,7 @@ def test_successfully_completed_run_is_skipped(tmp_path, monkeypatch):
 
 def test_verification_failure_stops_before_next_training(tmp_path, monkeypatch):
     monkeypatch.setattr(queue, "_smoke_guard", lambda *args: None)
-    monkeypatch.setattr(queue, "_config_guard", lambda root, policy, space, width: root / "config.json")
+    monkeypatch.setattr(queue, "_config_guard", lambda root, policy, space, width, **kwargs: root / "config.json")
     monkeypatch.setattr(queue, "_completed", lambda *args: False)
     monkeypatch.setattr(queue.shutil, "disk_usage", lambda _: SimpleNamespace(free=queue.MIN_FREE))
     commands = []

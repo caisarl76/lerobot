@@ -75,10 +75,12 @@ a{color:var(--accent)}
       <tr><td>Unitree · limited, held (56 ep)</td><td>1.45</td><td>3.40</td><td>17.6</td><td>14%</td><td>12.2 cm</td><td>2 fr</td><td class="p">PASS</td></tr>
       <tr><td><b>Unitree · no limit, interpolated</b></td><td>1.42</td><td><b>3.07</b></td><td>9.3</td><td>7%</td><td>6.5 cm</td><td>1 fr</td><td class="p">PASS</td></tr>
       <tr><td>Humanoid Everyday · limited, held (81 ep)</td><td>2.07</td><td>8.82</td><td>68.4</td><td>77%</td><td>23.4 cm</td><td>3 fr</td><td class="f">FAIL</td></tr>
-      <tr><td><b>Humanoid Everyday · no limit, interpolated</b></td><td>1.92</td><td><b>5.21</b></td><td>53.8</td><td>20%</td><td>8.6 cm</td><td>1 fr</td><td class="f">FAIL (by 0.2 cm)</td></tr>
+      <tr><td><b>Humanoid Everyday · no limit, interpolated</b></td><td>1.92</td><td><b>5.21</b></td><td>53.8</td><td>20%</td><td>8.6 cm</td><td>1 fr</td><td class="f">ACCEPTED · 0.2 cm over gate</td></tr>
     </tbody>
   </table></div>
   <p>No falls anywhere. Dex3 values now track the source (Unitree max deviation 1.61 → 0.18 rad; residual from sampling at the nearest 50 Hz tick). HE's small remaining overshoot is not caused by source glitches (excluding 1 s after every &gt;6 rad/s jump barely moves it); it is SONIC tracking HE's fast manipulation. HE maximum error comes from single-frame pose jumps in the source commands.</p>
+  <p><b>Decision (2026-09-24): Humanoid Everyday <code>sonic78_nolimit</code> is accepted for training as-is</b>, with this result on record: pooled palm p95 5.21 cm (0.2 cm over the 5 cm gate), 20% of sampled episodes over 5 cm on their own p95, worst episode 8.6 cm, no episodes excluded. The value depends on the episode sample (4.59 cm on an 83-episode sample), so treat it as about 4.6–5.2 cm. For the 50 Hz token feed, only look-ahead interpolation helps (HE p95 4.72 → 4.59 cm vs. holding); causal interpolation inside the controller is worse (5.08 cm).</p>
+  <p><b>Deploy streaming (2026-09-24):</b> runtime is NVIDIA's C++ <code>g1_deploy_onnx_ref</code> fed over ZMQ. In the official deploy, a VLA-like chunked stream (40-token chunks every 0.4 s, <code>ChunkResampler</code> look-ahead to 50 Hz) matched ideal look-ahead within 0.02 cm on all six replay episodes (median palm p95 4.05 cm vs 4.49 cm when holding tokens), with unchanged stability.</p>
 </section>
 
 <section>
