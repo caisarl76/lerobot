@@ -8,8 +8,11 @@ gear_sonic/scripts/run_vla_inference.py with initial_pose="standing":
 The policy predicts a 30 Hz chunk every --replan-s from the latest observation; each 50 Hz tick sends
 ChunkResampler.token_at(t) (look-ahead interpolation, verified in the deploy). Episode start: POSE mode with
 the planner's current token -> --handoff-blend-s blend to the latent initial (standing) token -> 1 s blend to the
-first predicted token. End: 1 s blend back, 2 s hold, stop. Right Dex3 hand in dataset order (thumb, index,
-middle), which the real robot follows; --dex3-right-order swap only for NVIDIA's MuJoCo bridge.
+first predicted token. End: 1 s blend back, 2 s hold, stop. At a table (--startup-tokens, sonic_table_startup.py):
+the handoff blends into a table-safe arm path instead of the standing token (whose hands rise into an 80 cm table);
+episodes then start from, and end back at, the path's final pose (hands above the table).
+Right Dex3 hand in dataset order (thumb, index, middle), which the real robot follows; --dex3-right-order swap
+only for NVIDIA's MuJoCo bridge.
 
 Images: --images dataset feeds the recorded episode's camera frames at the elapsed time (evaluation without a
 sim/real camera gap). Operator gates: --gate-dir waits for flag files (sim host), otherwise press Enter.
@@ -242,7 +245,24 @@ def main():
         default="dataset",
         help="swap: right hand index<->middle between dataset order and the deploy's slot order (NVIDIA MuJoCo)",
     )
+    p.add_argument(
+        "--startup-tokens",
+        type=Path,
+        help="table startup .npz from sonic_table_startup.py plan: after the POSE switch, play this table-safe arm "
+        "path (planner stance -> fixed initial pose) instead of NVIDIA's standing token; episodes start and end there",
+    )
     a = p.parse_args()
+    startup = None
+    if a.startup_tokens:
+        if a.handoff_blend_s <= 0:
+            p.error(
+                "--startup-tokens needs --handoff-blend-s > 0 (it blends from the planner token into the path)"
+            )
+        z = np.load(a.startup_tokens)
+        startup = {"tokens": z["tokens"].astype(np.float32), "hands": z["hands"].astype(np.float32)}
+        startup["fps"] = float(json.loads(str(z["meta"]))["fps"])
+    rest_token = LATENT_INITIAL_MOTION_TOKEN if startup is None else startup["tokens"][-1]
+    rest_hands = np.zeros(14, np.float32) if startup is None else startup["hands"][-1]
     require_package("pyzmq", extra="pyzmq-dep", import_name="zmq")
     if a.dex3_right_order == "swap":
         RIGHT_ORDER[:] = RIGHT_SWAP
@@ -330,9 +350,24 @@ def main():
             send(planner, zero_h, "planner token")
         pub.send(command_message(start=True, planner=False))
         n = int(a.handoff_blend_s * 50)
+        # table startup: switch into the table-safe arm path instead of NVIDIA's standing token, whose hands rise
+        # to ~0.8 m, 0.3 m forward (into an 80 cm table)
+        target = LATENT_INITIAL_MOTION_TOKEN if startup is None else startup["tokens"][0]
         for i in ticks(n):
             w = (i + 1) / n
-            send((1 - w) * planner + w * LATENT_INITIAL_MOTION_TOKEN, zero_h, "handoff blend")
+            send((1 - w) * planner + w * target, zero_h, "handoff blend")
+        if startup is not None:
+            toks, hands = startup["tokens"], startup["hands"]
+            for i in ticks(
+                int((len(toks) - 1) / startup["fps"] * 50)
+            ):  # 30 Hz path, look-ahead interp to 50 Hz
+                x = i * TICK * startup["fps"]
+                j, f = int(x), x - int(x)
+                send(
+                    toks[j] + f * (toks[j + 1] - toks[j]),
+                    hands[j] + f * (hands[j + 1] - hands[j]),
+                    "table startup",
+                )
     else:
         for _ in ticks(50):  # latent initial token, then POSE mode
             send(LATENT_INITIAL_MOTION_TOKEN, zero_h, "initial")
@@ -341,9 +376,17 @@ def main():
     resampler = ChunkResampler(images.fps)
     _, first = infer(0.0, robot_states(0.0))
     resampler.set_chunk(first, t0=0.0)
-    for i in ticks(50):  # 1 s ease-in from the standing token to the first predicted token
+    for i in ticks(
+        50
+    ):  # 1 s ease-in from the rest pose (standing token or table startup end) to the first chunk
         w = (i + 1) / 50
-        send((1 - w) * LATENT_INITIAL_MOTION_TOKEN + w * first[0, :64], w * first[0, 64:], "blend in", 0.0, 0)
+        send(
+            (1 - w) * rest_token + w * first[0, :64],
+            (1 - w) * rest_hands + w * first[0, 64:],
+            "blend in",
+            0.0,
+            0,
+        )
 
     pending, worker, latencies = {}, None, []
 
@@ -384,11 +427,11 @@ def main():
             flush=True,
         )
     last_token, last_hands = log["token"][-1], log["hands"][-1]
-    for i in ticks(50):  # 1 s blend back to standing, 2 s hold, stop
+    for i in ticks(50):  # 1 s blend back to the rest pose, 2 s hold, stop (at the table: hands stay above it)
         w = (i + 1) / 50
-        send((1 - w) * last_token + w * LATENT_INITIAL_MOTION_TOKEN, (1 - w) * last_hands, "blend out")
+        send((1 - w) * last_token + w * rest_token, (1 - w) * last_hands + w * rest_hands, "blend out")
     for _ in ticks(100):
-        send(LATENT_INITIAL_MOTION_TOKEN, zero_h, "hold initial")
+        send(rest_token, rest_hands, "hold rest")
     pub.send(command_message(start=False, planner=False))
     print("[streamer] command: stop", flush=True)
     if a.log:
