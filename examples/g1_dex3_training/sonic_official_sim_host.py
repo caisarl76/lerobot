@@ -55,6 +55,21 @@ HANDS = [
 FPS, W, H = 30, 640, 480
 
 config = SimLoopConfig(interface="sim", enable_onscreen=False, hand_profile="dex3").load_wbc_yaml()
+# Optional tabletop (TABLE_GAP_CM): 80 cm table, 3 cm top. It starts parked 10 m away (the elastic-band hang and
+# the Backspace reset would otherwise drop the hands onto it) and moves in once the robot has settled standing in
+# planner mode: near edge TABLE_GAP_CM in front of the torso front (pelvis x + 0.08 m). Written next to the
+# original scene inside this container so its mesh paths resolve.
+TABLE_GAP = os.environ.get("TABLE_GAP_CM")
+if TABLE_GAP:
+    root = Path("/workspace/GR00T-WholeBodyControl")
+    scene = root / config["ROBOT_SCENE"]
+    xml = scene.read_text().replace(
+        "</mujoco>",
+        '<worldbody><body name="table" pos="10 0 0.785"><geom name="table_top" type="box" '
+        'size="0.4 0.8 0.015" rgba="0.62 0.46 0.3 1"/></body></worldbody></mujoco>',
+    )
+    (scene.parent / "scene_43dof_table.xml").write_text(xml)
+    config["ROBOT_SCENE"] = str((scene.parent / "scene_43dof_table.xml").relative_to(root))
 sim = BaseSimulator(config=config, onscreen=False, offscreen=False, env_name="default")
 env = sim.sim_env
 m, d = env.mj_model, env.mj_data
@@ -65,6 +80,24 @@ qadr = np.array([m.jnt_qposadr[m.joint(n).id] for n in BODY])
 hadr = np.array([m.jnt_qposadr[m.joint(n).id] for n in HANDS])
 palm_ids = [[m.body(f"{s}_hand_{f}_0_link").id for f in ("index", "middle")] for s in ("left", "right")]
 wrist_ids = [m.body(f"{s}_wrist_yaw_link").id for s in ("left", "right")]
+table = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_GEOM, "table_top")
+arm_geoms = [
+    g
+    for g in range(m.ngeom)
+    if (m.geom_contype[g] or m.geom_conaffinity[g])
+    and any(k in m.body(m.geom_bodyid[g]).name for k in ("elbow", "wrist", "hand", "shoulder_yaw"))
+]
+
+
+def table_clearance():
+    """Closest arm collision geom to the table (m) and arm/hand-table contact count; nan/0 without a table."""
+    if table < 0:
+        return np.nan, 0
+    ft = np.zeros(6)
+    clear = min(mujoco.mj_geomDistance(m, d, g, table, 0.5, ft) for g in arm_geoms)
+    hits = sum(1 for i in range(d.ncon) if table in (d.contact[i].geom1, d.contact[i].geom2))
+    return clear, hits
+
 
 master, slave = pty.openpty()
 proc = subprocess.Popen(DEPLOY, stdin=slave, stdout=slave, stderr=slave, close_fds=True)
@@ -140,7 +173,21 @@ def render_loop():
 
 threading.Thread(target=render_loop, daemon=True).start()
 
-rec = {k: [] for k in ("wall", "t", "body_q", "hand_q", "pelvis", "palm", "wrist_R", "floor_contacts")}
+rec = {
+    k: []
+    for k in (
+        "wall",
+        "t",
+        "body_q",
+        "hand_q",
+        "pelvis",
+        "palm",
+        "wrist_R",
+        "floor_contacts",
+        "table_clear",
+        "table_hits",
+    )
+}
 steps, t_control, t_settled, t_done, next_rec = {}, None, None, None, 0.0
 mark("sim + deploy started")
 wall0 = time.monotonic()
@@ -171,6 +218,12 @@ try:
             view["phase"] = "settling on ground"
         if "reset" in steps and t_settled is None and t >= steps["reset"] + 5:
             t_settled = t
+            if table >= 0:  # bring the table in now that the robot stands in planner mode
+                with lock:
+                    edge = d.qpos[0] + 0.08 + float(TABLE_GAP) / 100
+                    m.body_pos[m.geom_bodyid[table]] = [edge + 0.4, d.qpos[1], 0.785]
+                    mujoco.mj_forward(m, d)
+                mark(f"table placed: near edge {float(TABLE_GAP):g} cm from the torso (x = {edge:.3f} m)")
             (GATE / "settled").touch()
             mark("settled -> streamer may hand off to POSE")
             view["phase"] = "policy streaming (POSE mode)"
@@ -184,6 +237,7 @@ try:
             next_rec = t + 0.02
             with lock:
                 ncon = sum(1 for i in range(d.ncon) if floor in (d.contact[i].geom1, d.contact[i].geom2))
+                clear, hits = table_clearance()
                 for key, val in (
                     ("wall", time.time()),
                     ("t", t),
@@ -193,6 +247,8 @@ try:
                     ("palm", np.stack([d.xpos[ids].mean(0) for ids in palm_ids])),
                     ("wrist_R", np.stack([d.xmat[i].reshape(3, 3) for i in wrist_ids])),
                     ("floor_contacts", ncon),
+                    ("table_clear", clear),
+                    ("table_hits", hits),
                 ):
                     rec[key].append(val)
         if t > 1800:
