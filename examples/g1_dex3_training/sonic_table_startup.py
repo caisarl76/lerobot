@@ -4,9 +4,9 @@ NVIDIA's standing token (LATENT_INITIAL_MOTION_TOKEN) raises the hands to ~0.8 m
 pelvis: into an 80 cm table whose near edge is 5-12 cm from the torso. At the table the streamer skips it and
 plays this precomputed arm trajectory instead (legs stay at SONIC's nominal standing):
 
-  plan:  search two arm waypoints (hands back behind the table edge, then raised above the table top) so every arm
+  plan:  search arm waypoints (tuck behind the table edge, spread and raise at the sides, optionally raise over the top) so every arm
          collision geom stays >= --margin from the table and clear of the robot's own body along the joint-space
-         path stance -> W1 -> W2 -> initial pose; smoothstep segments capped at --max-speed; encode to SONIC tokens
+         path stance -> tuck -> side raise -> raise -> initial pose; smoothstep segments capped at --max-speed; encode to SONIC tokens
          with the dataset converter (mode 0, no slew limit). Writes startup .npz (30 Hz arms, hands, tokens).
   check: MuJoCo closed loop with the v1.1 decoder (offline harness, validated against NVIDIA's deploy) and a
          physical table: min reached clearance, table contacts, tilt, foot contacts, per table-edge distance.
@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import glob
+import heapq
 import itertools
 import json
 from pathlib import Path
@@ -111,63 +112,107 @@ def segment(a: np.ndarray, b: np.ndarray, max_speed: float) -> np.ndarray:
     return a + (b - a) * (3 * s**2 - 2 * s**3)
 
 
-def path_ok(clear, pts, margin, body_min, final_min) -> bool:
-    """Every other sample (<= 1 cm hand travel) clears the table by margin (final_min over the last 10%) and the
-    robot's own body by body_min."""
+def path_ok(clear, pts, margin, body_min, final_min, start_min=None) -> bool:
+    """Every other sample (<= 1 cm hand travel) clears the table by margin (start_min over the first 10%, final_min
+    over the last 10%) and the robot's own body by body_min."""
     for i in range(0, len(pts), 2):
-        need = final_min if i >= 0.9 * len(pts) else margin
+        need = start_min if start_min is not None and i < 0.1 * len(pts) else margin
+        need = final_min if i >= 0.9 * len(pts) else need
         table, _ = clear(pts[i], table_only=True)
         if table < need or clear(pts[i])[1] < body_min:
             return False
     return True
 
 
-def plan_arm(clear, start, goal, margin, max_speed):
-    """Grid-search W1 (hands back behind the edge) and W2 (raised) for one arm; minimise total duration."""
+def plan_arm(clear, start, goal, margin, max_speed, transit_margin):
+    """Shortest safe waypoint path for one arm through layers: tuck (hands back behind the edge) -> side raise (arms
+    spread, hands still behind the edge) -> raise (optional, hands above the table) -> goal. Dijkstra over the
+    layers with lazy segment checks; cost = sum of each segment's largest joint change (= duration at the cap).
+    Returns 3 intermediate waypoints (a skipped raise repeats the side raise)."""
     sign = 1.0 if clear.col.start == 15 else -1.0  # roll/yaw mirror for the right arm
     final_table, _ = clear(goal)
     body_min = min(0.01, clear(start)[1])
     final_min = min(margin, final_table - 0.005)
-    w1s = [
-        np.r_[sp, sign * roll, 0.0, el, start[4:]]
-        for sp, roll, el in itertools.product((0.0, 0.3, 0.6), (0.15, 0.35), (0.0, 0.3, 0.6))
-    ]
-    wrist = (start[4:] + goal[4:]) / 2
-    w2s = [
-        np.r_[sp, sign * roll, sign * yaw, el, wrist]
-        for sp, roll, yaw, el in itertools.product(
-            np.linspace(-1.2, 0.6, 7),
-            np.linspace(0.3, 1.8, 6),
-            (-0.8, -0.4, 0.0, 0.4, 0.8),
-            np.linspace(0.0, 2.0, 6),
-        )
+    grid = itertools.product
+    layers = [
+        [start],
+        [
+            np.r_[sp, sign * r, 0.0, el, start[4:]]
+            for sp, r, el in grid((0.0, 0.3, 0.6), (0.15, 0.35), (0.0, 0.3, 0.6))
+        ],
+        [
+            np.r_[sp, sign * r, sign * yaw, el, start[4:]]
+            for sp, r, yaw, el in grid(
+                (-0.3, -0.15, 0.0, 0.15, 0.3),
+                np.linspace(0.6, 1.8, 7),
+                (-0.6, -0.3, 0.0, 0.3, 0.6),
+                np.linspace(0, 1.8, 7),
+            )
+        ],
+        [
+            np.r_[sp, sign * r, sign * yaw, el, (start[4:] + goal[4:]) / 2]
+            for sp, r, yaw, el in grid(
+                np.linspace(-1.2, 0.6, 7),
+                np.linspace(0.3, 1.8, 6),
+                (-0.8, -0.4, 0.0, 0.4, 0.8),
+                np.linspace(0, 2.0, 6),
+            )
+        ],
+        [goal],
     ]
     # leaving the stance may not get closer than the stance already is (its wrists sit near the table's underside
     # edge) and must reach the margin by the end of that move
     first_margin = min(margin, clear(start)[0] - 0.005)
-    first_ok = [
-        i
-        for i, w in enumerate(w1s)
-        if path_ok(clear, segment(start, w, max_speed), first_margin, body_min, margin)
-    ]
-    cost = {
-        (i, j): sum(np.abs(b - a).max() for a, b in ((start, w1s[i]), (w1s[i], w2), (w2, goal)))
-        for i in first_ok
-        for j, w2 in enumerate(w2s)
+
+    def safe(la, a, lb, b):
+        """Leaving the stance: no closer than the stance, margin by the end. Spread/raise transit: transit_margin
+        in the middle (covers SONIC tracking drift), margin at the ends. Settling: margin, then the goal's own."""
+        pts = segment(layers[la][a], layers[lb][b], max_speed)
+        if la == 0:
+            return path_ok(clear, pts, first_margin, body_min, margin)
+        if lb == 4:
+            return path_ok(clear, pts, margin, body_min, final_min)
+        return path_ok(clear, pts, transit_margin, body_min, margin, start_min=margin)
+
+    def nexts(layer):
+        return (2,) if layer == 1 else (3, 4) if layer == 2 else (4,) if layer == 3 else (1,)
+
+    heap, settled, checked = [(0.0, 0, 0, None)], {}, 0
+    while heap:
+        cost, layer, idx, parent = heapq.heappop(heap)
+        if (layer, idx) in settled:
+            continue
+        if parent is not None:
+            checked += 1
+            if not safe(parent[0], parent[1], layer, idx):
+                continue
+        settled[layer, idx] = parent
+        if layer == 4:
+            break
+        for nl in nexts(layer):
+            here = layers[layer][idx]
+            for k, w in enumerate(layers[nl]):
+                if (nl, k) not in settled:
+                    heapq.heappush(heap, (cost + float(np.abs(w - here).max()), nl, k, (layer, idx)))
+    else:
+        raise RuntimeError(f"no safe path found for arm at column {clear.col.start}")
+    path, node = [], (4, 0)
+    while node is not None:
+        path.append(node)
+        node = settled[node]
+    path = path[::-1]  # (0,0) start ... (4,0) goal
+    ws = [layers[la][k] for la, k in path[1:-1]]
+    if len(ws) == 2:  # raise skipped
+        ws.append(ws[1])
+    print(f"[plan] column {clear.col.start}: cost {cost:.2f} rad, {checked} segments checked", flush=True)
+    info = {
+        "start_table_clearance_m": first_margin + 0.005,
+        "final_table_clearance_m": final_table,
+        "body_min_m": body_min,
+        "path_cost_rad": cost,
+        "raise_skipped": len(path) == 4,
     }
-    last_ok = {}
-    for i, j in sorted(cost, key=cost.get):  # cheapest (shortest) path first; the first safe one wins
-        if j not in last_ok:
-            last_ok[j] = path_ok(clear, segment(w2s[j], goal, max_speed), margin, body_min, final_min)
-        if last_ok[j] and path_ok(clear, segment(w1s[i], w2s[j], max_speed), margin, body_min, margin):
-            info = {
-                "start_table_clearance_m": first_margin + 0.005,
-                "final_table_clearance_m": final_table,
-                "body_min_m": body_min,
-                "w1_candidates_ok": len(first_ok),
-            }
-            return w1s[i], w2s[j], info
-    raise RuntimeError(f"no safe path found for arm at column {clear.col.start} ({len(first_ok)} W1 ok)")
+    return tuple(ws), info
 
 
 def initial_pose(joint28_root: str) -> tuple[np.ndarray, int]:
@@ -186,15 +231,25 @@ def plan(a):
     waypoints, info = {}, {}
     for side, cols in (("left", slice(0, 7)), ("right", slice(7, 14))):
         clear = Clearance(robot, table, side)
-        w1, w2, info[side] = plan_arm(clear, STANCE_ARMS[cols], goal28[cols], a.margin, a.max_speed)
-        waypoints[side] = (STANCE_ARMS[cols], w1, w2, goal28[cols])
+        mids, info[side] = plan_arm(
+            clear, STANCE_ARMS[cols], goal28[cols], a.margin, a.max_speed, a.transit_margin
+        )
+        waypoints[side] = (STANCE_ARMS[cols], *mids, goal28[cols])
     # both arms share segment timing: each segment lasts as long as the slower arm needs
     arms = [STANCE_ARMS[None]]
-    for k in range(3):
+    names = ("tuck: hands back behind the edge", "spread: arms up at the sides", "raise: over the table top",
+             "settle: into the initial pose")  # fmt: skip
+    segments, frame = [], 1
+    for k in range(4):
         a0 = np.r_[waypoints["left"][k], waypoints["right"][k]]
         a1 = np.r_[waypoints["left"][k + 1], waypoints["right"][k + 1]]
-        arms.append(segment(a0, a1, a.max_speed))
+        if np.abs(a1 - a0).max() > 1e-9:  # a skipped raise on both arms adds no segment
+            arms.append(segment(a0, a1, a.max_speed))
+            segments.append({"name": names[k], "start_s": frame / FPS, "duration_s": len(arms[-1]) / FPS,
+                             "max_joint_change_rad": round(float(np.abs(a1 - a0).max()), 3)})  # fmt: skip
+            frame += len(arms[-1])
     arms.append(np.repeat(goal28[None, :14], int(a.hold_s * FPS), 0))
+    segments.append({"name": "hold at the initial pose", "start_s": frame / FPS, "duration_s": a.hold_s})
     arms = np.concatenate(arms)
     hands = np.linspace(np.zeros(14), goal28[14:], len(arms))
     limits = load_joint_limits(Path(a.robot_xml))
@@ -208,7 +263,13 @@ def plan(a):
         "duration_s": len(arms) / FPS,
         "max_joint_speed_rad_s": float(speed),
         "initial_pose": f"median first action over {n_ep} Unitree joint28 episodes",
-        "table": {"top_z_m": TABLE_TOP_Z, "planned_gap_from_torso_m": a.gap, "margin_m": a.margin},
+        "table": {
+            "top_z_m": TABLE_TOP_Z,
+            "planned_gap_from_torso_m": a.gap,
+            "margin_m": a.margin,
+            "transit_margin_m": a.transit_margin,
+        },
+        "segments": segments,
         "waypoints": {s: [np.round(w, 3).tolist() for w in ws] for s, ws in waypoints.items()},
         "per_arm": info,
         "encoder": report,
@@ -239,6 +300,7 @@ def check(a):
         clears = {s: Clearance(robot, table, s) for s in ("left", "right")}
         dense = np.arange(0, len(z["tokens"]) - 1, FPS / 50)  # 50 Hz ticks, look-ahead linear interpolation
         min_clear, contacts, tilt, feet = 1.0, 0, 0.0, 8
+        rec = {"t": [], "qpos": [], "clear": []}
         for t in dense:
             i = int(t)
             tok = z["tokens"][i] + (t - i) * (z["tokens"][i + 1] - z["tokens"][i])
@@ -249,6 +311,13 @@ def check(a):
             )
             tilt = max(tilt, float(np.degrees(np.arccos(np.clip(-gravity(robot.state()[2])[2], -1, 1)))))
             feet = min(feet, robot.floor_contacts())
+            rec["t"].append(t / FPS)
+            rec["qpos"].append(robot.d.qpos.copy())
+            rec["clear"].append(min(c.distances(robot.d, table_only=True)[0] for c in clears.values()))
+        if a.record:
+            edge = float(robot.m.body("table").pos[0] - 0.4)
+            np.savez(f"{a.record}/gap_{gap * 100:.0f}cm.npz", **{k: np.asarray(v) for k, v in rec.items()},
+                     table_edge_x=edge, gap=gap, segments=json.dumps(meta.get("segments", [])))  # fmt: skip
         reached = robot.state()[0][15:29]
         results[f"gap_{gap * 100:.0f}cm"] = {
             "min_reached_table_clearance_cm": round(100 * min_clear, 1),
@@ -272,10 +341,14 @@ if __name__ == "__main__":
         "--gap", type=float, default=0.05, help="table edge distance from the torso front (worst case)"
     )
     s.add_argument("--margin", type=float, default=0.03)
+    s.add_argument(
+        "--transit-margin", type=float, default=0.05, help="mid spread/raise clearance (tracking drift)"
+    )
     s.add_argument("--max-speed", type=float, default=0.5)
     s.add_argument("--hold-s", type=float, default=1.0)
     s = sub.add_parser("check")
     s.add_argument("--startup", required=True)
     s.add_argument("--gaps", type=float, nargs="+", default=[0.05, 0.085, 0.12])
+    s.add_argument("--record", help="directory: save reached qpos per 50 Hz tick for rendering")
     a = p.parse_args()
     plan(a) if a.cmd == "plan" else check(a)
