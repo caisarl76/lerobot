@@ -189,6 +189,9 @@ over both episodes:
 - The reverse path must be re-encoded, not the forward tokens reversed (tokens encode ~1 s of future motion).
   On the way down SONIC's arm sags toward the table edge: at a 5 cm table the reverse spread kept 0.2 cm at
   1 rad/s, touched at 0.5 rad/s, kept 1.0 cm at 1.5 rad/s and 1.8 cm at 2 rad/s (`--reverse-max-speed`).
+- Final full cycle (GR00T, table 5 cm, reverse at 2 rad/s): no contact during startup or shutdown; the last 2 s
+  blend back into NVIDIA's planner stance brushed the table once (planner stance wrists sit ~2 cm under the edge
+  at 5 cm). Accepted (user decision 2026-09-27); at >= 8 cm there is room.
 - Streamer inference now runs on one long-lived thread: a new thread per call cost GR00T/MolmoAct2 2–3 s.
 - Official sim runs: start the streamer only after `Init Done` (loading a large VLA during the TensorRT build
   crashed the sim host).
