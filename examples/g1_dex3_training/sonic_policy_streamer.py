@@ -1,4 +1,6 @@
 """Stream a LeRobot SONIC-token policy (78D = token 64 + Dex3 hands 14, 30 Hz) to NVIDIA's g1_deploy_onnx_ref.
+--action-space joint28 instead takes a 28D arm + Dex3 hand joint policy and encodes each chunk to tokens here
+(sonic_targets.joint_chunk_to_sonic, the official encoder on CPU, speed limits off as in sonic78_nolimit).
 
 Runtime (decided 2026-09-24): the C++ deploy decodes at 50 Hz; this process is its token source, like
 gear_sonic/scripts/run_vla_inference.py with initial_pose="standing":
@@ -39,8 +41,10 @@ if TYPE_CHECKING or _zmq_available:
     import zmq
 
 try:
+    from .sonic_targets import SonicEncoder, joint_chunk_to_sonic, load_joint_limits
     from .sonic_token_stream import ChunkResampler
 except ImportError:
+    from sonic_targets import SonicEncoder, joint_chunk_to_sonic, load_joint_limits
     from sonic_token_stream import ChunkResampler
 
 HEADER_SIZE = 1280  # gear_sonic zmq_planner_sender / zmq_packed_message_subscriber.hpp in our deploy image
@@ -438,9 +442,23 @@ def main():
         "path (planner stance -> fixed initial pose) instead of NVIDIA's standing token; after the episode, play it "
         "in reverse back to the stance",
     )
+    p.add_argument(
+        "--action-space",
+        choices=["sonic78", "joint28"],
+        default="sonic78",
+        help="joint28: the policy outputs arm + Dex3 hand joints (28D); each chunk is encoded to SONIC tokens here "
+        "with the official encoder (needs --encoder-model, --observation-config, --robot-xml)",
+    )
+    for name in ("encoder-model", "observation-config", "robot-xml"):
+        p.add_argument(f"--{name}", type=Path, help="--action-space joint28: as for prepare_sonic_dataset.py")
     a = p.parse_args()
     if bool(a.policy_path) == bool(a.policy_server):
         p.error("give exactly one of --policy-path or --policy-server")
+    joint28 = None
+    if a.action_space == "joint28":
+        if not (a.encoder_model and a.observation_config and a.robot_xml):
+            p.error("--action-space joint28 needs --encoder-model, --observation-config and --robot-xml")
+        joint28 = (load_joint_limits(a.robot_xml), SonicEncoder(a.encoder_model, a.observation_config))
     if a.images == "dataset" and (a.dataset_root is None or a.episode is None):
         p.error("--images dataset needs --dataset-root and --episode")
     if a.images == "zmq" and (a.task is None or a.duration_s is None or a.state_source == "dataset"):
@@ -550,6 +568,9 @@ def main():
         # --state-source dataset: recorded state (isolates execution from state feedback); robot: closed loop
         states = [o[2] for o in obs] if a.state_source == "dataset" else robot_hist
         chunk = policy.chunk(states, [o[1] for o in obs], task)
+        # --action-space joint28: 28D joints -> SONIC tokens + hands, as the sonic78_nolimit conversion did offline
+        if joint28 is not None:
+            chunk = joint_chunk_to_sonic(chunk, *joint28, fps=images.fps)
         if not np.isfinite(chunk).all() or np.abs(chunk[:, :64]).max() > TOKEN_BOUND:
             raise ValueError(f"rejected chunk at t={t_ep:.2f}s (nonfinite or |token| > {TOKEN_BOUND})")
         return k, chunk
