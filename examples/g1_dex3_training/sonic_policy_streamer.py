@@ -8,8 +8,11 @@ gear_sonic/scripts/run_vla_inference.py with initial_pose="standing":
 The policy predicts a 30 Hz chunk every --replan-s from the latest observation; each 50 Hz tick sends
 ChunkResampler.token_at(t) (look-ahead interpolation, verified in the deploy). Episode start: POSE mode with
 the planner's current token -> --handoff-blend-s blend to the latent initial (standing) token -> 1 s blend to the
-first predicted token. End: 1 s blend back, 2 s hold, stop. Right Dex3 hand in dataset order (thumb, index,
-middle), which the real robot follows; --dex3-right-order swap only for NVIDIA's MuJoCo bridge.
+first predicted token. End: 1 s blend back, 2 s hold, stop. At a table (--startup-tokens, sonic_table_startup.py):
+the handoff blends into a table-safe arm path instead of the standing token (whose hands rise into an 80 cm table);
+episodes start from the path's final pose and end by playing the path in reverse back to the arms-down stance.
+Right Dex3 hand in dataset order (thumb, index, middle), which the real robot follows; --dex3-right-order swap
+only for NVIDIA's MuJoCo bridge.
 
 Images: --images dataset feeds the recorded episode's camera frames at the elapsed time (evaluation without a
 sim/real camera gap). Operator gates: --gate-dir waits for flag files (sim host), otherwise press Enter.
@@ -19,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import queue
 import struct
 import threading
 import time
@@ -188,6 +192,42 @@ class ChunkPolicy:
         return self.post(actions).squeeze(0).float().cpu().numpy()  # [T, 78]
 
 
+class InferenceWorker:
+    """One long-lived inference thread. A fresh thread per call re-pays per-thread setup on every call (GR00T and
+    MolmoAct2: 2-3 s instead of 0.1-0.2 s), longer than the chunk-age limit."""
+
+    def __init__(self):
+        self.jobs, self.slot = queue.Queue(), None
+        threading.Thread(target=self._loop, daemon=True).start()
+
+    def _loop(self):
+        while True:
+            fn, args, slot = self.jobs.get()
+            started = time.monotonic()
+            try:
+                slot["result"] = fn(*args)
+            except Exception as exc:  # reported by the caller; the streamer keeps the last good chunk
+                slot["error"] = repr(exc)
+            slot["latency"] = time.monotonic() - started
+            slot["done"].set()
+
+    def submit(self, fn, *args) -> dict:
+        self.slot = {"done": threading.Event()}
+        self.jobs.put((fn, args, self.slot))
+        return self.slot
+
+    def run(self, fn, *args):
+        slot = self.submit(fn, *args)
+        slot["done"].wait()
+        if "error" in slot:
+            raise RuntimeError(slot["error"])
+        return slot["result"]
+
+    @property
+    def busy(self) -> bool:
+        return self.slot is not None and not self.slot["done"].is_set()
+
+
 def gate(name: str, gate_dir: Path | None) -> None:
     if gate_dir is None:
         input(f"[streamer] {name}: press Enter to continue ")
@@ -242,13 +282,44 @@ def main():
         default="dataset",
         help="swap: right hand index<->middle between dataset order and the deploy's slot order (NVIDIA MuJoCo)",
     )
+    p.add_argument(
+        "--end",
+        choices=["planner", "stop"],
+        default="planner",
+        help="after the episode: planner = blend back to the planner token and leave the deploy running in planner "
+        "mode (real robot); stop = stop control",
+    )
+    p.add_argument(
+        "--startup-tokens",
+        type=Path,
+        help="table startup .npz from sonic_table_startup.py plan: after the POSE switch, play this table-safe arm "
+        "path (planner stance -> fixed initial pose) instead of NVIDIA's standing token; after the episode, play it "
+        "in reverse back to the stance",
+    )
     a = p.parse_args()
+    startup = None
+    if a.startup_tokens:
+        if a.handoff_blend_s <= 0:
+            p.error(
+                "--startup-tokens needs --handoff-blend-s > 0 (it blends from the planner token into the path)"
+            )
+        z = np.load(a.startup_tokens)
+        startup = {
+            k: z[k].astype(np.float32) for k in ("tokens", "hands", "rev_tokens", "rev_hands") if k in z
+        }
+        startup["fps"] = float(json.loads(str(z["meta"]))["fps"])
+    rest_token = LATENT_INITIAL_MOTION_TOKEN if startup is None else startup["tokens"][-1]
+    rest_hands = np.zeros(14, np.float32) if startup is None else startup["hands"][-1]
     require_package("pyzmq", extra="pyzmq-dep", import_name="zmq")
     if a.dex3_right_order == "swap":
         RIGHT_ORDER[:] = RIGHT_SWAP
 
     policy = ChunkPolicy(a.policy_path, a.device)
     images = DatasetImages(a.dataset_root, a.episode, policy.image_keys)
+    worker = InferenceWorker()
+    _, warm_imgs, warm_state, warm_task = images.frame(0.0)
+    for _ in range(3):  # warm up in the inference thread: VLA first calls take 2-5 s
+        worker.run(policy.chunk, [warm_state] * policy.n_obs, [warm_imgs] * policy.n_obs, warm_task)
     duration = a.duration_s or images.n / images.fps
     ctx = zmq.Context()
     pub = ctx.socket(zmq.PUB)
@@ -320,6 +391,7 @@ def main():
             raise ValueError(f"rejected chunk at t={t_ep:.2f}s (nonfinite or |token| > {TOKEN_BOUND})")
         return k, chunk
 
+    planner = None
     if (
         a.handoff_blend_s > 0
     ):  # gradual: start POSE mode from the planner's current token (g1_debug token_state)
@@ -330,40 +402,56 @@ def main():
             send(planner, zero_h, "planner token")
         pub.send(command_message(start=True, planner=False))
         n = int(a.handoff_blend_s * 50)
+        # table startup: switch into the table-safe arm path instead of NVIDIA's standing token, whose hands rise
+        # to ~0.8 m, 0.3 m forward (into an 80 cm table)
+        target = LATENT_INITIAL_MOTION_TOKEN if startup is None else startup["tokens"][0]
         for i in ticks(n):
             w = (i + 1) / n
-            send((1 - w) * planner + w * LATENT_INITIAL_MOTION_TOKEN, zero_h, "handoff blend")
+            send((1 - w) * planner + w * target, zero_h, "handoff blend")
+        if startup is not None:
+            toks, hands = startup["tokens"], startup["hands"]
+            for i in ticks(
+                int((len(toks) - 1) / startup["fps"] * 50)
+            ):  # 30 Hz path, look-ahead interp to 50 Hz
+                x = i * TICK * startup["fps"]
+                j, f = int(x), x - int(x)
+                send(
+                    toks[j] + f * (toks[j + 1] - toks[j]),
+                    hands[j] + f * (hands[j + 1] - hands[j]),
+                    "table startup",
+                )
     else:
         for _ in ticks(50):  # latent initial token, then POSE mode
             send(LATENT_INITIAL_MOTION_TOKEN, zero_h, "initial")
         pub.send(command_message(start=True, planner=False))
     print("[streamer] command: POSE mode (streamed tokens)", flush=True)
     resampler = ChunkResampler(images.fps)
-    _, first = infer(0.0, robot_states(0.0))
+    _, first = worker.run(infer, 0.0, robot_states(0.0))
     resampler.set_chunk(first, t0=0.0)
-    for i in ticks(50):  # 1 s ease-in from the standing token to the first predicted token
+    for i in ticks(
+        50
+    ):  # 1 s ease-in from the rest pose (standing token or table startup end) to the first chunk
         w = (i + 1) / 50
-        send((1 - w) * LATENT_INITIAL_MOTION_TOKEN + w * first[0, :64], w * first[0, 64:], "blend in", 0.0, 0)
+        send(
+            (1 - w) * rest_token + w * first[0, :64],
+            (1 - w) * rest_hands + w * first[0, 64:],
+            "blend in",
+            0.0,
+            0,
+        )
 
-    pending, worker, latencies = {}, None, []
-
-    def run_inference(t_obs, robot_state):
-        try:
-            started = time.monotonic()
-            pending["result"] = (t_obs, *infer(t_obs, robot_state))
-            latencies.append(time.monotonic() - started)
-        except Exception as exc:  # keep streaming the last good chunk; stop if it goes stale
-            pending["error"] = repr(exc)
-
+    latencies, slot, slot_t = [], None, 0.0
     next_replan, last_chunk_t, chunk_t0 = a.replan_s, 0.0, 0.0
     for i in ticks(int(duration / TICK)):
         t_ep = i * TICK
-        if "result" in pending:
-            t_obs, _, chunk = pending.pop("result")
-            resampler.set_chunk(chunk, t0=t_obs)
-            last_chunk_t, chunk_t0 = t_ep, t_obs
-        if "error" in pending:
-            print(f"[streamer] {pending.pop('error')}", flush=True)
+        if slot is not None and slot["done"].is_set():
+            if "error" in slot:  # keep streaming the last good chunk; stop if it goes stale
+                print(f"[streamer] {slot['error']}", flush=True)
+            else:
+                resampler.set_chunk(slot["result"][1], t0=slot_t)
+                last_chunk_t, chunk_t0 = t_ep, slot_t
+                latencies.append(slot["latency"])
+            slot = None
         if t_ep - last_chunk_t > a.max_chunk_age_s:
             print(f"[streamer] no valid chunk for {a.max_chunk_age_s:g} s: ending episode", flush=True)
             break
@@ -371,10 +459,8 @@ def main():
         if state.age() > a.max_state_age_s:  # never plan or stream on frozen joints
             print(f"[streamer] robot state {state.age():.2f} s old: ending episode", flush=True)
             break
-        if t_ep >= next_replan and (worker is None or not worker.is_alive()):
-            snapshot = robot_states(t_ep)
-            worker = threading.Thread(target=run_inference, args=(t_ep, snapshot), daemon=True)
-            worker.start()
+        if t_ep >= next_replan and not worker.busy:
+            slot, slot_t = worker.submit(infer, t_ep, robot_states(t_ep)), t_ep
             next_replan = t_ep + a.replan_s
         out = resampler.token_at(t_ep)
         send(out[:64], out[64:], "episode", t_ep, min(int(t_ep * images.fps), images.n - 1), chunk_t0)
@@ -384,13 +470,41 @@ def main():
             flush=True,
         )
     last_token, last_hands = log["token"][-1], log["hands"][-1]
-    for i in ticks(50):  # 1 s blend back to standing, 2 s hold, stop
+    for i in ticks(50):  # 1 s blend back to the rest pose, 2 s hold, stop (at the table: hands stay above it)
         w = (i + 1) / 50
-        send((1 - w) * last_token + w * LATENT_INITIAL_MOTION_TOKEN, (1 - w) * last_hands, "blend out")
-    for _ in ticks(100):
-        send(LATENT_INITIAL_MOTION_TOKEN, zero_h, "hold initial")
-    pub.send(command_message(start=False, planner=False))
-    print("[streamer] command: stop", flush=True)
+        send((1 - w) * last_token + w * rest_token, (1 - w) * last_hands + w * rest_hands, "blend out")
+    if (
+        startup is not None and "rev_tokens" in startup
+    ):  # at the table: back to the stance on the path, reversed
+        for _ in ticks(25):
+            send(rest_token, rest_hands, "hold rest")
+        toks, hands = startup["rev_tokens"], startup["rev_hands"]
+        for i in ticks(int((len(toks) - 1) / startup["fps"] * 50)):
+            x = i * TICK * startup["fps"]
+            j, f = int(x), x - int(x)
+            send(
+                toks[j] + f * (toks[j + 1] - toks[j]),
+                hands[j] + f * (hands[j + 1] - hands[j]),
+                "table shutdown",
+            )
+        for _ in ticks(50):
+            send(toks[-1], hands[-1], "hold stance")
+    else:
+        for _ in ticks(100):
+            send(rest_token, rest_hands, "hold rest")
+    if a.end == "planner" and planner is not None:
+        # hand back to the planner the way we took over: blend to the planner token recorded at the start, then
+        # switch to planner mode and leave the deploy running (the operator stops it)
+        held, held_h = log["token"][-1], log["hands"][-1]
+        n = int(a.handoff_blend_s * 50)
+        for i in ticks(n):
+            w = (i + 1) / n
+            send((1 - w) * held + w * planner, (1 - w) * held_h, "handback blend")
+        pub.send(command_message(start=True, planner=True))
+        print("[streamer] command: PLANNER mode (deploy left running)", flush=True)
+    else:
+        pub.send(command_message(start=False, planner=False))
+        print("[streamer] command: stop", flush=True)
     if a.log:
         np.savez_compressed(a.log, **{k: np.asarray(v) for k, v in log.items()}, episode=a.episode)
     if a.gate_dir:

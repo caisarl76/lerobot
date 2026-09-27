@@ -1,21 +1,23 @@
 # G1 Dex3 → SONIC v1.1 conversion: round-trip audit, decisions, and how to reproduce
 
-Status as of 2026-09-25. Question: does converting joint-action datasets (28D: arms 14 + Dex3 hands 14) into
+Status as of 2026-09-26. Question: does converting joint-action datasets (28D: arms 14 + Dex3 hands 14) into
 SONIC tokens (78D: token 64 + hands 14) keep the hand where the original action put it? Gate: p95 palm
 position error vs. the original command > 5 cm in the pelvis frame ⇒ unusable for VLA fine-tuning.
 Evidence is simulation-only (MuJoCo); no real-robot claim.
 
 ## Decisions (user-confirmed)
 
-| Topic                       | Decision                                                                                                                                                                                                                                                                                                                |
-| --------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Converter speed limits      | **Off.** `prepare_sonic_dataset.py --arm-speed-limit none --hand-speed-limit none`. The old 1 rad/s arm / 2 rad/s hand slew limit caused most of the error.                                                                                                                                                             |
-| Episode start in evaluation | 1 s linear token blend from `LATENT_INITIAL_MOTION_TOKEN` to the episode's first token, 1 s hold.                                                                                                                                                                                                                       |
-| Token rate                  | Train on the 30 Hz dataset. At deploy, linearly interpolate the policy's 30 Hz tokens to 50 Hz (resample the predicted action chunk; interpolation needs the next token). Re-encoding at 50 Hz gave no gain (≤0.1 cm).                                                                                                  |
-| POSE handoff (deploy)       | **Gradual (2026-09-25).** Send the planner's current `token_state` first, then blend to `LATENT_INITIAL_MOTION_TOKEN` over 2 s (`--handoff-blend-s 2`, `HANDOFF_BLEND_S=2`). An instant switch unloaded a foot in 5/5 runs (arm speed up to 30.7 rad/s); 2 s kept all 8 contacts in 3/3 (1.2 rad/s); 4 s swayed in 1/3. |
-| Dex3 right-hand order       | **Dataset order (thumb, index, middle) on the real robot.** NVIDIA's MuJoCo bridge maps index↔middle slots, so sim runs use `--dex3-right-order swap`.                                                                                                                                                                 |
-| Policy state input          | **Relabelled state** (`sonic78_nolimit_sonicstate`): `observation.state` arms replaced by the arm pose SONIC reaches. Best closed loop and open loop in the held-out A/B below.                                                                                                                                         |
-| Humanoid Everyday dataset   | **Accepted as-is (2026-09-24)** despite p95 5.21 cm, 0.2 cm over the 5 cm gate: 20% of sampled episodes exceed 5 cm on their own p95 (worst 8.6 cm); no episodes are excluded. The miss comes from SONIC tracking fast manipulation, not from source glitches.                                                          |
+| Topic                       | Decision                                                                                                                                                                                                                                                                                                                                                   |
+| --------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Converter speed limits      | **Off.** `prepare_sonic_dataset.py --arm-speed-limit none --hand-speed-limit none`. The old 1 rad/s arm / 2 rad/s hand slew limit caused most of the error.                                                                                                                                                                                                |
+| Episode start in evaluation | 1 s linear token blend from `LATENT_INITIAL_MOTION_TOKEN` to the episode's first token, 1 s hold.                                                                                                                                                                                                                                                          |
+| Token rate                  | Train on the 30 Hz dataset. At deploy, linearly interpolate the policy's 30 Hz tokens to 50 Hz (resample the predicted action chunk; interpolation needs the next token). Re-encoding at 50 Hz gave no gain (≤0.1 cm).                                                                                                                                     |
+| POSE handoff (deploy)       | **Gradual (2026-09-25).** Send the planner's current `token_state` first, then blend to `LATENT_INITIAL_MOTION_TOKEN` over 2 s (`--handoff-blend-s 2`, `HANDOFF_BLEND_S=2`). An instant switch unloaded a foot in 5/5 runs (arm speed up to 30.7 rad/s); 2 s kept all 8 contacts in 3/3 (1.2 rad/s); 4 s swayed in 1/3.                                    |
+| Dex3 right-hand order       | **Dataset order (thumb, index, middle) on the real robot.** NVIDIA's MuJoCo bridge maps index↔middle slots, so sim runs use `--dex3-right-order swap`.                                                                                                                                                                                                    |
+| Policy state input          | **Relabelled state** (`sonic78_nolimit_sonicstate`): `observation.state` arms replaced by the arm pose SONIC reaches. Best closed loop and open loop in the held-out A/B below.                                                                                                                                                                            |
+| Dataset quantile stats      | **Exact (2026-09-25).** `joint28` / `sonic78` / `sonic78_nolimit` shipped approximate global q01/q99 (state off by up to 0.55 rad, action tokens up to 0.375; mean/std were exact). Run `augment_joint_quantiles.py --root <dataset>` after building any dataset. Only quantile-normalized policies (MolmoAct2, Pi0.5) were affected; they were retrained. |
+| Table startup (tabletop)    | **Skip the ready pose at the table (2026-09-26).** Planner stance (arms down) → table-safe arm path → fixed initial pose → policy; see "Tabletop startup" below. In progress.                                                                                                                                                                              |
+| Humanoid Everyday dataset   | **Accepted as-is (2026-09-24)** despite p95 5.21 cm, 0.2 cm over the 5 cm gate: 20% of sampled episodes exceed 5 cm on their own p95 (worst 8.6 cm); no episodes are excluded. The miss comes from SONIC tracking fast manipulation, not from source glitches.                                                                                             |
 
 Datasets built with limits off (existing `sonic78` datasets are unchanged):
 `/run-output/datasets/sonic78_nolimit` (3152 ep, 2,587,515 frames) and
@@ -124,6 +126,76 @@ Held-out episodes 2155 and 6 (5% held-out split, seed 1000), palm p50 / p95 in c
 - All streamed episodes stayed standing (10/10 with the 2 s handoff). Expect the real robot between the
   closed-loop and recorded-state columns, depending on how far its state departs from the training state.
 
+## Retrained models on relabelled state (2026-09-26)
+
+All seven policies were retrained on relabelled state for both datasets (5% held-out split, same configs as the
+`*_sonic78nolimit_ho5_full` runs except dataset and names), 40K steps each, all exit 0:
+`/run-output/runs/{act,diffusion,groot,vla_jepa,pi05,molmoact2,fastwam}_sonic78sonicstate_ho5_full` and the same
+names under `/run-output/humanoid_everyday_g1_20260923/runs/`. The HE relabelled dataset is
+`humanoid_everyday_g1_20260923/datasets/sonic78_nolimit_sonicstate` (built from `sonic78_nolimit_g2`, 4064 ep,
+1,779,287 frames, no falls, exact quantiles). Queue: `/run-output/queue_sonicstate` (one `worker.py` per GPU
+container, jobs claimed with `*.claim` files).
+
+H100 run storage (2026-09-26, user-approved): each run keeps only `checkpoints/last/pretrained_model` (halfway
+checkpoints and optimizer state deleted; runs cannot be resumed). Remaining: `{policy}_sonic78nolimit_ho5_full`
+(baselines; HE ACT baseline is `act_sonic78nolimit_ho5_g2_full`) and `{policy}_sonic78sonicstate_ho5_full`.
+
+Pitfalls met on the way:
+
+- Long-running training containers can lose the GPU (`Failed to initialize NVML`); PyTorch then silently falls
+  back to CPU (158 s/step). `docker restart` the container; the queue worker refuses to start a job without CUDA.
+- The disk filled (98%) mid-queue; the worker waits while free space is below 150 GB.
+
+## Tabletop startup (in progress, 2026-09-26)
+
+Real-robot evaluation is at a table: top 80 cm above the floor, near edge 5–12 cm from the torso. Measured in the
+official deploy sim (12/12 runs):
+
+| Pose                                                   | Hand tips above floor | In front of pelvis |
+| ------------------------------------------------------ | --------------------- | ------------------ |
+| Planner stance (after SONIC starts)                    | 56–59 cm              | 13–19 cm           |
+| After the 2 s handoff to `LATENT_INITIAL_MOTION_TOKEN` | 77–85 cm              | 28–36 cm           |
+| Fixed initial pose (median Unitree first frame)        | 85–92 cm              | 38–41 cm           |
+
+NVIDIA's standing token lifts the hands into the table, so at the table the streamer must skip it: planner
+stance → 2 s gradual switch → table-safe joint-space arm path → fixed initial pose → policy. In the planner stance
+the wrists are already ~2.6 cm from the table's underside edge, and the initial pose clears the top by only
+~2.7 cm (kinematic, collision geoms).
+
+`sonic_table_startup.py`: `plan` searches two arm waypoints (hands back behind the edge, then raised above the
+top) keeping every arm collision geom ≥ 3 cm from the table (no closer than the stance at the start, down to the
+initial pose's own clearance at the end) and clear of the robot's body, smoothstep segments capped at 0.5 rad/s,
+then encodes the path with the dataset converter; `check` replays the tokens through the v1.1 decoder in MuJoCo
+with a physical table at 5 / 8.5 / 12 cm and reports reached clearance, contacts, tilt, and foot contacts.
+Status: first planner run in progress; not yet wired into the streamer.
+
+## Held-out ranking with the table startup (2026-09-27)
+
+Setup: NVIDIA deploy in MuJoCo, table 8 cm from the torso (moved in once the robot stands in planner mode),
+8.2 s table startup, held-out episodes 2155 and 6, closed loop, recorded images. Palm error p50 / p95 averaged
+over both episodes:
+
+| Model                           | Palm p50 / p95 (cm)   | Max tilt | Balance   | Chunk time |
+| ------------------------------- | --------------------- | -------- | --------- | ---------- |
+| GR00T baseline / relabelled     | 6.1/12.7 · 6.4/15.3   | 4.3°     | stable    | 0.18 s     |
+| MolmoAct2 relabelled / baseline | 8.3/17.3 · 9.6/17.3   | 5.0°     | stable    | 0.28 s     |
+| Pi0.5 relabelled / baseline     | 10.1/15.8 · 11.2/17.8 | 6.0°     | stable    | 0.27 s     |
+| ACT relabelled / baseline       | 8.6/20.4 · 8.9/20.4   | 5.4°     | stable    | 0.06 s     |
+| Diffusion, FastWAM (both)       | 10–16 / 20–31         | ≥ 10°    | feet lift | 0.6–0.7 s  |
+
+- End of an episode (decided 2026-09-27): play the table path in reverse back to the arms-down stance, blend 2 s
+  back to the planner token, switch to planner mode and leave the deploy running (`--end planner`, default).
+  Runs that stopped control instead collapsed in sim; every planner hand-back stayed standing.
+- The reverse path must be re-encoded, not the forward tokens reversed (tokens encode ~1 s of future motion).
+  On the way down SONIC's arm sags toward the table edge: at a 5 cm table the reverse spread kept 0.2 cm at
+  1 rad/s, touched at 0.5 rad/s, kept 1.0 cm at 1.5 rad/s and 1.8 cm at 2 rad/s (`--reverse-max-speed`).
+- Final full cycle (GR00T, table 5 cm, reverse at 2 rad/s): no contact during startup or shutdown; the last 2 s
+  blend back into NVIDIA's planner stance brushed the table once (planner stance wrists sit ~2 cm under the edge
+  at 5 cm). Accepted (user decision 2026-09-27); at >= 8 cm there is room.
+- Streamer inference now runs on one long-lived thread: a new thread per call cost GR00T/MolmoAct2 2–3 s.
+- Official sim runs: start the streamer only after `Init Done` (loading a large VLA during the TensorRT build
+  crashed the sim host).
+
 ## Scripts (`examples/g1_dex3_training/`)
 
 Written to run on H100 inside containers; `/code` = this directory, `/audit` = the output directory.
@@ -139,6 +211,7 @@ Written to run on H100 inside containers; `/code` = this directory, `/audit` = t
 | `sonic_policy_streamer.py`, `sonic_official_sim_host.py`                               | Stream a trained policy into the official deploy; sim host with the confirmed startup and recording.                                                                                          |
 | `sonic_stream_eval.py`, `sonic_policy_openloop.py`, `sonic_state_ablation.py`          | Score a streamed run; open-loop policy check; which state part throws the policy off.                                                                                                         |
 | `sonic_state_relabel.py`                                                               | `simulate` + `build`: relabel `observation.state` arms with the SONIC-reached pose (`sonic78_nolimit_sonicstate`, 3152 ep, no falls).                                                         |
+| `sonic_table_startup.py`                                                               | Table-safe startup path (planner stance → fixed initial pose) and its MuJoCo table check. In progress.                                                                                        |
 | `sonic_nolimit_verify.py`                                                              | Checks a published no-limit dataset against its source and the replay-tested tokens.                                                                                                          |
 
 Offline audit of a no-limit dataset (lerobot image `4cbe2a3f7fc6`, python `/run-output/environment/venv/bin/python`,
@@ -153,8 +226,13 @@ python /code/sonic_roundtrip_audit.py summarize /audit/results_nolimit
 Outputs live in `/mnt/data01/jhkim/model_weight/sonic_roundtrip_20260923/` on the H100 host.
 Reports: `2026-09-23-sonic-roundtrip-audit.html` (in this directory).
 
-## Open items
+## Open items (carry on from here)
 
-- Real-robot test of the relabelled ACT policy with the 2 s handoff; compare against the two columns above.
-- Whether other policies and Humanoid Everyday move to relabelled state (HE would be built from its `sonic78_nolimit`).
-- Dex3 finger tracking is only indicative in sim; NVIDIA flags its hand model as unstable.
+1. **Tabletop startup:** done (8.2 s at 1 rad/s, verified in NVIDIA's deploy with a table). Open: shutdown speed
+   (2 rad/s recommended), per-task initial poses, a table with an apron.
+2. **Held-out sim test of the 14 Unitree models** (7 baselines vs 7 relabelled, episodes 2155 and 6, closed loop):
+   rank by palm error, stability, and chunk latency vs the 0.4 s replan to pick real-robot candidates. A smoke test
+   of every model through `ChunkPolicy` is running.
+3. Real-robot test of the chosen Unitree model at the table (needs 1 and 2; decide where the policy runs: H100 over
+   the network or a GPU at the robot).
+4. Dex3 finger tracking is only indicative in sim; NVIDIA flags its hand model as unstable.
