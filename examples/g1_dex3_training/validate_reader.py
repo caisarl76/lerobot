@@ -45,6 +45,7 @@ def validate(root: Path, report_path: Path):
                 assert frame.dtype == torch.uint8
                 assert frame.max() > frame.min(), f"constant video frame: {episode} {key}"
                 cameras[key] = {"shape": list(frame.shape), "min": int(frame.min()), "max": int(frame.max())}
+            assert isinstance(item["task"], str) and item["task"], f"missing task text: {episode}"
             reports.append(
                 {
                     "episode_index": episode,

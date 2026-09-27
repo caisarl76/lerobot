@@ -118,9 +118,9 @@ def _inference_observation(batch, cfg):
     return observation
 
 
-def validate_model(run_dir: Path, device: str):
+def validate_model(run_dir: Path, device: str, *, allowed_root: Path = RUNS_ROOT):
     """Reload the actual saved model and processors, then evaluate one native batch."""
-    final, _ = inspect_completed_checkpoint(run_dir)
+    final, _ = inspect_completed_checkpoint(run_dir, allowed_root=allowed_root)
     model = final / "pretrained_model"
     digest = _weights_digest(model)
 
@@ -251,11 +251,12 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run-dir", type=Path, required=True)
     parser.add_argument("--device", choices=("cpu", "cuda"), default="cpu")
+    parser.add_argument("--runs-root", type=Path, default=RUNS_ROOT)
     parser.add_argument("--prune", action="store_true")
     args = parser.parse_args()
-    report = validate_model(args.run_dir, args.device)
+    report = validate_model(args.run_dir, args.device, allowed_root=args.runs_root)
     if args.prune:
-        report["pruned_paths"] = prune_verified_checkpoint(args.run_dir, report)
+        report["pruned_paths"] = prune_verified_checkpoint(args.run_dir, report, allowed_root=args.runs_root)
         _write_report(args.run_dir, report)
     print(json.dumps(report, indent=2, allow_nan=False))
 
