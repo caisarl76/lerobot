@@ -196,6 +196,28 @@ over both episodes:
 - Official sim runs: start the streamer only after `Init Done` (loading a large VLA during the TensorRT build
   crashed the sim host).
 
+## Real-robot run (decided 2026-09-27)
+
+Setup: SONIC starts on the robot about 30 cm from the table; the operator moves the robot into position in planner
+mode, then starts the episode. The policy runs on H100, which the robot reaches only over the VPN, so the
+streamer is split: the robot side (no torch) keeps all real-time work and asks `sonic_policy_server.py` on H100 for
+one chunk per replan; every connection goes out from the robot. A VPN hiccup only delays a chunk; if chunks stop
+for `--max-chunk-age-s` the episode ends and the robot returns along the shutdown path.
+
+1. H100 (container, GPU, port published):
+   `docker run --gpus device=N -p 5560:5560 ... python sonic_policy_server.py --policy-path /run-output/runs/groot_sonic78nolimit_ho5_full/checkpoints/last/pretrained_model`
+2. Robot PC: VPN up; head camera via LeRobot's image server (`robots/unitree_g1/run_g1_server.py --camera`,
+   port 5555; a side-by-side stereo frame is split into `cam_left_high` / `cam_right_high`, resized to 640×480).
+3. Robot PC: NVIDIA deploy with `--input-type zmq_manager --zmq-host localhost` as in sim.
+4. Robot PC, streamer (asks for Enter at each gate: "Init Done" → planner mode; robot in position → episode):
+   `python sonic_policy_streamer.py --policy-server tcp://<H100>:5560 --images zmq --camera-host localhost --task "<instruction>" --duration-s 30 --startup-tokens startup.npz`
+   Keep `--dex3-right-order dataset` (default) on the real robot.
+
+Verified in NVIDIA's sim with a CPU-only streamer and the policy server in a separate container (GR00T, table
+5 cm, episode 6): 0.22 s per chunk including JPEG transfer, palm 3.4 / 11.9 cm, no contact in startup or
+shutdown, standing in planner mode at the end. The live-camera reader and the request timeout were checked with
+local fakes (stereo split, RGB order, resize, dead server). Not yet tested: the real VPN round trip.
+
 ## Scripts (`examples/g1_dex3_training/`)
 
 Written to run on H100 inside containers; `/code` = this directory, `/audit` = the output directory.
@@ -211,6 +233,7 @@ Written to run on H100 inside containers; `/code` = this directory, `/audit` = t
 | `sonic_policy_streamer.py`, `sonic_official_sim_host.py`                               | Stream a trained policy into the official deploy; sim host with the confirmed startup and recording.                                                                                          |
 | `sonic_stream_eval.py`, `sonic_policy_openloop.py`, `sonic_state_ablation.py`          | Score a streamed run; open-loop policy check; which state part throws the policy off.                                                                                                         |
 | `sonic_state_relabel.py`                                                               | `simulate` + `build`: relabel `observation.state` arms with the SONIC-reached pose (`sonic78_nolimit_sonicstate`, 3152 ep, no falls).                                                         |
+| `sonic_policy_server.py`                                                               | H100 side of the split streamer: serves policy chunks over ZMQ REQ/REP (msgpack, JPEG frames).                                                                                                |
 | `sonic_table_startup.py`                                                               | Table-safe startup path (planner stance → fixed initial pose) and its MuJoCo table check. In progress.                                                                                        |
 | `sonic_nolimit_verify.py`                                                              | Checks a published no-limit dataset against its source and the replay-tested tokens.                                                                                                          |
 
