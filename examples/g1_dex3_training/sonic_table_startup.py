@@ -406,10 +406,19 @@ if __name__ == "__main__":
     s.add_argument(
         "--transit-margin", type=float, default=0.05, help="mid spread/raise clearance (tracking drift)"
     )
-    s.add_argument("--max-speed", type=float, default=0.5)
+    s.add_argument(
+        "--max-speed",
+        type=float,
+        default=1.0,
+        help="startup joint speed cap (decided 2026-09-26: 8.2 s path)",
+    )
     s.add_argument("--hold-s", type=float, default=1.0)
     s.add_argument(
-        "--reverse-max-speed", type=float, help="joint speed cap for the reverse path (default: --max-speed)"
+        "--reverse-max-speed",
+        type=float,
+        default=2.0,
+        help="joint speed cap for the reverse (shutdown) path; decided 2026-09-27: 2 rad/s keeps 1.8 cm from a table "
+        "5 cm away (1 rad/s: 0.2 cm, 0.5 rad/s: touches), because the arm sags toward the edge the longer it lingers",
     )
     s.add_argument(
         "--reverse-transit-margin", type=float, help="plan the reverse path separately with this margin"
