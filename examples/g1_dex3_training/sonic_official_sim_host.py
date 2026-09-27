@@ -231,7 +231,7 @@ try:
             t_done = t
             mark("streamer done")
             view["phase"] = "streamer done"
-        if t_done is not None and t >= t_done + 3:
+        if t_done is not None and t >= t_done + 5:  # keep 5 s of the planner hand-back on record
             break
         if t_settled is not None and t + 1e-9 >= next_rec:
             next_rec = t + 0.02

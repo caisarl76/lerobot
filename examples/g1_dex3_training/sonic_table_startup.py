@@ -256,7 +256,43 @@ def plan(a):
     inputs, enc_hands, report = build_encoder_inputs(
         np.c_[arms, hands], limits, arm_speed_limit=None, hand_speed_limit=None, fps=FPS
     )
-    tokens = SonicEncoder(MODEL / "model_encoder.onnx", MODEL / "observation_config.yaml").encode(inputs)
+    enc = SonicEncoder(MODEL / "model_encoder.onnx", MODEL / "observation_config.yaml")
+    tokens = enc.encode(inputs)
+    # End of an evaluation: the same path backwards (initial pose -> stance), then a hold at the stance. It is
+    # re-encoded, not the forward tokens reversed: each token also encodes the next ~1 s of intended motion.
+    # Own speed: SONIC's tracking lag points the other way on the way down; at 1 rad/s the reverse spread passed
+    # 0.2 cm from a 5 cm table edge.
+    rev_speed = a.reverse_max_speed or a.max_speed
+    rev_wp = waypoints
+    if (
+        a.reverse_transit_margin
+    ):  # a separate path with more mid-path clearance (the way down sags toward the edge)
+        rev_wp = {}
+        for side, cols in (("left", slice(0, 7)), ("right", slice(7, 14))):
+            mids, info[f"reverse_{side}"] = plan_arm(
+                Clearance(robot, table, side), STANCE_ARMS[cols], goal28[cols], a.margin, rev_speed,
+                a.reverse_transit_margin,
+            )  # fmt: skip
+            rev_wp[side] = (STANCE_ARMS[cols], *mids, goal28[cols])
+    rev_arms = [np.repeat(goal28[None, :14], int(a.hold_s * FPS), 0)]
+    rev_segments = [{"name": "reverse hold at the initial pose", "start_s": 0.0, "duration_s": a.hold_s}]
+    frame = len(rev_arms[0])
+    for k in range(4, 0, -1):
+        a0 = np.r_[rev_wp["left"][k], rev_wp["right"][k]]
+        a1 = np.r_[rev_wp["left"][k - 1], rev_wp["right"][k - 1]]
+        if np.abs(a1 - a0).max() > 1e-9:
+            rev_arms.append(segment(a0, a1, rev_speed))
+            rev_segments.append({"name": "reverse " + names[k - 1].split(":")[0], "start_s": frame / FPS,
+                                 "duration_s": len(rev_arms[-1]) / FPS})  # fmt: skip
+            frame += len(rev_arms[-1])
+    rev_arms.append(np.repeat(STANCE_ARMS[None], int(a.hold_s * FPS), 0))
+    rev_segments.append({"name": "hold at the stance", "start_s": frame / FPS, "duration_s": a.hold_s})
+    rev_arms = np.concatenate(rev_arms)
+    rev_hands_in = np.linspace(goal28[14:], np.zeros(14), len(rev_arms))
+    rev_inputs, rev_hands, _ = build_encoder_inputs(
+        np.c_[rev_arms, rev_hands_in], limits, arm_speed_limit=None, hand_speed_limit=None, fps=FPS
+    )
+    rev_tokens = enc.encode(rev_inputs)
     speed = np.abs(np.diff(arms, axis=0)).max() * FPS
     meta = {
         "fps": FPS,
@@ -270,13 +306,43 @@ def plan(a):
             "transit_margin_m": a.transit_margin,
         },
         "segments": segments,
+        "reverse_segments": rev_segments,
+        "reverse_duration_s": len(rev_arms) / FPS,
         "waypoints": {s: [np.round(w, 3).tolist() for w in ws] for s, ws in waypoints.items()},
+        "reverse_waypoints": {s: [np.round(w, 3).tolist() for w in ws] for s, ws in rev_wp.items()},
         "per_arm": info,
         "encoder": report,
     }
     Path(a.out).parent.mkdir(parents=True, exist_ok=True)
-    np.savez(a.out, arms=arms, hands=enc_hands, tokens=tokens, meta=json.dumps(meta))
+    np.savez(
+        a.out, arms=arms, hands=enc_hands, tokens=tokens, rev_arms=rev_arms, rev_hands=rev_hands, rev_tokens=rev_tokens,
+        meta=json.dumps(meta),
+    )  # fmt: skip
     print(json.dumps(meta, indent=1, default=float))
+
+
+def play(robot, dec, table, clears, rec, tokens, t0):
+    """Play 30 Hz tokens at 50 Hz (look-ahead linear interpolation); return clearance/contact/balance."""
+    min_clear, contacts, tilt, feet = 1.0, 0, 0.0, 8
+    for t in np.arange(0, len(tokens) - 1, FPS / 50):
+        i = int(t)
+        robot.step(dec(tokens[i] + (t - i) * (tokens[i + 1] - tokens[i]), *robot.state()))
+        clear = min(c.distances(robot.d, table_only=True)[0] for c in clears.values())
+        min_clear = min(min_clear, clear)
+        contacts += any(
+            table in (robot.d.contact[j].geom1, robot.d.contact[j].geom2) for j in range(robot.d.ncon)
+        )
+        tilt = max(tilt, float(np.degrees(np.arccos(np.clip(-gravity(robot.state()[2])[2], -1, 1)))))
+        feet = min(feet, robot.floor_contacts())
+        rec["t"].append(t0 + t / FPS)
+        rec["qpos"].append(robot.d.qpos.copy())
+        rec["clear"].append(clear)
+    return {
+        "min_reached_table_clearance_cm": round(100 * min_clear, 1),
+        "table_contact_ticks": contacts,
+        "tilt_max_deg": round(tilt, 2),
+        "floor_contacts_min": feet,
+    }
 
 
 def check(a):
@@ -298,33 +364,29 @@ def check(a):
             robot.step(dec(stance, *robot.state()))
         table = with_table(robot, gap)
         clears = {s: Clearance(robot, table, s) for s in ("left", "right")}
-        dense = np.arange(0, len(z["tokens"]) - 1, FPS / 50)  # 50 Hz ticks, look-ahead linear interpolation
-        min_clear, contacts, tilt, feet = 1.0, 0, 0.0, 8
         rec = {"t": [], "qpos": [], "clear": []}
-        for t in dense:
-            i = int(t)
-            tok = z["tokens"][i] + (t - i) * (z["tokens"][i + 1] - z["tokens"][i])
-            robot.step(dec(tok, *robot.state()))
-            min_clear = min(min_clear, *(c.distances(robot.d, table_only=True)[0] for c in clears.values()))
-            contacts += any(
-                table in (robot.d.contact[j].geom1, robot.d.contact[j].geom2) for j in range(robot.d.ncon)
+
+        fwd = play(robot, dec, table, clears, rec, z["tokens"], 0.0)
+        fwd["final_arm_error_rad_max"] = round(
+            float(np.abs(robot.state()[0][15:29] - z["arms"][-1]).max()), 3
+        )
+        rev = None
+        if "rev_tokens" in z:
+            rev = play(robot, dec, table, clears, rec, z["rev_tokens"], meta["duration_s"])
+            rev["final_arm_error_rad_max"] = round(
+                float(np.abs(robot.state()[0][15:29] - STANCE_ARMS).max()), 3
             )
-            tilt = max(tilt, float(np.degrees(np.arccos(np.clip(-gravity(robot.state()[2])[2], -1, 1)))))
-            feet = min(feet, robot.floor_contacts())
-            rec["t"].append(t / FPS)
-            rec["qpos"].append(robot.d.qpos.copy())
-            rec["clear"].append(min(c.distances(robot.d, table_only=True)[0] for c in clears.values()))
         if a.record:
             edge = float(robot.m.body("table").pos[0] - 0.4)
+            segs = meta.get("segments", []) + [
+                {**sg, "start_s": sg["start_s"] + meta["duration_s"]}
+                for sg in meta.get("reverse_segments", [])
+            ]
             np.savez(f"{a.record}/gap_{gap * 100:.0f}cm.npz", **{k: np.asarray(v) for k, v in rec.items()},
-                     table_edge_x=edge, gap=gap, segments=json.dumps(meta.get("segments", [])))  # fmt: skip
-        reached = robot.state()[0][15:29]
+                     table_edge_x=edge, gap=gap, segments=json.dumps(segs))  # fmt: skip
         results[f"gap_{gap * 100:.0f}cm"] = {
-            "min_reached_table_clearance_cm": round(100 * min_clear, 1),
-            "table_contact_ticks": contacts,
-            "tilt_max_deg": round(tilt, 2),
-            "floor_contacts_min": feet,
-            "final_arm_error_rad_max": round(float(np.abs(reached - z["arms"][-1]).max()), 3),
+            "startup": fwd,
+            "reverse": rev,
             "settle": {k: v for k, v in info.items() if k in ("fell", "settle_tilt_max_deg")},
         }
     print(json.dumps({"startup_duration_s": meta["duration_s"], "results": results}, indent=1))
@@ -346,6 +408,12 @@ if __name__ == "__main__":
     )
     s.add_argument("--max-speed", type=float, default=0.5)
     s.add_argument("--hold-s", type=float, default=1.0)
+    s.add_argument(
+        "--reverse-max-speed", type=float, help="joint speed cap for the reverse path (default: --max-speed)"
+    )
+    s.add_argument(
+        "--reverse-transit-margin", type=float, help="plan the reverse path separately with this margin"
+    )
     s = sub.add_parser("check")
     s.add_argument("--startup", required=True)
     s.add_argument("--gaps", type=float, nargs="+", default=[0.05, 0.085, 0.12])

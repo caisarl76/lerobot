@@ -169,6 +169,30 @@ then encodes the path with the dataset converter; `check` replays the tokens thr
 with a physical table at 5 / 8.5 / 12 cm and reports reached clearance, contacts, tilt, and foot contacts.
 Status: first planner run in progress; not yet wired into the streamer.
 
+## Held-out ranking with the table startup (2026-09-27)
+
+Setup: NVIDIA deploy in MuJoCo, table 8 cm from the torso (moved in once the robot stands in planner mode),
+8.2 s table startup, held-out episodes 2155 and 6, closed loop, recorded images. Palm error p50 / p95 averaged
+over both episodes:
+
+| Model                           | Palm p50 / p95 (cm)   | Max tilt | Balance   | Chunk time |
+| ------------------------------- | --------------------- | -------- | --------- | ---------- |
+| GR00T baseline / relabelled     | 6.1/12.7 · 6.4/15.3   | 4.3°     | stable    | 0.18 s     |
+| MolmoAct2 relabelled / baseline | 8.3/17.3 · 9.6/17.3   | 5.0°     | stable    | 0.28 s     |
+| Pi0.5 relabelled / baseline     | 10.1/15.8 · 11.2/17.8 | 6.0°     | stable    | 0.27 s     |
+| ACT relabelled / baseline       | 8.6/20.4 · 8.9/20.4   | 5.4°     | stable    | 0.06 s     |
+| Diffusion, FastWAM (both)       | 10–16 / 20–31         | ≥ 10°    | feet lift | 0.6–0.7 s  |
+
+- End of an episode (decided 2026-09-27): play the table path in reverse back to the arms-down stance, blend 2 s
+  back to the planner token, switch to planner mode and leave the deploy running (`--end planner`, default).
+  Runs that stopped control instead collapsed in sim; every planner hand-back stayed standing.
+- The reverse path must be re-encoded, not the forward tokens reversed (tokens encode ~1 s of future motion).
+  On the way down SONIC's arm sags toward the table edge: at a 5 cm table the reverse spread kept 0.2 cm at
+  1 rad/s, touched at 0.5 rad/s, kept 1.0 cm at 1.5 rad/s and 1.8 cm at 2 rad/s (`--reverse-max-speed`).
+- Streamer inference now runs on one long-lived thread: a new thread per call cost GR00T/MolmoAct2 2–3 s.
+- Official sim runs: start the streamer only after `Init Done` (loading a large VLA during the TensorRT build
+  crashed the sim host).
+
 ## Scripts (`examples/g1_dex3_training/`)
 
 Written to run on H100 inside containers; `/code` = this directory, `/audit` = the output directory.
@@ -201,10 +225,8 @@ Reports: `2026-09-23-sonic-roundtrip-audit.html` (in this directory).
 
 ## Open items (carry on from here)
 
-1. **Tabletop startup:** finish `sonic_table_startup.py plan`, pass `check` at 5 / 8.5 / 12 cm (no table contact,
-   reached clearance > 0, balance), add `--startup-tokens` to the streamer (planner token → 2 s blend to the path's
-   first token → path → 1 s blend to the first policy chunk), verify in the official deploy sim with a table and a
-   video. Then expand the fixed initial pose to per-task poses.
+1. **Tabletop startup:** done (8.2 s at 1 rad/s, verified in NVIDIA's deploy with a table). Open: shutdown speed
+   (2 rad/s recommended), per-task initial poses, a table with an apron.
 2. **Held-out sim test of the 14 Unitree models** (7 baselines vs 7 relabelled, episodes 2155 and 6, closed loop):
    rank by palm error, stability, and chunk latency vs the 0.4 s replan to pick real-robot candidates. A smoke test
    of every model through `ChunkPolicy` is running.
