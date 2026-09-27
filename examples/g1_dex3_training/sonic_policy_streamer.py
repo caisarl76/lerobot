@@ -15,7 +15,9 @@ Right Dex3 hand in dataset order (thumb, index, middle), which the real robot fo
 only for NVIDIA's MuJoCo bridge.
 
 Images: --images dataset feeds the recorded episode's camera frames at the elapsed time (evaluation without a
-sim/real camera gap). Operator gates: --gate-dir waits for flag files (sim host), otherwise press Enter.
+sim/real camera gap); --images zmq reads the live head camera from LeRobot's ImageServer (real robot).
+Policy: --policy-path runs it here; --policy-server asks sonic_policy_server.py on a GPU host (H100 over the VPN),
+while this process keeps all real-time work, so a VPN hiccup only delays a chunk. Operator gates: --gate-dir waits for flag files (sim host), otherwise press Enter.
 """
 
 from __future__ import annotations
@@ -30,7 +32,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
-import torch
 
 from lerobot.utils.import_utils import _zmq_available, require_package
 
@@ -167,13 +168,23 @@ class ChunkPolicy:
             pretrained_path=path,
             preprocessor_overrides={"device_processor": {"device": device}},
         )
+        import torch
+
         self.device = torch.device(device)
         self.image_keys = [k for k in cfg.input_features if "image" in k]
+        self.shapes = {k: tuple(cfg.input_features[k].shape) for k in self.image_keys}  # (C, H, W)
         self.n_obs = int(getattr(cfg, "n_obs_steps", 1) or 1)  # diffusion conditions on 2 frames
 
-    @torch.inference_mode()
     def chunk(self, states: list[np.ndarray], images: list[dict], task: str) -> np.ndarray:
         """states/images: the last n_obs observations, oldest first (1/fps apart); task: instruction text."""
+        import torch
+
+        with torch.inference_mode():
+            return self._chunk(states, images, task)
+
+    def _chunk(self, states, images, task):
+        import torch
+
         from lerobot.policies.utils import prepare_observation_for_inference
 
         frames = [
@@ -190,6 +201,119 @@ class ChunkPolicy:
         batch["task"] = [task]
         actions = self.policy.predict_action_chunk(self.pre(batch))
         return self.post(actions).squeeze(0).float().cpu().numpy()  # [T, 78]
+
+
+class LiveImages:
+    """Latest head-camera frames from LeRobot's ImageServer (robots/unitree_g1/run_g1_server.py --camera: ZMQ JSON,
+    one base64 JPEG per camera), returned as the policy's image keys at their training size. A camera named like a
+    key is used as is; otherwise --stereo-camera is split into left/right halves (the Unitree datasets'
+    cam_left_high / cam_right_high). The server JPEG-encodes RGB arrays without conversion, so decoding without
+    conversion gives RGB back. A receiver thread owns the socket; frame() only reads the latest images."""
+
+    fps, n = 30, 10**9
+
+    def __init__(self, ctx, host: str, port: int, keys: list[str], shapes: dict, stereo: str, task: str):
+        self.keys, self.shapes, self.stereo, self.task = keys, shapes, stereo, task
+        self.latest, self.lock = {}, threading.Lock()
+        sock = ctx.socket(zmq.SUB)
+        sock.setsockopt(zmq.CONFLATE, 1)
+        sock.setsockopt_string(zmq.SUBSCRIBE, "")
+        sock.connect(f"tcp://{host}:{port}")
+        threading.Thread(target=self._recv, args=(sock,), daemon=True).start()
+
+    def _recv(self, sock):
+        import base64
+
+        import cv2
+
+        while True:
+            msg = json.loads(sock.recv_string())
+            decoded = {
+                name: cv2.imdecode(np.frombuffer(base64.b64decode(b64), np.uint8), cv2.IMREAD_COLOR)
+                for name, b64 in msg.get("images", {}).items()
+            }
+            with self.lock:
+                self.latest.update(decoded)
+
+    def frame(self, t: float, wait_s: float = 10.0) -> tuple[int, dict, None, str]:
+        import cv2
+
+        deadline = time.monotonic() + wait_s
+        while True:
+            with self.lock:
+                cams = dict(self.latest)
+            if all(k.split(".")[-1] in cams for k in self.keys) or self.stereo in cams:
+                break
+            if time.monotonic() > deadline:
+                raise RuntimeError(
+                    f"no camera frames for {self.keys} (or stereo '{self.stereo}') from the image server"
+                )
+            time.sleep(0.02)
+        imgs = {}
+        for i, key in enumerate(self.keys):
+            name = key.split(".")[-1]  # observation.images.cam_left_high -> cam_left_high
+            if name in cams:
+                img = cams[name]
+            else:  # side-by-side stereo: keys in order left, right
+                full = cams[self.stereo]
+                half = full.shape[1] // 2
+                img = full[:, :half] if "left" in name or (i == 0 and "right" not in name) else full[:, half:]
+            _, h, w = self.shapes[key]
+            imgs[key] = (
+                img if img.shape[:2] == (h, w) else cv2.resize(img, (w, h), interpolation=cv2.INTER_AREA)
+            )
+        return int(t * self.fps), imgs, None, self.task
+
+
+class RemotePolicy:
+    """ChunkPolicy stand-in that asks sonic_policy_server.py (on H100, over the VPN: the robot side opens the
+    connection). Lazy-pirate REQ: a request that times out drops the socket and raises, so the streamer keeps its
+    last chunk and ends the episode after --max-chunk-age-s. Frames travel as JPEG (RGB in, RGB out)."""
+
+    def __init__(self, addr: str, timeout_s: float):
+        self.addr, self.timeout_ms, self.sock = addr, int(timeout_s * 1000), None
+        info = self._ask({"op": "info"})
+        self._close()  # the inference thread opens its own socket (ZMQ sockets are not thread-safe)
+        self.image_keys, self.n_obs = info["image_keys"], int(info["n_obs"])
+        self.shapes = {k: tuple(v) for k, v in info["shapes"].items()}
+
+    def _ask(self, req: dict) -> dict:
+        import msgpack
+
+        if self.sock is None:
+            self.sock = zmq.Context.instance().socket(zmq.REQ)
+            self.sock.setsockopt(zmq.LINGER, 0)
+            self.sock.connect(self.addr)
+        self.sock.send(msgpack.packb(req, use_bin_type=True))
+        if not self.sock.poll(self.timeout_ms):
+            self._close()
+            raise TimeoutError(f"policy server {self.addr} did not answer within {self.timeout_ms} ms")
+        rep = msgpack.unpackb(self.sock.recv(), raw=False)
+        if "error" in rep:
+            raise RuntimeError(f"policy server: {rep['error']}")
+        return rep
+
+    def _close(self):
+        if self.sock is not None:
+            self.sock.close()
+            self.sock = None
+
+    def chunk(self, states: list[np.ndarray], images: list[dict], task: str) -> np.ndarray:
+        import cv2
+
+        jpegs = [
+            {k: cv2.imencode(".jpg", im[k], [cv2.IMWRITE_JPEG_QUALITY, 90])[1].tobytes() for k in im}
+            for im in images
+        ]
+        rep = self._ask(
+            {
+                "op": "chunk",
+                "states": [np.asarray(x, np.float32).tolist() for x in states],
+                "images": jpegs,
+                "task": task,
+            }
+        )
+        return np.frombuffer(rep["chunk"], np.float32).reshape(rep["shape"])
 
 
 class InferenceWorker:
@@ -228,9 +352,15 @@ class InferenceWorker:
         return self.slot is not None and not self.slot["done"].is_set()
 
 
+GATE_PROMPTS = {
+    "deploy_ready": "when the deploy has printed 'Init Done', press Enter to start control in PLANNER mode",
+    "settled": "move the robot into position at the table (planner mode), then press Enter to start the episode",
+}
+
+
 def gate(name: str, gate_dir: Path | None) -> None:
     if gate_dir is None:
-        input(f"[streamer] {name}: press Enter to continue ")
+        input(f"[streamer] {GATE_PROMPTS.get(name, name)}: ")
         return
     print(f"[streamer] waiting for {gate_dir / name}", flush=True)
     while not (gate_dir / name).exists():
@@ -239,14 +369,26 @@ def gate(name: str, gate_dir: Path | None) -> None:
 
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--policy-path", required=True)
+    p.add_argument("--policy-path", help="local policy checkpoint (this machine has the GPU)")
+    p.add_argument(
+        "--policy-server", help="tcp://HOST:PORT of sonic_policy_server.py (e.g. H100 over the VPN)"
+    )
+    p.add_argument("--policy-timeout-s", type=float, default=1.5, help="--policy-server request timeout")
     p.add_argument("--device", default="cuda")
     p.add_argument("--deploy-host", default="localhost")
     p.add_argument("--action-port", type=int, default=5556)
     p.add_argument("--state-port", type=int, default=5557)
-    p.add_argument("--images", choices=["dataset"], default="dataset")
-    p.add_argument("--dataset-root", required=True)
-    p.add_argument("--episode", type=int, required=True)
+    p.add_argument(
+        "--images", choices=["dataset", "zmq"], default="dataset", help="zmq: live head camera (real robot)"
+    )
+    p.add_argument("--dataset-root", help="--images dataset: recorded episode source")
+    p.add_argument("--episode", type=int, help="--images dataset: recorded episode index")
+    p.add_argument("--camera-host", default="localhost", help="--images zmq: LeRobot ImageServer host")
+    p.add_argument("--camera-port", type=int, default=5555)
+    p.add_argument(
+        "--stereo-camera", default="head_camera", help="side-by-side stereo camera split into left/right"
+    )
+    p.add_argument("--task", help="instruction text (required with --images zmq; overrides the episode's)")
     p.add_argument("--replan-s", type=float, default=0.4)
     p.add_argument("--duration-s", type=float, help="default: the episode's length")
     p.add_argument("--gate-dir", type=Path, help="sim: wait for flag files instead of Enter")
@@ -297,6 +439,12 @@ def main():
         "in reverse back to the stance",
     )
     a = p.parse_args()
+    if bool(a.policy_path) == bool(a.policy_server):
+        p.error("give exactly one of --policy-path or --policy-server")
+    if a.images == "dataset" and (a.dataset_root is None or a.episode is None):
+        p.error("--images dataset needs --dataset-root and --episode")
+    if a.images == "zmq" and (a.task is None or a.duration_s is None or a.state_source == "dataset"):
+        p.error("--images zmq needs --task and --duration-s, and --state-source robot")
     startup = None
     if a.startup_tokens:
         if a.handoff_blend_s <= 0:
@@ -314,19 +462,34 @@ def main():
     if a.dex3_right_order == "swap":
         RIGHT_ORDER[:] = RIGHT_SWAP
 
-    policy = ChunkPolicy(a.policy_path, a.device)
-    images = DatasetImages(a.dataset_root, a.episode, policy.image_keys)
+    ctx = zmq.Context()
+    policy = (
+        RemotePolicy(a.policy_server, a.policy_timeout_s)
+        if a.policy_server
+        else ChunkPolicy(a.policy_path, a.device)
+    )
+    if a.images == "zmq":
+        images = LiveImages(
+            ctx, a.camera_host, a.camera_port, policy.image_keys, policy.shapes, a.stereo_camera, a.task
+        )
+    else:
+        images = DatasetImages(a.dataset_root, a.episode, policy.image_keys)
     worker = InferenceWorker()
     _, warm_imgs, warm_state, warm_task = images.frame(0.0)
-    for _ in range(3):  # warm up in the inference thread: VLA first calls take 2-5 s
-        worker.run(policy.chunk, [warm_state] * policy.n_obs, [warm_imgs] * policy.n_obs, warm_task)
+    warm_state = np.zeros(28, np.float32) if warm_state is None else warm_state
+    for _ in range(
+        3
+    ):  # warm up in the inference thread: VLA first calls take 2-5 s (and checks the server link)
+        started = time.monotonic()
+        worker.run(policy.chunk, [warm_state] * policy.n_obs, [warm_imgs] * policy.n_obs, a.task or warm_task)
+    print(f"[streamer] policy ready: {time.monotonic() - started:.2f} s per chunk (warm)", flush=True)
     duration = a.duration_s or images.n / images.fps
-    ctx = zmq.Context()
     pub = ctx.socket(zmq.PUB)
     pub.bind(f"tcp://*:{a.action_port}")
     state = StateSubscriber(ctx, a.deploy_host, a.state_port)
     print(
-        f"[streamer] policy {a.policy_path} images {policy.image_keys} episode {a.episode} {duration:.1f}s",
+        f"[streamer] policy {a.policy_path or a.policy_server} images {policy.image_keys} "
+        f"{'live camera' if a.images == 'zmq' else f'episode {a.episode}'} {duration:.1f}s",
         flush=True,
     )
 
@@ -383,7 +546,7 @@ def main():
 
     def infer(t_ep, robot_hist):
         obs = [images.frame(max(t_ep - i / images.fps, 0.0)) for i in reversed(range(policy.n_obs))]
-        k, task = obs[-1][0], obs[-1][3]
+        k, task = obs[-1][0], a.task or obs[-1][3]
         # --state-source dataset: recorded state (isolates execution from state feedback); robot: closed loop
         states = [o[2] for o in obs] if a.state_source == "dataset" else robot_hist
         chunk = policy.chunk(states, [o[1] for o in obs], task)
@@ -506,7 +669,11 @@ def main():
         pub.send(command_message(start=False, planner=False))
         print("[streamer] command: stop", flush=True)
     if a.log:
-        np.savez_compressed(a.log, **{k: np.asarray(v) for k, v in log.items()}, episode=a.episode)
+        np.savez_compressed(
+            a.log,
+            **{k: np.asarray(v) for k, v in log.items()},
+            episode=-1 if a.episode is None else a.episode,
+        )
     if a.gate_dir:
         (a.gate_dir / "done").touch()
 
