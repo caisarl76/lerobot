@@ -180,6 +180,20 @@ def combine_tokens_and_hands(tokens: np.ndarray, hands: np.ndarray) -> np.ndarra
     return np.concatenate((tokens, hands), axis=1)
 
 
+def joint_chunk_to_sonic(
+    chunk: np.ndarray, limits: np.ndarray, encoder: SonicEncoder, fps: float = 30
+) -> np.ndarray:
+    """Online counterpart of prepare_sonic_dataset for a 28D policy chunk: [N,28] joints -> [N,78] tokens + hands.
+
+    Speed limits are off, as in the sonic78_nolimit datasets. The encoder previews 0.9 s ahead; past the chunk's
+    end the last pose is held (as at an episode end), so each chunk should cover the replan interval + 0.9 s.
+    """
+    inputs, hands, _ = build_encoder_inputs(
+        chunk, limits, arm_speed_limit=None, hand_speed_limit=None, fps=fps
+    )
+    return combine_tokens_and_hands(encoder.encode(inputs), hands)
+
+
 class SonicEncoder:
     """CPU-only official ONNX encoder, with model/config provenance."""
 
