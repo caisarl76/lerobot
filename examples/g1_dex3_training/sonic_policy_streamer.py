@@ -108,6 +108,32 @@ RIGHT_SWAP = np.array(
 RIGHT_ORDER = np.arange(7)
 
 
+# Arm joint range (motor order 15..28, rad) of observation.state over all Unitree + Humanoid Everyday joint28
+# episodes; the watchdog ends an episode that leaves it by more than --arm-range-margin.
+ARM_LO = np.array(
+    [
+        -2.596,
+        -0.33,
+        -1.53,
+        -1.046,
+        -1.861,
+        -1.612,
+        -1.61,
+        -2.609,
+        -1.629,
+        -1.627,
+        -1.043,
+        -1.949,
+        -1.618,
+        -1.611,
+    ]
+)
+ARM_HI = np.array(
+    [1.473, 1.637, 1.676, 1.526, 1.97, 1.618, 1.625, 1.586, 0.284, 1.579, 1.419, 1.599, 1.634, 1.616]
+)
+ARM_SPEED_TICKS = 3  # measured arm speed over 3 ticks (60 ms): robust to one late or repeated state message
+
+
 def observation_state(msg: dict) -> np.ndarray:
     """28D joint28 state: arms (motor indices 15..28) + left Dex3 7 + right Dex3 7, as in the datasets."""
     body = np.asarray(msg["body_q"], np.float32)
@@ -444,6 +470,28 @@ def main():
         help="end the episode if the deploy's g1_debug robot state is older than this (telemetry lost)",
     )
     p.add_argument(
+        "--max-token-step",
+        type=float,
+        default=0.0,
+        help="slew limit for a first real-robot deployment only (e.g. 0.05): largest change of any token dimension "
+        "per 20 ms tick; 0 = off (default), as the policies were trained on speed-limit-free tokens. Steps within a "
+        "chunk stay below 0.04; a new chunk can jump by up to 0.25, which 0.05 spreads over ~0.1 s",
+    )
+    p.add_argument(
+        "--max-arm-speed",
+        type=float,
+        default=6.0,
+        help="watchdog: end the episode (normal shutdown path) if any measured arm joint moves faster than this "
+        "(rad/s over 60 ms; teleop data p99.9 2.6, sim runs max 5.8; 0 = off)",
+    )
+    p.add_argument(
+        "--arm-range-margin",
+        type=float,
+        default=0.15,
+        help="watchdog: end the episode if a measured arm joint leaves the training data's range by more than this "
+        "(rad)",
+    )
+    p.add_argument(
         "--state-source",
         choices=["robot", "dataset"],
         default="robot",
@@ -560,8 +608,16 @@ def main():
     frame = [0]
     history = []  # (t_ep, robot state) of recent episode ticks, for policies with n_obs_steps > 1
     log = {k: [] for k in ("wall", "t_ep", "phase", "frame", "token", "hands", "chunk_t0", "state")}
+    last_sent, slewed = [None], [0]
 
     def send(token, hands, phase, t_ep=-1.0, k=-1, chunk_t0=np.nan):
+        token = np.asarray(token, np.float32)
+        if a.max_token_step > 0 and last_sent[0] is not None:  # slew limit on every phase
+            step = token - last_sent[0]
+            if np.abs(step).max() > a.max_token_step:
+                token = last_sent[0] + np.clip(step, -a.max_token_step, a.max_token_step)
+                slewed[0] += 1
+        last_sent[0] = token
         pub.send(pose_message(token, hands, frame[0]))
         frame[0] += 1
         msg = state.latest()  # the ZMQ socket is only touched from this (main) thread
@@ -579,6 +635,23 @@ def main():
         if msg and t_ep >= 0:
             history.append((t_ep, log["state"][-1]))
             del history[:-200]
+
+    def arm_watchdog() -> str | None:
+        """Why the episode must end, from the measured arm state of recent ticks; None while it is fine."""
+        if len(history) <= ARM_SPEED_TICKS:
+            return None
+        (t0, s0), (t1, s1) = history[-1 - ARM_SPEED_TICKS], history[-1]
+        arm = s1[:14]
+        if a.max_arm_speed > 0 and t1 > t0:
+            speed = np.abs(arm - s0[:14]) / (t1 - t0)
+            j = int(np.argmax(speed))
+            if speed[j] > a.max_arm_speed:
+                return f"arm joint {j} measured at {speed[j]:.1f} rad/s > {a.max_arm_speed:g}"
+        outside = np.maximum(ARM_LO - arm, arm - ARM_HI)
+        j = int(np.argmax(outside))
+        if outside[j] > a.arm_range_margin:
+            return f"arm joint {j} at {arm[j]:.2f} rad, {outside[j]:.2f} rad outside the training range"
+        return None
 
     def robot_states(t_ep):
         """Robot state at t_ep - i/fps (oldest first), nearest earlier tick; the current state if none yet."""
@@ -686,6 +759,10 @@ def main():
         if state.age() > a.max_state_age_s:  # never plan or stream on frozen joints
             print(f"[streamer] robot state {state.age():.2f} s old: ending episode", flush=True)
             break
+        reason = arm_watchdog()
+        if reason:
+            print(f"[streamer] watchdog: {reason}: ending episode", flush=True)
+            break
         if t_ep >= next_replan and not worker.busy:
             slot, slot_t = worker.submit(infer, t_ep, robot_states(t_ep)), t_ep
             next_replan = t_ep + a.replan_s
@@ -696,6 +773,7 @@ def main():
             f"[streamer] chunk inference s: median {np.median(latencies):.2f}, max {max(latencies):.2f}, n {len(latencies)}",
             flush=True,
         )
+    print(f"[streamer] token slew limit active on {slewed[0]} ticks so far", flush=True)
     last_token, last_hands = log["token"][-1], log["hands"][-1]
     for i in ticks(50):  # 1 s blend back to the rest pose, 2 s hold, stop (at the table: hands stay above it)
         w = (i + 1) / 50
