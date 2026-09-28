@@ -97,9 +97,7 @@ def _run(command: list[str], log_path: Path) -> int:
     return completed.returncode
 
 
-def run_queue(
-    root: Path, action_space: str | None = None, exclude_episodes: list[int] | None = None
-) -> int:
+def run_queue(root: Path, action_space: str | None = None, exclude_episodes: list[int] | None = None) -> int:
     root = root.resolve()
     if not root.is_dir():
         raise ValueError(f"Run root is not a directory: {root}")
@@ -150,6 +148,8 @@ def run_queue(
                     "examples.g1_dex3_training.finalize_baseline",
                     "--run-dir",
                     str(root / "runs" / name),
+                    "--runs-root",
+                    str(root / "runs"),
                     "--device",
                     "cuda",
                     "--prune",

@@ -52,7 +52,11 @@ def write_configs(run_root: Path):
                     "expected_max_action_dim": max(32, width),
                     "adapt_action_projections": width == 78,
                     "image_keys": cameras,
-                    "setup_type": "Unitree G1 with two Dex3 hands and stereo head cameras",
+                    "setup_type": (
+                        "Unitree G1 with two Dex3 hands and one egocentric camera"
+                        if len(cameras) == 1
+                        else "Unitree G1 with two Dex3 hands and stereo head cameras"
+                    ),
                     "control_mode": "absolute arm and hand joint positions"
                     if width == 28
                     else "SONIC motion tokens and absolute hand joint positions",
@@ -72,6 +76,8 @@ def write_configs(run_root: Path):
                     "enable_world_model": True,
                     "freeze_qwen": False,
                     "world_model_loss_weight": 0.1,
+                    # The pretrained predictor has a two-view embedding. With one
+                    # ego camera, the model repeats that view internally for JEPA.
                     "world_model_num_views": 2,
                     "reinit_modules": [
                         "model.action_model.action_encoder",
@@ -104,9 +110,9 @@ def write_configs(run_root: Path):
                     output_features=deepcopy(base["policy"]["output_features"]),
                 )
                 if name == "fastwam":
-                    # FastWAM's native processor resizes each view before concatenation.
+                    # FastWAM concatenates resized views to a fixed 224x448 canvas.
                     for key in cameras:
-                        policy["input_features"][key]["shape"] = [3, 224, 224]
+                        policy["input_features"][key]["shape"] = [3, 224, 448 // len(cameras)]
                 config["policy"] = policy
                 config["batch_size"] = {"pi05": 4, "groot": 4, "molmoact2": 2, "vla_jepa": 1, "fastwam": 1}[
                     name
