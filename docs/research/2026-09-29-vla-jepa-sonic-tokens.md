@@ -59,13 +59,20 @@ C was not clipped.
 the other ho5 policies: same dataset (`sonic78_nolimit`), same held-out exclusions, 40K steps, warmup 5000, cosine
 decay over 30K. The old run keeps its name.
 
-- Batch 8 runs at 0.58 s/step and uses ~32 GB on one H100: ≈ 6.5 h for 40K steps (8× the samples of the batch-1 run).
+- Batch 8 uses ~32 GB on one H100 and runs at 0.69 s/step (0.58 in test B): ≈ 7.7 h for 40K steps, 8× the samples of
+  the batch-1 run.
 - Checkpoints every 15K steps (16 GB each), at 15K, 30K and 40K.
 - Checkpoint at 15K: open-loop evaluation, where joint28 had already learned (loss 0.15 at 14K). If the token error is
   not clearly below 0.8 there, stop and look at the action head itself (the 1/16-grid token values,
   `reinit_modules`, `repeated_diffusion_steps`) instead of finishing the run.
 - After 40K: `finalize_baseline.py` and the open-loop evaluation at stride 5, to fill the VLA-JEPA row of the
   handover table.
+
+Status (2026-09-29 08:40 KST): **running** on H100 GPU 0 since 08:36 KST (the Qwen server on GPU 0 is stopped for
+it). Expected: 15K checkpoint ≈ 11:30 KST (its evaluation ≈ 11:40), 40K ≈ 16:20 KST. The two evaluations are queued in
+the evaluation container and wait for the checkpoint and the `.exit` file; progress is in
+`/run-output/eval_ho5/vla_jepa_sonic78nolimit_ho5_b8meanstd_full.status`, scores in
+`/run-output/eval_ho5/openloop_vla_jepa_sonic78nolimit_ho5_b8meanstd_full{_15k,}.json`.
 
 ## Loader bug (not fixed)
 
