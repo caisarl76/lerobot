@@ -9,10 +9,10 @@
 #   e.g. sonic_official_sim_eval.sh FINAL_groot_ep6 groot_sonic78nolimit_ho5_full sonic78_nolimit 6 2 5 \
 #          --startup-tokens /audit/table_startup/r20/startup.npz
 # Needs: /audit/code on H100 holding this directory's current scripts (copy them there through a container).
-# Env: LOG_DIR (local streamer logs, default ./sim_eval_logs), CODE_DIR (H100 script copy, default $A/code), VPN_ON (command to re-establish the VPN, optional).
+# Env: LOG_DIR (local streamer logs, default ./sim_eval_logs), CODE_DIR (H100 script copy, default $A/code), JOINT28_DIR (joint28 dataset for scoring; HE: /run-output/humanoid_everyday_g1_20260923/datasets/joint28), VPN_ON (command to re-establish the VPN, optional).
 LOG_DIR=${LOG_DIR:-./sim_eval_logs}; mkdir -p "$LOG_DIR"
 OUT=$1; RUN=$2; DS=$3; EP=$4; GPU=$5; GAP=$6; shift 6; EXTRA="$*"
-A=/mnt/data01/jhkim/model_weight/sonic_roundtrip_20260923; C=${CODE_DIR:-$A/code}; G=/home/kube/sonic_vla_integration/20260906; R=/run-output/runs; D=/run-output/datasets
+A=/mnt/data01/jhkim/model_weight/sonic_roundtrip_20260923; C=${CODE_DIR:-$A/code}; J28=${JOINT28_DIR:-/run-output/datasets/joint28}; G=/home/kube/sonic_vla_integration/20260906; R=/run-output/runs; D=/run-output/datasets
 H="jihun-sonic-simhost-$OUT"; S="jihun-sonic-streamer-$OUT"
 ssh_() { until ssh -n -o ConnectTimeout=20 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 h100 "$@"; do ${VPN_ON:-true} >/dev/null 2>&1 </dev/null; sleep 20; done; }
 ssh_ "docker rm -f $H $S P-$OUT >/dev/null 2>&1; docker run --rm -v $A:/a --entrypoint bash 4cbe2a3f7fc6 -c 'rm -rf /a/$OUT && mkdir -p /a/$OUT/sim /a/$OUT/gate'
@@ -25,4 +25,4 @@ docker run -d --name $S --network container:$H -e PYTHONPATH=/audit/pylib_stream
 while :; do r=$(ssh -n -o ConnectTimeout=20 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 h100 "docker ps -q -f name=$H" 2>/dev/null) || { ${VPN_ON:-true} >/dev/null 2>&1 </dev/null; sleep 20; continue; }; [ -z "$r" ] && break; sleep 30; done
 ssh -n -o ConnectTimeout=20 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 h100 "docker logs $S 2>&1" > "$LOG_DIR/$OUT.streamer.log" 2>&1
 ssh_ "docker logs $S 2>&1 | grep -E 'chunk inference|no valid chunk|rejected|Error|old: ending' | tail -3; docker rm -f $H $S P-$OUT >/dev/null"
-ssh_ "docker run --rm -e PYTHONPATH=/audit/pylib -e MUJOCO_GL=disable -v $A:/audit -v $C:/code:ro -v /mnt/data01/jhkim/model_weight/g1_dex3_20260922:/run-output:ro -v $G/source/gear_sonic:/gear_sonic:ro -v $G/source/gear_sonic_deploy:/gear_sonic_deploy:ro -v $G/models/sonic/sonic_v1_1:/sonic-model:ro --entrypoint sh 4cbe2a3f7fc6 -c '/run-output/environment/venv/bin/python /code/sonic_stream_eval.py /audit/$OUT /run-output/datasets/joint28 $D/$DS $EP > /audit/$OUT/stream_eval.json 2>/dev/null'; grep -E 'frames_scored|\"p50\"|\"p95\"|tilt_max|contacts_min' $A/$OUT/stream_eval.json | head -8" && echo "[$(TZ=Asia/Seoul date +%H:%M) KST] $OUT scored"
+ssh_ "docker run --rm -e PYTHONPATH=/audit/pylib -e MUJOCO_GL=disable -v $A:/audit -v $C:/code:ro -v /mnt/data01/jhkim/model_weight/g1_dex3_20260922:/run-output:ro -v $G/source/gear_sonic:/gear_sonic:ro -v $G/source/gear_sonic_deploy:/gear_sonic_deploy:ro -v $G/models/sonic/sonic_v1_1:/sonic-model:ro --entrypoint sh 4cbe2a3f7fc6 -c '/run-output/environment/venv/bin/python /code/sonic_stream_eval.py /audit/$OUT $J28 $D/$DS $EP > /audit/$OUT/stream_eval.json 2>/dev/null'; grep -E 'frames_scored|\"p50\"|\"p95\"|tilt_max|contacts_min' $A/$OUT/stream_eval.json | head -8" && echo "[$(TZ=Asia/Seoul date +%H:%M) KST] $OUT scored"

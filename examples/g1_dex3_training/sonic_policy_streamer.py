@@ -525,6 +525,15 @@ def main():
         "in reverse back to the stance",
     )
     p.add_argument(
+        "--start",
+        choices=["standing", "planner"],
+        default="standing",
+        help="episode start/end pose without --startup-tokens: standing = NVIDIA's standing token (hands rise to "
+        "~0.8 m, 0.3 m forward); planner = stay in the planner stance (arms down) and blend from it into the policy "
+        "and back, for policies whose episodes start with the arms low, e.g. Humanoid Everyday (table edge >= ~30 cm "
+        "in front of the pelvis)",
+    )
+    p.add_argument(
         "--action-space",
         choices=["sonic78", "joint28"],
         default="sonic78",
@@ -534,6 +543,10 @@ def main():
     for name in ("encoder-model", "observation-config", "robot-xml"):
         p.add_argument(f"--{name}", type=Path, help="--action-space joint28: as for prepare_sonic_dataset.py")
     a = p.parse_args()
+    if a.start == "planner" and (a.startup_tokens or a.handoff_blend_s <= 0):
+        p.error(
+            "--start planner excludes --startup-tokens and needs --handoff-blend-s > 0 (it reads the planner token)"
+        )
     if bool(a.policy_path) == bool(a.policy_server):
         p.error("give exactly one of --policy-path or --policy-server")
     joint28 = None
@@ -696,6 +709,8 @@ def main():
         # table startup: switch into the table-safe arm path instead of NVIDIA's standing token, whose hands rise
         # to ~0.8 m, 0.3 m forward (into an 80 cm table)
         target = LATENT_INITIAL_MOTION_TOKEN if startup is None else startup["tokens"][0]
+        if a.start == "planner":  # rest on the planner stance itself: no standing token, no table path
+            rest_token, n = planner.copy(), 0
         for i in ticks(n):
             w = (i + 1) / n
             send((1 - w) * planner + w * target, zero_h, "handoff blend")
