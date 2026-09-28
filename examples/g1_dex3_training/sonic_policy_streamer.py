@@ -35,7 +35,17 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from lerobot.utils.import_utils import _zmq_available, require_package
+try:
+    from lerobot.utils.import_utils import _zmq_available, require_package
+except ImportError:  # robot PC without lerobot (and torch): --policy-server with --images zmq needs neither
+    import importlib.util
+
+    _zmq_available = importlib.util.find_spec("zmq") is not None
+
+    def require_package(name: str, extra: str, import_name: str) -> None:
+        if importlib.util.find_spec(import_name) is None:
+            raise ImportError(f"{name} is required: pip install {name}")
+
 
 if TYPE_CHECKING or _zmq_available:
     import zmq
@@ -159,20 +169,41 @@ def dataset_obs(ds, k: int, n: int, image_keys: list[str]) -> tuple[list[np.ndar
     return states, imgs, str(items[-1].get("task", ""))
 
 
+def cast_groot_backbone(policy, dtype) -> None:
+    """Cast the frozen GR00T VLM backbone's parameters (not buffers) to dtype; the action head stays float32.
+
+    Fits GR00T N1.7 on a 12 GB GPU (float32 checkpoint 12.6 GB -> 9.5 GB). Our fine-tunes freeze the backbone
+    (tune_llm / tune_visual off), so its float32 values are the released bf16 weights and bf16 loses nothing
+    (checked for groot_sonic78nolimit_ho5_full: all 1.52B backbone values bf16-exact). Activations in the
+    backbone then run in dtype, so outputs differ slightly from the float32 model.
+    """
+    if policy.config.type != "groot":
+        raise ValueError(f"--backbone-dtype only applies to GR00T, not {policy.config.type}")
+    for param in policy._groot_model.backbone.parameters():
+        if param.is_floating_point():
+            param.data = param.data.to(dtype)
+
+
 class ChunkPolicy:
-    def __init__(self, path: str, device: str):
+    def __init__(self, path: str, device: str, backbone_dtype: str | None = None):
+        import torch
+
         from lerobot.configs.policies import PreTrainedConfig
         from lerobot.policies.factory import get_policy_class, make_pre_post_processors
 
         cfg = PreTrainedConfig.from_pretrained(path)
-        cfg.device = device
-        self.policy = get_policy_class(cfg.type).from_pretrained(path, config=cfg).to(device).eval()
+        # With a backbone cast, load on the CPU first: the float32 model may not fit the GPU before the cast.
+        cfg.device = "cpu" if backbone_dtype else device
+        policy = get_policy_class(cfg.type).from_pretrained(path, config=cfg)
+        if backbone_dtype:
+            cast_groot_backbone(policy, getattr(torch, backbone_dtype))
+            cfg.device = device
+        self.policy = policy.to(device).eval()
         self.pre, self.post = make_pre_post_processors(
             policy_cfg=cfg,
             pretrained_path=path,
             preprocessor_overrides={"device_processor": {"device": device}},
         )
-        import torch
 
         self.device = torch.device(device)
         self.image_keys = [k for k in cfg.input_features if "image" in k]
@@ -379,6 +410,9 @@ def main():
     )
     p.add_argument("--policy-timeout-s", type=float, default=1.5, help="--policy-server request timeout")
     p.add_argument("--device", default="cuda")
+    p.add_argument(
+        "--backbone-dtype", choices=["bfloat16"], help="--policy-path GR00T: cast the frozen backbone"
+    )
     p.add_argument("--deploy-host", default="localhost")
     p.add_argument("--action-port", type=int, default=5556)
     p.add_argument("--state-port", type=int, default=5557)
@@ -484,7 +518,7 @@ def main():
     policy = (
         RemotePolicy(a.policy_server, a.policy_timeout_s)
         if a.policy_server
-        else ChunkPolicy(a.policy_path, a.device)
+        else ChunkPolicy(a.policy_path, a.device, a.backbone_dtype)
     )
     if a.images == "zmq":
         images = LiveImages(
@@ -610,7 +644,16 @@ def main():
         pub.send(command_message(start=True, planner=False))
     print("[streamer] command: POSE mode (streamed tokens)", flush=True)
     resampler = ChunkResampler(images.fps)
-    _, first = worker.run(infer, 0.0, robot_states(0.0))
+    # First chunk: keep the 50 Hz stream on the rest pose (which the robot already holds) while it is computed,
+    # instead of pausing the deploy's input (0.16 s on H100 locally, ~0.28 s from the robot PC over Wi-Fi).
+    slot = worker.submit(infer, 0.0, robot_states(0.0))
+    for _ in ticks(10**9):
+        if slot["done"].is_set():
+            break
+        send(rest_token, rest_hands, "wait first chunk")
+    if "error" in slot:
+        raise RuntimeError(slot["error"])
+    _, first = slot["result"]
     resampler.set_chunk(first, t0=0.0)
     for i in ticks(
         50
