@@ -59,14 +59,22 @@ def main():
 
     latest, lock = [None, 0.0], threading.Lock()
 
-    def capture():  # keep draining the camera at its own rate; encode only what gets published
+    def capture():
+        # Drain the camera at its own rate with grab() (no colour conversion) and retrieve() (the costly
+        # YUYV -> BGR conversion) only the frames that get published.
+        next_retrieve = 0.0
         while True:
-            ok, bgr = cap.read()
-            if not ok:
+            if not cap.grab():
                 time.sleep(0.01)
                 continue
-            with lock:
-                latest[:] = [bgr, time.time()]
+            now = time.monotonic()
+            if now < next_retrieve:
+                continue
+            ok, bgr = cap.retrieve()
+            if ok:
+                next_retrieve = now + 1 / a.publish_fps
+                with lock:
+                    latest[:] = [bgr, time.time()]
 
     threading.Thread(target=capture, daemon=True).start()
     sock = zmq.Context().socket(zmq.PUB)
