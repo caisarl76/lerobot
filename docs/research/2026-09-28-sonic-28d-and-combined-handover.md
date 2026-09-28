@@ -115,10 +115,48 @@ robot, add the same four options to the streamer command in the 2026-09-27 hando
 - Unitree held-out ≈ training (no memorisation); HE held-out is 5–15% worse.
 - Every model is far behind “hold previous” for the first steps and only matches it around 1 s ahead: the models do not
   recover the current action from image + state alone.
-- **VLA-JEPA did not learn** (action loss 1.15 → 0.85 over 40K steps; error ~2 std on training data too).
+- **VLA-JEPA did not learn** (action loss 1.15 → 0.85 over 40K steps; error ~2 std on training data too). Short
+  tests below.
 - VLA-JEPA strict loading fails when the checkpoint config keeps `reinit_modules`: the tied `embed_tokens` is not in the
   file (only `lm_head` is) and the custom check in `VLAJEPAPolicy._load_as_safetensor` does not account for tied weights.
   With `cfg.reinit_modules = None` (as `finalize_baseline.py` does) the load is correct. Not fixed.
+
+### VLA-JEPA on SONIC tokens: short tests
+
+The same recipe (`lerobot/VLA-JEPA-Pretrain`, batch 1, lr 1e-4, ACTION MIN*MAX with `clip_normalized_actions`,
+`reinit_modules` = action encoder/decoder + state encoder) learned on 28D joints (`vla_jepa_joint28_full`) but not on
+78D tokens (`vla_jepa_sonic78nolimit_ho5_full`); the two configs differ only in dataset and action size. Three 5K-step
+tests on Unitree ho5 (warmup 500, cosine decay over 40K so lr stays near peak; configs
+`/run-output/configs/\_vjtest*{A,B,C}.json`, runs `/run-output/runs/_vjtest\_\_`, scores
+`/run-output/eval*ho5/openloop_vjtest*_.json`, stride 10):
+
+| Test | Change          | Action loss at 5K  | Tokens step 0 held-out / train | Hands step 0 held-out |
+| ---- | --------------- | ------------------ | ------------------------------ | --------------------- |
+| A    | none (control)  | 0.937              | 2.284 / 2.287                  | 1.144                 |
+| B    | batch size 8    | **0.607**          | 1.896 / 1.896                  | 0.869                 |
+| C    | ACTION MEAN_STD | 1.454 (other norm) | 0.957 / 0.963                  | 0.970                 |
+
+On this metric a constant prediction of the mean scores ≈ 0.8.
+
+- **Batch size 1 is the main problem.** B's action loss fell like joint28's did at its break (per 1K steps:
+  A 1.02 → 0.98 → 0.94 → 0.95 → 0.94; B 0.93 → 0.91 → 0.85 → 0.73 → 0.62). Its open-loop hands improved (0.87 vs
+  1.14), tokens only a little, because the MIN_MAX effect below still dominates.
+- **MIN_MAX is a second problem.** Under MIN_MAX the unnormalized token outputs land ~2–3× further off than the mean
+  would; with MEAN_STD (C) they drop to the level of an uninformative prediction. Step 0 and step 6 errors are the
+  same in every test: the outputs are not yet conditioned on the observation.
+- **5K steps is short.** Action loss per 1K steps of the two full runs:
+
+  | Step              | 1K   | 3K   | 5K   | 8K   | 10K  | 12K  | 14K  | 20K  |
+  | ----------------- | ---- | ---- | ---- | ---- | ---- | ---- | ---- | ---- |
+  | joint28 (learned) | 0.94 | 0.86 | 0.79 | 0.64 | 0.52 | 0.36 | 0.15 | 0.09 |
+  | sonic78 (failed)  | 1.03 | 0.97 | 0.98 | 0.95 | 0.93 | 0.92 | 0.91 | 0.90 |
+
+  joint28 broke through between 5K and 14K; at 5K it would also have scored about 1 open-loop. B is at the start of
+  such a break; the tests cannot show where it ends.
+
+- Next: retrain `vla_jepa_sonic78nolimit_ho5_full` with **batch 8 + MEAN_STD**, same held-out split, and check the
+  open-loop score at ~15K before running the full 40K. Batch 8 runs at 0.58 s/step (≈ 2.4 h per 15K on one H100).
+  Not started: GPU 0 went back to the Qwen server.
 
 ## Other changes and decisions
 
@@ -138,7 +176,11 @@ robot, add the same four options to the streamer command in the 2026-09-27 hando
   Training kept 40K steps for comparability (≈ half the passes per episode of the single-dataset runs).
 - **Zombie processes in the training containers.** PID 1 there is `sleep infinity`, which never reaps children; a
   finished trainer stays a zombie and `kill -0 <pid>` waiters never fire. Wait on `.exit` files instead.
-- **Qwen vLLM on GPU 0** (`jihun-lerobot-qwen36-gpu0`) was stopped for training and restarted; it is running.
+- **Qwen vLLM on GPU 0** (`jihun-lerobot-qwen36-gpu0`) was stopped for training and for the VLA-JEPA tests, and
+  restarted after them; it is running.
+- **GPU 0 training container lost the GPU** (“Failed to initialize NVML”, `cuda False`; training silently fell back to
+  CPU at 8 s/step). It was recreated with the same settings and `--gpus device=<GPU 0 UUID>`. If a run is unexpectedly
+  slow, check `nvidia-smi -L` in the container and the log for “Switching to 'cpu'”.
 - An idle eval container `jihun-lerobot-g1-dex3-eval-gpu6-20260925` (GPU 6, spare memory only; other users' processes
   run there) can be reused for evaluation or removed.
 
@@ -168,5 +210,5 @@ robot, add the same four options to the streamer command in the 2026-09-27 hando
    joint state drifts in closed loop. Training on relabelled state (sonicstate) helps; a 28D model on relabelled state
    (`joint28` actions + `sonic78_nolimit_sonicstate` state) is not built yet.
 6. **Small fixes.** VLA-JEPA: fix the tied-weight check in `_load_as_safetensor` (ignore missing keys that share storage
-   with a loaded key), then look at why it did not learn. Consider feeding the previous action as an input, given how
-   far every model is from “hold previous” at the first steps.
+   with a loaded key), then the batch 8 + MEAN_STD retrain above. Consider feeding the previous action as an input,
+   given how far every model is from “hold previous” at the first steps.
