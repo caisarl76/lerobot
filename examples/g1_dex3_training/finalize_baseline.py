@@ -118,7 +118,7 @@ def _inference_observation(batch, cfg):
     return observation
 
 
-def validate_model(run_dir: Path, device: str, *, allowed_root: Path = RUNS_ROOT):
+def validate_model(run_dir: Path, device: str, *, allowed_root: Path = RUNS_ROOT, episode: int | None = None):
     """Reload the actual saved model and processors, then evaluate one native batch."""
     final, _ = inspect_completed_checkpoint(run_dir, allowed_root=allowed_root)
     model = final / "pretrained_model"
@@ -159,9 +159,11 @@ def validate_model(run_dir: Path, device: str, *, allowed_root: Path = RUNS_ROOT
     )
     train_cfg = TrainPipelineConfig.from_pretrained(model, local_files_only=True)
     train_cfg.policy = cfg
-    manifest = json.loads((Path(train_cfg.dataset.root) / "meta/provenance.json").read_text())
-    provenance = manifest.get("source_provenance", manifest)
-    episode = provenance["smoke_episodes"][0]
+    if episode is None:
+        # Aggregated datasets (e.g. combined Unitree + HE) have no provenance.json; pass --episode for those.
+        manifest = json.loads((Path(train_cfg.dataset.root) / "meta/provenance.json").read_text())
+        provenance = manifest.get("source_provenance", manifest)
+        episode = provenance["smoke_episodes"][0]
     train_cfg.dataset.episodes = [episode]
     train_cfg.dataset.exclude_episodes = None
     dataset = make_dataset(train_cfg)
@@ -252,9 +254,12 @@ def main():
     parser.add_argument("--run-dir", type=Path, required=True)
     parser.add_argument("--device", choices=("cpu", "cuda"), default="cpu")
     parser.add_argument("--runs-root", type=Path, default=RUNS_ROOT)
+    parser.add_argument(
+        "--episode", type=int, help="Dataset episode for the check (default: first smoke episode)"
+    )
     parser.add_argument("--prune", action="store_true")
     args = parser.parse_args()
-    report = validate_model(args.run_dir, args.device, allowed_root=args.runs_root)
+    report = validate_model(args.run_dir, args.device, allowed_root=args.runs_root, episode=args.episode)
     if args.prune:
         report["pruned_paths"] = prune_verified_checkpoint(args.run_dir, report, allowed_root=args.runs_root)
         _write_report(args.run_dir, report)
