@@ -211,8 +211,12 @@ def cast_groot_backbone(policy, dtype) -> None:
 
 
 class ChunkPolicy:
-    def __init__(self, path: str, device: str, backbone_dtype: str | None = None):
+    def __init__(
+        self, path: str, device: str, backbone_dtype: str | None = None, noise_seed: int | None = None
+    ):
         import torch
+
+        self.noise_seed = noise_seed
 
         from lerobot.configs.policies import PreTrainedConfig
         from lerobot.policies.factory import get_policy_class, make_pre_post_processors
@@ -240,6 +244,10 @@ class ChunkPolicy:
         """states/images: the last n_obs observations, oldest first (1/fps apart); task: instruction text."""
         import torch
 
+        if self.noise_seed is not None:
+            # same sampling noise for every chunk: a flow-matching policy (GR00T) then gives consistent chunks
+            # for similar observations instead of a fresh random sample at every replan
+            torch.manual_seed(self.noise_seed)
         with torch.inference_mode():
             return self._chunk(states, images, task)
 
@@ -454,6 +462,18 @@ def main():
     )
     p.add_argument("--task", help="instruction text (required with --images zmq; overrides the episode's)")
     p.add_argument("--replan-s", type=float, default=0.4)
+    p.add_argument(
+        "--chunk-blend-s",
+        type=float,
+        default=0.0,
+        help="cross-fade from the previous chunk to a newly arrived one over this many seconds (0 = switch at "
+        "once, the evaluated setting); smooths chunk switches of stochastic policies such as GR00T",
+    )
+    p.add_argument(
+        "--noise-seed",
+        type=int,
+        help="--policy-path: reseed the sampling noise before every chunk (GR00T flow matching; see the server)",
+    )
     p.add_argument("--duration-s", type=float, help="default: the episode's length")
     p.add_argument("--gate-dir", type=Path, help="sim: wait for flag files instead of Enter")
     p.add_argument("--log", type=Path, help="write a per-tick .npz log")
@@ -579,7 +599,7 @@ def main():
     policy = (
         RemotePolicy(a.policy_server, a.policy_timeout_s)
         if a.policy_server
-        else ChunkPolicy(a.policy_path, a.device, a.backbone_dtype)
+        else ChunkPolicy(a.policy_path, a.device, a.backbone_dtype, a.noise_seed)
     )
     if a.images == "zmq":
         images = LiveImages(
@@ -763,7 +783,7 @@ def main():
             if "error" in slot:  # keep streaming the last good chunk; stop if it goes stale
                 print(f"[streamer] {slot['error']}", flush=True)
             else:
-                resampler.set_chunk(slot["result"][1], t0=slot_t)
+                resampler.set_chunk(slot["result"][1], t0=slot_t, blend_s=a.chunk_blend_s, now=t_ep)
                 last_chunk_t, chunk_t0 = t_ep, slot_t
                 latencies.append(slot["latency"])
             slot = None
@@ -830,6 +850,7 @@ def main():
             a.log,
             **{k: np.asarray(v) for k, v in log.items()},
             episode=-1 if a.episode is None else a.episode,
+            args=json.dumps(vars(a), default=str),  # the exact settings of this run
         )
     if a.gate_dir:
         (a.gate_dir / "done").touch()
