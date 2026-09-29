@@ -1,5 +1,8 @@
-"""Extract stored sonic78 tokens/hands + original joint28 actions for deploy replay (one npz per episode)."""
+"""Extract stored sonic78 tokens/hands + original joint28 actions for deploy replay (one npz per episode).
+SONIC_SUFFIX=_nolimit reads the speed-limit-free conversion the policies were trained on (sonic78_nolimit).
+"""
 
+import os
 import sys
 from pathlib import Path
 
@@ -8,11 +11,12 @@ import numpy as np
 sys.path.insert(0, "/code")
 from sonic_roundtrip_audit import v3_episode, v3_meta
 
+SUFFIX = os.environ.get("SONIC_SUFFIX", "")
 SRC = {
-    "unitree": ("/run-output/datasets/joint28", "/run-output/datasets/sonic78"),
+    "unitree": ("/run-output/datasets/joint28", f"/run-output/datasets/sonic78{SUFFIX}"),
     "humanoid_everyday": (
         "/run-output/humanoid_everyday_g1_20260923/datasets/joint28",
-        "/run-output/humanoid_everyday_g1_20260923/datasets/sonic78",
+        f"/run-output/humanoid_everyday_g1_20260923/datasets/sonic78{SUFFIX}",
     ),
 }
 out = Path(sys.argv[1])

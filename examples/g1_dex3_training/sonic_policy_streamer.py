@@ -35,7 +35,17 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from lerobot.utils.import_utils import _zmq_available, require_package
+try:
+    from lerobot.utils.import_utils import _zmq_available, require_package
+except ImportError:  # robot PC without lerobot (and torch): --policy-server with --images zmq needs neither
+    import importlib.util
+
+    _zmq_available = importlib.util.find_spec("zmq") is not None
+
+    def require_package(name: str, extra: str, import_name: str) -> None:
+        if importlib.util.find_spec(import_name) is None:
+            raise ImportError(f"{name} is required: pip install {name}")
+
 
 if TYPE_CHECKING or _zmq_available:
     import zmq
@@ -96,6 +106,32 @@ RIGHT_SWAP = np.array(
     [0, 1, 2, 5, 6, 3, 4]
 )  # an involution: the same permutation converts in both directions
 RIGHT_ORDER = np.arange(7)
+
+
+# Arm joint range (motor order 15..28, rad) of observation.state over all Unitree + Humanoid Everyday joint28
+# episodes; the watchdog ends an episode that leaves it by more than --arm-range-margin.
+ARM_LO = np.array(
+    [
+        -2.596,
+        -0.33,
+        -1.53,
+        -1.046,
+        -1.861,
+        -1.612,
+        -1.61,
+        -2.609,
+        -1.629,
+        -1.627,
+        -1.043,
+        -1.949,
+        -1.618,
+        -1.611,
+    ]
+)
+ARM_HI = np.array(
+    [1.473, 1.637, 1.676, 1.526, 1.97, 1.618, 1.625, 1.586, 0.284, 1.579, 1.419, 1.599, 1.634, 1.616]
+)
+ARM_SPEED_TICKS = 3  # measured arm speed over 3 ticks (60 ms): robust to one late or repeated state message
 
 
 def observation_state(msg: dict) -> np.ndarray:
@@ -159,20 +195,45 @@ def dataset_obs(ds, k: int, n: int, image_keys: list[str]) -> tuple[list[np.ndar
     return states, imgs, str(items[-1].get("task", ""))
 
 
+def cast_groot_backbone(policy, dtype) -> None:
+    """Cast the frozen GR00T VLM backbone's parameters (not buffers) to dtype; the action head stays float32.
+
+    Fits GR00T N1.7 on a 12 GB GPU (float32 checkpoint 12.6 GB -> 9.5 GB). Our fine-tunes freeze the backbone
+    (tune_llm / tune_visual off), so its float32 values are the released bf16 weights and bf16 loses nothing
+    (checked for groot_sonic78nolimit_ho5_full: all 1.52B backbone values bf16-exact). Activations in the
+    backbone then run in dtype, so outputs differ slightly from the float32 model.
+    """
+    if policy.config.type != "groot":
+        raise ValueError(f"--backbone-dtype only applies to GR00T, not {policy.config.type}")
+    for param in policy._groot_model.backbone.parameters():
+        if param.is_floating_point():
+            param.data = param.data.to(dtype)
+
+
 class ChunkPolicy:
-    def __init__(self, path: str, device: str):
+    def __init__(
+        self, path: str, device: str, backbone_dtype: str | None = None, noise_seed: int | None = None
+    ):
+        import torch
+
+        self.noise_seed = noise_seed
+
         from lerobot.configs.policies import PreTrainedConfig
         from lerobot.policies.factory import get_policy_class, make_pre_post_processors
 
         cfg = PreTrainedConfig.from_pretrained(path)
-        cfg.device = device
-        self.policy = get_policy_class(cfg.type).from_pretrained(path, config=cfg).to(device).eval()
+        # With a backbone cast, load on the CPU first: the float32 model may not fit the GPU before the cast.
+        cfg.device = "cpu" if backbone_dtype else device
+        policy = get_policy_class(cfg.type).from_pretrained(path, config=cfg)
+        if backbone_dtype:
+            cast_groot_backbone(policy, getattr(torch, backbone_dtype))
+            cfg.device = device
+        self.policy = policy.to(device).eval()
         self.pre, self.post = make_pre_post_processors(
             policy_cfg=cfg,
             pretrained_path=path,
             preprocessor_overrides={"device_processor": {"device": device}},
         )
-        import torch
 
         self.device = torch.device(device)
         self.image_keys = [k for k in cfg.input_features if "image" in k]
@@ -183,6 +244,10 @@ class ChunkPolicy:
         """states/images: the last n_obs observations, oldest first (1/fps apart); task: instruction text."""
         import torch
 
+        if self.noise_seed is not None:
+            # same sampling noise for every chunk: a flow-matching policy (GR00T) then gives consistent chunks
+            # for similar observations instead of a fresh random sample at every replan
+            torch.manual_seed(self.noise_seed)
         with torch.inference_mode():
             return self._chunk(states, images, task)
 
@@ -379,6 +444,9 @@ def main():
     )
     p.add_argument("--policy-timeout-s", type=float, default=1.5, help="--policy-server request timeout")
     p.add_argument("--device", default="cuda")
+    p.add_argument(
+        "--backbone-dtype", choices=["bfloat16"], help="--policy-path GR00T: cast the frozen backbone"
+    )
     p.add_argument("--deploy-host", default="localhost")
     p.add_argument("--action-port", type=int, default=5556)
     p.add_argument("--state-port", type=int, default=5557)
@@ -394,6 +462,18 @@ def main():
     )
     p.add_argument("--task", help="instruction text (required with --images zmq; overrides the episode's)")
     p.add_argument("--replan-s", type=float, default=0.4)
+    p.add_argument(
+        "--chunk-blend-s",
+        type=float,
+        default=0.0,
+        help="cross-fade from the previous chunk to a newly arrived one over this many seconds (0 = switch at "
+        "once, the evaluated setting); smooths chunk switches of stochastic policies such as GR00T",
+    )
+    p.add_argument(
+        "--noise-seed",
+        type=int,
+        help="--policy-path: reseed the sampling noise before every chunk (GR00T flow matching; see the server)",
+    )
     p.add_argument("--duration-s", type=float, help="default: the episode's length")
     p.add_argument("--gate-dir", type=Path, help="sim: wait for flag files instead of Enter")
     p.add_argument("--log", type=Path, help="write a per-tick .npz log")
@@ -408,6 +488,28 @@ def main():
         type=float,
         default=0.2,
         help="end the episode if the deploy's g1_debug robot state is older than this (telemetry lost)",
+    )
+    p.add_argument(
+        "--max-token-step",
+        type=float,
+        default=0.0,
+        help="slew limit for a first real-robot deployment only (e.g. 0.05): largest change of any token dimension "
+        "per 20 ms tick; 0 = off (default), as the policies were trained on speed-limit-free tokens. Steps within a "
+        "chunk stay below 0.04; a new chunk can jump by up to 0.25, which 0.05 spreads over ~0.1 s",
+    )
+    p.add_argument(
+        "--max-arm-speed",
+        type=float,
+        default=6.0,
+        help="watchdog: end the episode (normal shutdown path) if any measured arm joint moves faster than this "
+        "(rad/s over 60 ms; teleop data p99.9 2.6, sim runs max 5.8; 0 = off)",
+    )
+    p.add_argument(
+        "--arm-range-margin",
+        type=float,
+        default=0.15,
+        help="watchdog: end the episode if a measured arm joint leaves the training data's range by more than this "
+        "(rad)",
     )
     p.add_argument(
         "--state-source",
@@ -443,6 +545,15 @@ def main():
         "in reverse back to the stance",
     )
     p.add_argument(
+        "--start",
+        choices=["standing", "planner"],
+        default="standing",
+        help="episode start/end pose without --startup-tokens: standing = NVIDIA's standing token (hands rise to "
+        "~0.8 m, 0.3 m forward); planner = stay in the planner stance (arms down) and blend from it into the policy "
+        "and back, for policies whose episodes start with the arms low, e.g. Humanoid Everyday (table edge >= ~30 cm "
+        "in front of the pelvis)",
+    )
+    p.add_argument(
         "--action-space",
         choices=["sonic78", "joint28"],
         default="sonic78",
@@ -452,6 +563,10 @@ def main():
     for name in ("encoder-model", "observation-config", "robot-xml"):
         p.add_argument(f"--{name}", type=Path, help="--action-space joint28: as for prepare_sonic_dataset.py")
     a = p.parse_args()
+    if a.start == "planner" and (a.startup_tokens or a.handoff_blend_s <= 0):
+        p.error(
+            "--start planner excludes --startup-tokens and needs --handoff-blend-s > 0 (it reads the planner token)"
+        )
     if bool(a.policy_path) == bool(a.policy_server):
         p.error("give exactly one of --policy-path or --policy-server")
     joint28 = None
@@ -484,7 +599,7 @@ def main():
     policy = (
         RemotePolicy(a.policy_server, a.policy_timeout_s)
         if a.policy_server
-        else ChunkPolicy(a.policy_path, a.device)
+        else ChunkPolicy(a.policy_path, a.device, a.backbone_dtype, a.noise_seed)
     )
     if a.images == "zmq":
         images = LiveImages(
@@ -526,8 +641,16 @@ def main():
     frame = [0]
     history = []  # (t_ep, robot state) of recent episode ticks, for policies with n_obs_steps > 1
     log = {k: [] for k in ("wall", "t_ep", "phase", "frame", "token", "hands", "chunk_t0", "state")}
+    last_sent, slewed = [None], [0]
 
     def send(token, hands, phase, t_ep=-1.0, k=-1, chunk_t0=np.nan):
+        token = np.asarray(token, np.float32)
+        if a.max_token_step > 0 and last_sent[0] is not None:  # slew limit on every phase
+            step = token - last_sent[0]
+            if np.abs(step).max() > a.max_token_step:
+                token = last_sent[0] + np.clip(step, -a.max_token_step, a.max_token_step)
+                slewed[0] += 1
+        last_sent[0] = token
         pub.send(pose_message(token, hands, frame[0]))
         frame[0] += 1
         msg = state.latest()  # the ZMQ socket is only touched from this (main) thread
@@ -545,6 +668,23 @@ def main():
         if msg and t_ep >= 0:
             history.append((t_ep, log["state"][-1]))
             del history[:-200]
+
+    def arm_watchdog() -> str | None:
+        """Why the episode must end, from the measured arm state of recent ticks; None while it is fine."""
+        if len(history) <= ARM_SPEED_TICKS:
+            return None
+        (t0, s0), (t1, s1) = history[-1 - ARM_SPEED_TICKS], history[-1]
+        arm = s1[:14]
+        if a.max_arm_speed > 0 and t1 > t0:
+            speed = np.abs(arm - s0[:14]) / (t1 - t0)
+            j = int(np.argmax(speed))
+            if speed[j] > a.max_arm_speed:
+                return f"arm joint {j} measured at {speed[j]:.1f} rad/s > {a.max_arm_speed:g}"
+        outside = np.maximum(ARM_LO - arm, arm - ARM_HI)
+        j = int(np.argmax(outside))
+        if outside[j] > a.arm_range_margin:
+            return f"arm joint {j} at {arm[j]:.2f} rad, {outside[j]:.2f} rad outside the training range"
+        return None
 
     def robot_states(t_ep):
         """Robot state at t_ep - i/fps (oldest first), nearest earlier tick; the current state if none yet."""
@@ -589,6 +729,8 @@ def main():
         # table startup: switch into the table-safe arm path instead of NVIDIA's standing token, whose hands rise
         # to ~0.8 m, 0.3 m forward (into an 80 cm table)
         target = LATENT_INITIAL_MOTION_TOKEN if startup is None else startup["tokens"][0]
+        if a.start == "planner":  # rest on the planner stance itself: no standing token, no table path
+            rest_token, n = planner.copy(), 0
         for i in ticks(n):
             w = (i + 1) / n
             send((1 - w) * planner + w * target, zero_h, "handoff blend")
@@ -610,7 +752,16 @@ def main():
         pub.send(command_message(start=True, planner=False))
     print("[streamer] command: POSE mode (streamed tokens)", flush=True)
     resampler = ChunkResampler(images.fps)
-    _, first = worker.run(infer, 0.0, robot_states(0.0))
+    # First chunk: keep the 50 Hz stream on the rest pose (which the robot already holds) while it is computed,
+    # instead of pausing the deploy's input (0.16 s on H100 locally, ~0.28 s from the robot PC over Wi-Fi).
+    slot = worker.submit(infer, 0.0, robot_states(0.0))
+    for _ in ticks(10**9):
+        if slot["done"].is_set():
+            break
+        send(rest_token, rest_hands, "wait first chunk")
+    if "error" in slot:
+        raise RuntimeError(slot["error"])
+    _, first = slot["result"]
     resampler.set_chunk(first, t0=0.0)
     for i in ticks(
         50
@@ -632,7 +783,7 @@ def main():
             if "error" in slot:  # keep streaming the last good chunk; stop if it goes stale
                 print(f"[streamer] {slot['error']}", flush=True)
             else:
-                resampler.set_chunk(slot["result"][1], t0=slot_t)
+                resampler.set_chunk(slot["result"][1], t0=slot_t, blend_s=a.chunk_blend_s, now=t_ep)
                 last_chunk_t, chunk_t0 = t_ep, slot_t
                 latencies.append(slot["latency"])
             slot = None
@@ -642,6 +793,10 @@ def main():
         state.latest()
         if state.age() > a.max_state_age_s:  # never plan or stream on frozen joints
             print(f"[streamer] robot state {state.age():.2f} s old: ending episode", flush=True)
+            break
+        reason = arm_watchdog()
+        if reason:
+            print(f"[streamer] watchdog: {reason}: ending episode", flush=True)
             break
         if t_ep >= next_replan and not worker.busy:
             slot, slot_t = worker.submit(infer, t_ep, robot_states(t_ep)), t_ep
@@ -653,6 +808,7 @@ def main():
             f"[streamer] chunk inference s: median {np.median(latencies):.2f}, max {max(latencies):.2f}, n {len(latencies)}",
             flush=True,
         )
+    print(f"[streamer] token slew limit active on {slewed[0]} ticks so far", flush=True)
     last_token, last_hands = log["token"][-1], log["hands"][-1]
     for i in ticks(50):  # 1 s blend back to the rest pose, 2 s hold, stop (at the table: hands stay above it)
         w = (i + 1) / 50
@@ -694,6 +850,7 @@ def main():
             a.log,
             **{k: np.asarray(v) for k, v in log.items()},
             episode=-1 if a.episode is None else a.episode,
+            args=json.dumps(vars(a), default=str),  # the exact settings of this run
         )
     if a.gate_dir:
         (a.gate_dir / "done").touch()

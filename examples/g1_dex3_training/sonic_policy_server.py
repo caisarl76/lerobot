@@ -36,9 +36,20 @@ def main():
     p.add_argument("--policy-path", required=True)
     p.add_argument("--device", default="cuda")
     p.add_argument("--port", type=int, default=5560)
+    p.add_argument(
+        "--backbone-dtype",
+        choices=["bfloat16"],
+        help="GR00T: cast the frozen backbone (fits a 12 GB GPU, e.g. a workstation RTX 3060)",
+    )
+    p.add_argument(
+        "--noise-seed",
+        type=int,
+        help="reseed the sampling noise before every chunk: a flow-matching policy (GR00T) then returns consistent "
+        "chunks for similar observations instead of a fresh random sample at every replan (default: unseeded)",
+    )
     a = p.parse_args()
 
-    policy = ChunkPolicy(a.policy_path, a.device)
+    policy = ChunkPolicy(a.policy_path, a.device, a.backbone_dtype, a.noise_seed)
     blank = [{k: np.zeros(policy.shapes[k][1:] + (3,), np.uint8) for k in policy.image_keys}] * policy.n_obs
     for _ in range(3):  # warm up on this (the serving) thread: VLA first calls take 2-5 s
         policy.chunk([np.zeros(28, np.float32)] * policy.n_obs, blank, "warm up")

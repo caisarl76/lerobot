@@ -31,6 +31,30 @@ class ChunkResamplerTests(unittest.TestCase):
         r.set_chunk(new, t0=0.3)
         np.testing.assert_array_equal(r.token_at(0.4), new[3])
 
+    def test_blend_cross_fades_from_old_to_new_chunk(self):
+        r = ChunkResampler(30)
+        r.set_chunk(np.zeros((40, 4)), t0=0.0)
+        r.set_chunk(np.ones((40, 4)), t0=0.3, blend_s=0.2, now=0.5)
+        np.testing.assert_allclose(r.token_at(0.5), np.zeros(4), atol=1e-6)  # starts at the old chunk
+        np.testing.assert_allclose(r.token_at(0.6), np.full(4, 0.5), atol=1e-6)  # halfway
+        np.testing.assert_allclose(r.token_at(0.7), np.ones(4), atol=1e-6)  # new chunk from the end on
+        np.testing.assert_allclose(r.token_at(1.0), np.ones(4), atol=1e-6)
+
+    def test_blend_restarted_mid_fade_continues_from_current_output(self):
+        r = ChunkResampler(30)
+        r.set_chunk(np.zeros((40, 4)), t0=0.0)
+        r.set_chunk(np.ones((40, 4)), t0=0.0, blend_s=0.4, now=0.0)
+        r.set_chunk(np.full((40, 4), 2.0), t0=0.2, blend_s=0.4, now=0.2)  # arrives when output is 0.5
+        np.testing.assert_allclose(r.token_at(0.2), np.full(4, 0.5), atol=1e-6)  # no jump
+        np.testing.assert_allclose(r.token_at(0.4), np.full(4, 1.25), atol=1e-6)
+        np.testing.assert_allclose(r.token_at(0.6), np.full(4, 2.0), atol=1e-6)
+
+    def test_zero_blend_keeps_the_instant_switch(self):
+        r = ChunkResampler(30)
+        r.set_chunk(np.zeros((40, 4)), t0=0.0)
+        r.set_chunk(np.ones((40, 4)), t0=0.3, blend_s=0.0, now=0.5)
+        np.testing.assert_array_equal(r.token_at(0.5), np.ones(4))
+
     def test_exact_source_times_return_stored_tokens_bitwise(self):
         tokens = np.random.default_rng(0).integers(-16, 16, (30, 64)).astype(np.float32) / 16
         r = ChunkResampler(30)

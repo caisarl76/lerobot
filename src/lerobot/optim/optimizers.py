@@ -109,6 +109,8 @@ class AdamWConfig(OptimizerConfig):
     eps: float = 1e-8
     weight_decay: float = 1e-2
     grad_clip_norm: float = 10.0
+    # False avoids the multi-tensor path's full-size temporaries (large fp32 models on one GPU).
+    foreach: bool | None = None
 
     def build(self, params: OptimizerParams) -> torch.optim.Optimizer:
         kwargs = asdict(self)
