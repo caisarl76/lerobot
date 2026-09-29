@@ -103,6 +103,19 @@ from .utils import (
 # action chunks, so processor-side horizons are capped at this value.
 N1_7_NATIVE_ACTION_HORIZON = 40
 
+# processor_config.json of nvidia/GR00T-N1.7-3B, used when no checkpoint sidecars are read (base model
+# given as a Hub id), so fine-tuning a new embodiment preprocesses like Isaac-GR00T's launch_finetune.
+# Isaac's albumentations path always letterboxes, hence letter_box_transform=True here.
+N1_7_BASE_PROCESSOR_DEFAULTS: dict[str, Any] = {
+    "use_percentiles": True,
+    "state_dropout_prob": 0.2,
+    "shortest_image_edge": 256,
+    "crop_fraction": 0.95,
+    "use_albumentations": True,
+    "letter_box_transform": True,
+    "color_jitter_params": {"brightness": 0.3, "contrast": 0.4, "saturation": 0.5, "hue": 0.08},
+}
+
 N1_7_EMBODIMENT_MAPPING = {
     "oxe_droid_relative_eef_relative_joint": 24,
     "xdof_relative_eef_relative_joint": 27,
@@ -149,6 +162,7 @@ class _GrootN17CheckpointProcessorAssets:
     crop_fraction: float | None
     use_albumentations: bool
     letter_box_transform: bool
+    color_jitter_params: dict[str, float] | None = None
 
 
 @dataclass(frozen=True)
@@ -211,6 +225,7 @@ def _load_n1_7_checkpoint_processor_assets(config: GrootConfig) -> _GrootN17Chec
     letter_box_transform = processor_kwargs.get("letter_box_transform", False)
     if not isinstance(letter_box_transform, bool):
         letter_box_transform = False
+    color_jitter_params = processor_kwargs.get("color_jitter_params")
 
     valid_action_horizon = _load_n1_7_checkpoint_action_horizon(processor_kwargs, config.embodiment_tag)
     video_horizon = _load_n1_7_checkpoint_video_horizon(processor_kwargs, config.embodiment_tag)
@@ -239,6 +254,7 @@ def _load_n1_7_checkpoint_processor_assets(config: GrootConfig) -> _GrootN17Chec
         crop_fraction=as_optional_float(processor_kwargs.get("crop_fraction")),
         use_albumentations=use_albumentations,
         letter_box_transform=letter_box_transform,
+        color_jitter_params=color_jitter_params if isinstance(color_jitter_params, dict) else None,
     )
 
 
@@ -254,7 +270,9 @@ def _load_n1_7_embodiment_mapping(checkpoint_path: Path) -> dict[str, int] | Non
             parsed[key] = int(value)
         except (TypeError, ValueError):
             continue
-    return parsed or None
+    # Like Isaac-GR00T, fill tags the checkpoint lacks (the base checkpoint has no
+    # "new_embodiment") from the default map, so they do not fall back to slot 0.
+    return {**N1_7_EMBODIMENT_MAPPING, **parsed} if parsed else None
 
 
 def _load_n1_7_checkpoint_stats(
@@ -1078,6 +1096,7 @@ def _build_n1_7_relative_action_processor_assets(
         crop_fraction=base_assets.crop_fraction if base_assets is not None else None,
         use_albumentations=base_assets.use_albumentations if base_assets is not None else False,
         letter_box_transform=base_assets.letter_box_transform if base_assets is not None else False,
+        color_jitter_params=base_assets.color_jitter_params if base_assets is not None else None,
     )
 
 
@@ -1175,12 +1194,20 @@ def make_groot_pre_post_processors(
         embodiment_mapping=embodiment_mapping,
         normalize_min_max=True,
         training=dataset_meta is not None,
-        state_dropout_prob=(checkpoint_assets.state_dropout_prob if checkpoint_assets is not None else 0.0),
+        state_dropout_prob=(
+            checkpoint_assets.state_dropout_prob
+            if checkpoint_assets is not None
+            else N1_7_BASE_PROCESSOR_DEFAULTS["state_dropout_prob"]
+        ),
         stats=padded_stats,
         clip_outliers=clip_outliers,
         video_modality_keys=video_modality_keys,
         raw_stats=checkpoint_assets.raw_stats if checkpoint_assets is not None else None,
-        use_percentiles=checkpoint_assets.use_percentiles if checkpoint_assets is not None else False,
+        use_percentiles=(
+            checkpoint_assets.use_percentiles
+            if checkpoint_assets is not None
+            else N1_7_BASE_PROCESSOR_DEFAULTS["use_percentiles"]
+        ),
         modality_config=checkpoint_assets.modality_config if checkpoint_assets is not None else None,
     )
 
@@ -1198,10 +1225,18 @@ def make_groot_pre_post_processors(
     else:
         image_target_size = list(N1_7_DEFAULT_IMAGE_TARGET_SIZE)
         image_crop_size = list(N1_7_DEFAULT_IMAGE_CROP_SIZE)
-        shortest_image_edge = None
-        crop_fraction = None
-    use_albumentations = checkpoint_assets.use_albumentations if checkpoint_assets is not None else False
-    letter_box_transform = checkpoint_assets.letter_box_transform if checkpoint_assets is not None else False
+        shortest_image_edge = (
+            None if checkpoint_assets else N1_7_BASE_PROCESSOR_DEFAULTS["shortest_image_edge"]
+        )
+        crop_fraction = None if checkpoint_assets else N1_7_BASE_PROCESSOR_DEFAULTS["crop_fraction"]
+    if checkpoint_assets is not None:
+        use_albumentations = checkpoint_assets.use_albumentations
+        letter_box_transform = checkpoint_assets.letter_box_transform
+        color_jitter_params = checkpoint_assets.color_jitter_params
+    else:
+        use_albumentations = N1_7_BASE_PROCESSOR_DEFAULTS["use_albumentations"]
+        letter_box_transform = N1_7_BASE_PROCESSOR_DEFAULTS["letter_box_transform"]
+        color_jitter_params = dict(N1_7_BASE_PROCESSOR_DEFAULTS["color_jitter_params"])
 
     input_steps: list[ProcessorStep] = [
         RenameObservationsProcessorStep(rename_map={}),
@@ -1215,6 +1250,7 @@ def make_groot_pre_post_processors(
             crop_fraction=crop_fraction,
             use_albumentations=use_albumentations,
             letter_box_transform=letter_box_transform,
+            color_jitter_params=color_jitter_params,
             training=dataset_meta is not None,
             device=config.device,
         ),
@@ -1257,6 +1293,7 @@ def make_groot_pre_post_processors(
             env_action_dim=env_action_dim,
             stats=padded_stats,
             normalize_min_max=True,
+            use_percentiles=pack_step.use_percentiles,
             clip_normalized_action=True,
             libero_gripper_action=config.action_decode_transform == GROOT_ACTION_DECODE_TRANSFORM_LIBERO,
         )
@@ -1478,6 +1515,35 @@ def _transform_n1_7_image_for_vlm_torch(
             image, [target_h, target_w], interpolation=InterpolationMode.BICUBIC, antialias=True
         )
     return image
+
+
+def _color_jitter_n1_7_frames(frames: list[Any], params: dict[str, float]) -> list[Any]:
+    """Isaac-GR00T's train-time ColorJitter (albumentations/torchvision semantics, random op order).
+
+    One draw per sample, replayed on every frame and view like Isaac's ReplayCompose. Frames are
+    ``(H, W, C)`` numpy (albumentations path) or ``(C, H, W)`` tensors (torch path), uint8.
+    """
+
+    def factor(name: str) -> float:
+        value = float(params.get(name, 0.0))
+        return random.uniform(max(0.0, 1.0 - value), 1.0 + value)
+
+    hue = float(params.get("hue", 0.0))
+    ops = [
+        lambda x, f=factor("brightness"): tv_functional.adjust_brightness(x, f),
+        lambda x, f=factor("contrast"): tv_functional.adjust_contrast(x, f),
+        lambda x, f=factor("saturation"): tv_functional.adjust_saturation(x, f),
+        lambda x, f=random.uniform(-hue, hue): tv_functional.adjust_hue(x, f),
+    ]
+    random.shuffle(ops)
+    jittered = []
+    for frame in frames:
+        is_numpy = isinstance(frame, np.ndarray)
+        image = torch.from_numpy(np.ascontiguousarray(frame)).permute(2, 0, 1) if is_numpy else frame
+        for op in ops:
+            image = op(image)
+        jittered.append(np.ascontiguousarray(image.permute(1, 2, 0).numpy()) if is_numpy else image)
+    return jittered
 
 
 @dataclass
@@ -1765,8 +1831,9 @@ class GrootN17PackInputsStep(ProcessorStep):
                 return x
             stats_k = self.stats[key]
             last_dim = x.shape[-1]
-            min_v = _align_vec(stats_k.get("min", torch.zeros(last_dim)), last_dim, default=0.0)
-            max_v = _align_vec(stats_k.get("max", torch.ones(last_dim)), last_dim, default=1.0)
+            lo, hi = ("q01", "q99") if self.use_percentiles and "q01" in stats_k else ("min", "max")
+            min_v = _align_vec(stats_k.get(lo, torch.zeros(last_dim)), last_dim, default=0.0)
+            max_v = _align_vec(stats_k.get(hi, torch.ones(last_dim)), last_dim, default=1.0)
             denom = max_v - min_v
             mask = denom != 0
             safe_denom = torch.where(mask, denom, torch.ones_like(denom))
@@ -2010,6 +2077,8 @@ class GrootN17VLMEncodeStep(ProcessorStep):
     crop_fraction: float | None = None
     use_albumentations: bool = False
     letter_box_transform: bool = False
+    # Train-only ColorJitter ranges ({brightness, contrast, saturation, hue}); None disables it.
+    color_jitter_params: dict[str, float] | None = None
     # Runtime-only train/eval mode: True enables Isaac's train-time random crop
     # (one window per sample, replayed across views); False keeps the
     # deterministic center crop. Never serialized - reloaded pipelines default
@@ -2046,9 +2115,11 @@ class GrootN17VLMEncodeStep(ProcessorStep):
         otherwise frames are ``(C, H, W)`` uint8 tensors (moved to
         ``target_device`` when set) for the torchvision-backed Qwen processor.
         """
+        train_augment = self.training and torch.is_grad_enabled()
+        jitter = self.color_jitter_params if train_augment else None
         if self.use_albumentations:
             video_np = np.asarray(video)
-            train_crop = self.training and torch.is_grad_enabled()
+            train_crop = train_augment
             sample_images: list[list[Any]] = []
             for batch_idx in range(batch_size):
                 # Isaac-GR00T samples ONE crop window per sample and replays it
@@ -2070,6 +2141,8 @@ class GrootN17VLMEncodeStep(ProcessorStep):
                         for view_idx in range(video_np.shape[2])
                     ]
                 )
+                if jitter:
+                    sample_images[-1] = _color_jitter_n1_7_frames(sample_images[-1], jitter)
             return sample_images
 
         video_t = video if torch.is_tensor(video) else torch.from_numpy(np.ascontiguousarray(video))
@@ -2095,6 +2168,8 @@ class GrootN17VLMEncodeStep(ProcessorStep):
                     for view_idx in range(sample.shape[1])
                 ]
             )
+            if jitter:
+                frames_per_sample[-1] = _color_jitter_n1_7_frames(frames_per_sample[-1], jitter)
         return frames_per_sample
 
     def __call__(self, transition: EnvTransition) -> EnvTransition:
@@ -2164,6 +2239,7 @@ class GrootN17VLMEncodeStep(ProcessorStep):
             "crop_fraction": self.crop_fraction,
             "use_albumentations": self.use_albumentations,
             "letter_box_transform": self.letter_box_transform,
+            "color_jitter_params": self.color_jitter_params,
             "device": self.device,
         }
 
@@ -2417,6 +2493,8 @@ class GrootActionUnpackUnnormalizeStep(ProcessorStep):
     env_action_dim: int = 0
     # Apply inverse of min-max normalization if it was used in preprocessor
     normalize_min_max: bool = True
+    # Invert with q01/q99 instead of min/max, matching GrootN17PackInputsStep.use_percentiles.
+    use_percentiles: bool = False
     stats: dict[str, dict[str, Any]] | None = None
     clip_normalized_action: bool = False
     libero_gripper_action: bool = False
@@ -2442,12 +2520,9 @@ class GrootActionUnpackUnnormalizeStep(ProcessorStep):
                 action = action.clamp(-1.0, 1.0)
             stats_k = self.stats.get(ACTION, {})
             d = action.shape[-1]
-            min_v = torch.as_tensor(
-                stats_k.get("min", torch.zeros(d)), dtype=action.dtype, device=action.device
-            )
-            max_v = torch.as_tensor(
-                stats_k.get("max", torch.ones(d)), dtype=action.dtype, device=action.device
-            )
+            lo, hi = ("q01", "q99") if self.use_percentiles and "q01" in stats_k else ("min", "max")
+            min_v = torch.as_tensor(stats_k.get(lo, torch.zeros(d)), dtype=action.dtype, device=action.device)
+            max_v = torch.as_tensor(stats_k.get(hi, torch.ones(d)), dtype=action.dtype, device=action.device)
             if min_v.numel() != d:
                 min_v = torch.nn.functional.pad(min_v.flatten()[:d], (0, max(0, d - min_v.numel())))
                 min_v = min_v.to(action.device, dtype=action.dtype)
@@ -2484,6 +2559,7 @@ class GrootActionUnpackUnnormalizeStep(ProcessorStep):
         return {
             "env_action_dim": self.env_action_dim,
             "normalize_min_max": self.normalize_min_max,
+            "use_percentiles": self.use_percentiles,
             "clip_normalized_action": self.clip_normalized_action,
             "libero_gripper_action": self.libero_gripper_action,
             "libero_gripper_binarize": self.libero_gripper_binarize,
