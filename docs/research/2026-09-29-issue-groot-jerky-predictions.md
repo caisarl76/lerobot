@@ -150,6 +150,46 @@ Reading:
 - Pi0.5 and VLA-JEPA carry recipe deviations of their own, to fix before their retrains: bf16 weights without EMA;
   one LR for all modules.
 
+## Retraining with the official recipes (started 2026-09-29)
+
+Four HE models were retrained on the H100 (GPUs 0 and 6). Everything else is unchanged from the `*_ho5_full` runs:
+the `sonic78_nolimit_sonicstate` dataset, the same held-out exclusions and seed.
+
+Paths:
+
+- Configs: `humanoid_everyday_g1_20260923/configs/*_sonic78sonicstate_ho5_official_{smoke,full}.json`
+- Logs and `.exit` files: `logs/`
+- Outputs: `runs/`
+
+The code is exported from this branch into its own H100 directories:
+
+- GPU 6 runs `lerobot-g1-groot-fix-20260929` (`dfe36b45`).
+- GPU 0 runs `lerobot-g1-official-20260929-ceb40b77`.
+
+Containers: `jihun-lerobot-he-official-gpu{0,6}-20260929`.
+
+| GPU | Model    | Recipe                                                                                                                                                                                                                                                     | Smoke: memory, speed | Estimate |
+| --- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------- | -------- |
+| 6   | GR00T    | Batch 32 × 20K steps; lr 1e-4 cosine, warmup 5 % (1000); fixed processor (q01/q99, letterbox + crop 0.95 + ColorJitter, state dropout)                                                                                                                     | 36 GB, 0.62 s/step   | ~3.5 h   |
+| 6   | ACT      | Batch 8 (official) × 200K steps (1.6M samples); rest as before (lr 1e-5, chunk 100, MEAN_STD)                                                                                                                                                              | not measured         | ~2 h     |
+| 0   | Pi0.5    | 8 × 4 accumulation = 32 per update × 30K updates; fp32 weights with bf16 autocast; EMA 0.99; openpi aug (crop 95 %, rotate ±5°, ColorJitter 0.3/0.4/0.5); AdamW (0.9, 0.95), wd 1e-10, clip 1; cosine 2.5e-5 → 2.5e-6, warmup 1K; `foreach=False` (memory) | 72 GB, 1.6 s/update  | ~13 h    |
+| 0   | VLA-JEPA | 8 × 4 = 32 per update × 30K updates; fp32 weights; per-module peak lr (base 3e-5, Qwen 1e-5, action head 1e-4, predictor 5e-4), warmup 5K, cosine to 1/3 of peak (official `min_lr` 1e-5); MIN_MAX                                                         | 52 GB, 1.8 s/update  | ~15 h    |
+
+Departures from the official recipes, all forced by one GPU per run:
+
+- Pi0.5 and VLA-JEPA use gradient accumulation. accelerate's `AcceleratedScheduler` steps the scheduler once per
+  update, so warmup and decay are in updates. `steps` counts micro-batches (= 4 × updates).
+- VLA-JEPA uses batch 32, not the official 256 (8 GPUs × 32).
+- Batch 32 in fp32 did not fit on 80 GB for either model: the failed configs are kept as `*_oom_b32.json`.
+
+Not retrained: Diffusion, MolmoAct2 and FastWAM. They were not compared with their official recipes.
+
+Code on this branch:
+
+- `dfe36b45`: GR00T processor.
+- `b01a01db`: VLA-JEPA `optimizer_module_lrs`.
+- `ceb40b77`: `AdamWConfig.foreach`.
+
 ## Mitigations in place (not a fix)
 
 Options, off by default: `--noise-seed` (server), `--chunk-blend-s`, `--replan-s`, `--max-token-step` (streamer). In
@@ -159,7 +199,7 @@ sim (HE GR00T, planner start, held-out episodes 1293 / 1300), seed + blend 0.3 s
 ## Next steps
 
 - [x] Compare the training pipeline with Isaac-GR00T (section above); processor fallback fixed on this branch.
-- [ ] Retrain HE GR00T with NVIDIA's recipe (batch 32, ≥ 20K steps, warmup 5 %, fixed processor); compare the open-loop smoothness
+- [ ] (running, see the retraining section) Retrain HE GR00T with NVIDIA's recipe (batch 32, ≥ 20K steps, warmup 5 %, fixed processor); compare the open-loop smoothness
       metrics above before any sim or robot run.
 - [x] Check GR00T's action normalization statistics for the SONIC tokens: sane, but min/max instead of q01/q99 (fixed).
 - [ ] Try more flow-matching steps / sample averaging at inference.
