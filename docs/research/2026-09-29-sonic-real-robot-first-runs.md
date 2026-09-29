@@ -128,13 +128,13 @@ Seed + blend is the smoothest on every measure, at +1–1.5 cm median palm error
 (run17) cut arm jerk p95 from 923–1018 to 400 rad/s³ but raised the ~1 Hz back-and-forth (1–2 Hz share 11–15 % →
 34 %; human demonstrations 4 %); the sim underestimates that swing, as its images do not react to the arm.
 
-**These are mitigations. The cause is in training**: the no-limit dataset replays smoothly, while the model's
+**These are mitigations. The cause is likely in the model output itself, possibly from training**: the no-limit dataset replays smoothly, while the model's
 open-loop predictions are already jerky. See the open issue
 [`2026-09-29-issue-groot-jerky-predictions.md`](./2026-09-29-issue-groot-jerky-predictions.md).
 
 ## Known issues
 
-- **Open: GR00T predictions are jerky although the dataset replays smoothly** (likely undertraining: batch 4, 40K
+- **Open: GR00T predictions are jerky although the dataset replays smoothly** (possibly undertraining: batch 4, 40K
   steps ≈ 9 % of one pass over HE), see
   [`2026-09-29-issue-groot-jerky-predictions.md`](./2026-09-29-issue-groot-jerky-predictions.md).
 - H100 GPU 7: NVIDIA's sim host segfaults during the TensorRT build (twice, ~4 min after start); GPU 6 works.

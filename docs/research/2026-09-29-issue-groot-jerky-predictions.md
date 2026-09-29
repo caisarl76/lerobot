@@ -9,8 +9,12 @@ This repository is public: addresses, user names and credentials are left out on
 
 The trained HE GR00T (`humanoid_everyday_g1_20260923/runs/groot_sonic78sonicstate_ho5_full`) produces jerky arm
 motion on the real G1 and in sim, but the SONIC dataset it was trained on (`sonic78_nolimit`) replays smoothly
-through NVIDIA's deploy. The jerk is already present in the model's open-loop predictions, so the problem is in
-training (or the model setup), not in the dataset, the streamer or the robot.
+through NVIDIA's deploy. The jerk is already present in the model's open-loop predictions on recorded held-out
+observations (images from HE's own camera, so no visual gap): the model's output itself is not smooth. The dataset,
+the streamer, the robot and the D435i visual gap are therefore not the main cause. The training procedure **may**
+have a problem (leading suspect: batch size / amount of training); the action normalization or the inference
+settings (flow-matching sampling) are the other candidates. The closed loop on the real robot can amplify the
+motion (a larger ~1 Hz back-and-forth than in sim), but does not create it.
 
 ## Evidence
 
