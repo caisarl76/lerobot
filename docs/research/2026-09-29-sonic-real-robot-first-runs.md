@@ -141,11 +141,28 @@ open-loop predictions are already jerky. See the open issue
 - The VPN to H100 stalls intermittently (SSH up to 15 s); copying a 12.6 GB checkpoint took 0.5–2 h.
 - `sonic_official_sim_eval.sh` relaunches forever after a sim-host crash and hangs if the streamer dies early.
 - The streamer writes its `.npz` only at the end of the cycle; an interrupted run (run08) leaves only the text log.
-- VLA-JEPA: see the 2026-09-29 note.
+- VLA-JEPA: its first fix (batch 8 + MEAN_STD, see the VLA-JEPA note) was superseded; it is part of the
+  official-recipe retraining below.
+
+## Status after this note (2026-09-29, later)
+
+- All G1 SONIC runs trained before the fix were **deleted on the H100** (wrong recipes). Every policy is being
+  retrained with its official recipe (7 policies × HE and Unitree, `*_official_full`); schedule and recipes are in
+  the retraining section of [`2026-09-29-issue-groot-jerky-predictions.md`](./2026-09-29-issue-groot-jerky-predictions.md).
+  The results in this note (open loop, sim, real runs 01–17) are for the old models; the only remaining copies of
+  those models are local to the evaluation workstation.
+- The old-model sim runs, the dataset replay (`review_nolimit_20260929/`), `eval_ho5/bf16check/` (with
+  `openloop_smooth.py`) and the streamer copy `code_safety/` are kept on the H100 as baselines and tools for
+  judging the retrains.
+- The smoothing sims finished (seed + blend smoothest, table above); the robot test of seed + blend with the old HE
+  GR00T was not run, as the model is superseded.
 
 ## Next steps
 
-1. Finish the smoothing sims; test the best setting on the robot with HE GR00T ("close a laptop g1").
+1. Judge each official-recipe retrain in order: open loop (`openloop_smooth.py`, against the smoothness numbers in
+   the issue note), then sim (planner start for HE, table 25 cm), then the robot. Only then decide whether
+   `--noise-seed` / `--chunk-blend-s` are still needed.
 2. Close the camera gap for the Unitree tasks: record teleop demonstrations with the D435i and fine-tune.
-3. Detect a stuck arm during startup/shutdown (measured vs planned path); save the streamer log on abnormal exit.
-4. Pi0.5 and MolmoAct2 on the 3060 (memory), after the GR00T smoothing result.
+3. Detect a stuck arm during startup/shutdown (measured vs planned path); save the streamer log on abnormal exit;
+   stop `sonic_official_sim_eval.sh` from relaunching after a sim-host crash.
+4. Memory check on the 3060 for the retrained Pi0.5 (9.4 GB before) and MolmoAct2 (12.7 GB, does not fit as is).
