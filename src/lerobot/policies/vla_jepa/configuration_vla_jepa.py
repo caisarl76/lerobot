@@ -126,6 +126,10 @@ class VLAJEPAConfig(PreTrainedConfig):
     torch_dtype: str = "bfloat16"
 
     optimizer_lr: float = 1e-4
+    # Peak lr per top-level submodule of VLAJEPAModel (e.g. {"qwen": 1e-5, "action_model": 1e-4,
+    # "video_predictor": 5e-4} in the official fine-tune recipe); the rest uses optimizer_lr.
+    # The scheduler scales every group by the same factor.
+    optimizer_module_lrs: dict[str, float] = field(default_factory=dict)
     optimizer_betas: tuple[float, float] = (0.9, 0.95)
     optimizer_eps: float = 1e-8
     optimizer_weight_decay: float = 1e-10

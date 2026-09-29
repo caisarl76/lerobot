@@ -56,6 +56,24 @@ _LEGACY_UNUSED_VIDEO_PREDICTOR_KEYS = frozenset(
 # ============================================================================
 
 
+def module_lr_param_groups(model: nn.Module, module_lrs: dict[str, float]):
+    """Per-submodule learning rates, as in starVLA's `build_param_lr_groups`.
+
+    Parameters under a named top-level submodule (e.g. ``qwen``) get its lr; all others use the
+    optimizer's base lr. An empty mapping returns ``model.parameters()`` unchanged.
+    """
+    if not module_lrs:
+        return model.parameters()
+    groups: dict[str, list[nn.Parameter]] = {name: [] for name in module_lrs}
+    rest = []
+    for name, param in model.named_parameters():
+        groups.get(name.split(".", 1)[0], rest).append(param)
+    missing = [name for name, params in groups.items() if not params]
+    if missing:
+        raise ValueError(f"optimizer_module_lrs names submodules without parameters: {missing}")
+    return [{"params": rest}] + [{"params": groups[name], "lr": lr} for name, lr in module_lrs.items()]
+
+
 class VLAJEPAModel(nn.Module):
     """
     Native VLA-JEPA model following the original starVLA VLA_JEPA.py.
@@ -520,7 +538,7 @@ class VLAJEPAPolicy(PreTrainedPolicy):
         return total_loss, logs
 
     def get_optim_params(self) -> dict:
-        return self.model.parameters()
+        return module_lr_param_groups(self.model, self.config.optimizer_module_lrs)
 
     @torch.no_grad()
     def predict_action_chunk(self, batch: dict[str, Tensor], noise: Tensor | None = None) -> Tensor:
