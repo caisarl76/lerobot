@@ -115,7 +115,8 @@ robot, add the same four options to the streamer command in the 2026-09-27 hando
 - Unitree held-out ≈ training (no memorisation); HE held-out is 5–15% worse.
 - Every model is far behind “hold previous” for the first steps and only matches it around 1 s ahead: the models do not
   recover the current action from image + state alone.
-- **VLA-JEPA did not learn** (action loss 1.15 → 0.85 over 40K steps; error ~2 std on training data too).
+- **VLA-JEPA did not learn** (action loss 1.15 → 0.85 over 40K steps; error ~2 std on training data too). Cause
+  (batch size 1, MIN_MAX) and the retrain: [`2026-09-29-vla-jepa-sonic-tokens.md`](./2026-09-29-vla-jepa-sonic-tokens.md).
 - VLA-JEPA strict loading fails when the checkpoint config keeps `reinit_modules`: the tied `embed_tokens` is not in the
   file (only `lm_head` is) and the custom check in `VLAJEPAPolicy._load_as_safetensor` does not account for tied weights.
   With `cfg.reinit_modules = None` (as `finalize_baseline.py` does) the load is correct. Not fixed.
@@ -138,7 +139,10 @@ robot, add the same four options to the streamer command in the 2026-09-27 hando
   Training kept 40K steps for comparability (≈ half the passes per episode of the single-dataset runs).
 - **Zombie processes in the training containers.** PID 1 there is `sleep infinity`, which never reaps children; a
   finished trainer stays a zombie and `kill -0 <pid>` waiters never fire. Wait on `.exit` files instead.
-- **Qwen vLLM on GPU 0** (`jihun-lerobot-qwen36-gpu0`) was stopped for training and restarted; it is running.
+- **Qwen vLLM on GPU 0** (`jihun-lerobot-qwen36-gpu0`) is stopped for GPU 0 training runs and restarted after them.
+- **GPU 0 training container lost the GPU** (“Failed to initialize NVML”, `cuda False`; training silently fell back to
+  CPU at 8 s/step). It was recreated with the same settings and `--gpus device=<GPU 0 UUID>`. If a run is unexpectedly
+  slow, check `nvidia-smi -L` in the container and the log for “Switching to 'cpu'”.
 - An idle eval container `jihun-lerobot-g1-dex3-eval-gpu6-20260925` (GPU 6, spare memory only; other users' processes
   run there) can be reused for evaluation or removed.
 
@@ -168,5 +172,6 @@ robot, add the same four options to the streamer command in the 2026-09-27 hando
    joint state drifts in closed loop. Training on relabelled state (sonicstate) helps; a 28D model on relabelled state
    (`joint28` actions + `sonic78_nolimit_sonicstate` state) is not built yet.
 6. **Small fixes.** VLA-JEPA: fix the tied-weight check in `_load_as_safetensor` (ignore missing keys that share storage
-   with a loaded key), then look at why it did not learn. Consider feeding the previous action as an input, given how
-   far every model is from “hold previous” at the first steps.
+   with a loaded key), then the retrain in
+   [`2026-09-29-vla-jepa-sonic-tokens.md`](./2026-09-29-vla-jepa-sonic-tokens.md). Consider feeding the previous action as an input,
+   given how far every model is from “hold previous” at the first steps.
