@@ -117,16 +117,26 @@ fresh sample every 0.4 s makes the target jump at every switch. Options (off by 
 server, `--chunk-blend-s` on the streamer. Sim, HE GR00T, planner start, table 25 cm, slew 0.05, held-out episodes
 1293 / 1300:
 
-| Setting          | Slew-limited ticks | Palm jerk p95 (m/s³) | Palm error p50 / p95 (cm) |
-| ---------------- | ------------------ | -------------------- | ------------------------- |
-| none             | 35 / 41            | 126 / 166            | 4.5/12.4, 3.1/14.6        |
-| `--noise-seed 0` | 16 / 20            | 127 / 137            | 6.3/15.3, 4.9/15.0        |
+| Setting          | Slew-limited ticks | Palm jerk p95 (m/s³) | Arm speed p95 (rad/s) | 1–2 Hz share | Palm error p50 / p95 (cm) |
+| ---------------- | ------------------ | -------------------- | --------------------- | ------------ | ------------------------- |
+| none             | 35 / 41            | 126 / 166            | 1.92 / 2.03           | 2.9 / 3.3 %  | 4.5/12.4, 3.1/14.6        |
+| `--noise-seed 0` | 16 / 20            | 127 / 137            | 1.45 / 1.46           | 1.7 / 1.7 %  | 6.3/15.3, 4.9/15.0        |
+| blend 0.3 s      | 0 / 0              | 46 / 46              | 1.84 / 2.10           | 7.0 / 4.4 %  | 3.7/13.3, 3.4/11.9        |
+| seed + blend     | 0 / 0              | 44 / 43              | 1.52 / 1.57           | 1.6 / 1.0 %  | 5.9/16.2, 4.1/15.4        |
 
-A fixed seed halves the capped switches but leaves the jerk nearly unchanged and tracks slightly worse. The
-chunk-blend runs are in progress; this table will be completed.
+Seed + blend is the smoothest on every measure, at +1–1.5 cm median palm error. On the robot, blend 0.3 s alone
+(run17) cut arm jerk p95 from 923–1018 to 400 rad/s³ but raised the ~1 Hz back-and-forth (1–2 Hz share 11–15 % →
+34 %; human demonstrations 4 %); the sim underestimates that swing, as its images do not react to the arm.
+
+**These are mitigations. The cause is in training**: the no-limit dataset replays smoothly, while the model's
+open-loop predictions are already jerky. See the open issue
+[`2026-09-29-issue-groot-jerky-predictions.md`](./2026-09-29-issue-groot-jerky-predictions.md).
 
 ## Known issues
 
+- **Open: GR00T predictions are jerky although the dataset replays smoothly** (likely undertraining: batch 4, 40K
+  steps ≈ 9 % of one pass over HE), see
+  [`2026-09-29-issue-groot-jerky-predictions.md`](./2026-09-29-issue-groot-jerky-predictions.md).
 - H100 GPU 7: NVIDIA's sim host segfaults during the TensorRT build (twice, ~4 min after start); GPU 6 works.
 - The VPN to H100 stalls intermittently (SSH up to 15 s); copying a 12.6 GB checkpoint took 0.5–2 h.
 - `sonic_official_sim_eval.sh` relaunches forever after a sim-host crash and hangs if the streamer dies early.
