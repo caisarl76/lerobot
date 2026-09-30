@@ -142,7 +142,9 @@ def xr1_policy(space: str, dataset: str) -> dict:
         "optimizer_betas": [0.9, 0.95],
         "optimizer_weight_decay": 0.1,
         "optimizer_grad_clip_norm": 1.0,
-        "optimizer_state_dtype": "float32",
+        # bf16 weights (as XR-1) + bf16 Adam moments, both with stochastic rounding: fp32 moments (38 GB for
+        # 4.7B trainable parameters) do not fit next to weights, gradients and activations on one 80 GB GPU.
+        "optimizer_state_dtype": "bfloat16",
         "scheduler_decay_lr": 5e-6,
     }
 
