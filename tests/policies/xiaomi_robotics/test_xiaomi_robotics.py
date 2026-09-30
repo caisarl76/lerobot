@@ -43,7 +43,11 @@ def test_convert_state_dict_drops_lm_head_and_flattens_vlm():
             "model.dit.layers.0.adaln_table": torch.ones(6, 4),
         }
     )
-    assert set(converted) == {"vlm.language_model.norm.weight", "vlm.action_embed.weight", "dit.layers.0.adaln_table"}
+    assert set(converted) == {
+        "vlm.language_model.norm.weight",
+        "vlm.action_embed.weight",
+        "dit.layers.0.adaln_table",
+    }
 
 
 def test_adapt_action_width_keeps_pretrained_dims_per_choice_block():
@@ -59,7 +63,9 @@ def test_adapt_action_width_keeps_pretrained_dims_per_choice_block():
     }
     notes = adapt_action_width(old, own, n_choices=5)
     assert len(notes) == 3
-    torch.testing.assert_close(old["action_projector.layers.0.weight"][:, :60], torch.arange(240.0).view(4, 60))
+    torch.testing.assert_close(
+        old["action_projector.layers.0.weight"][:, :60], torch.arange(240.0).view(4, 60)
+    )
     assert (old["action_projector.layers.0.weight"][:, 60:] == 0).all()
     choice = old["action_projector_choice.1.layers.0.weight"].view(5, 78, 2)
     source = torch.arange(600.0).view(5, 60, 2)
@@ -76,7 +82,9 @@ def _loss_host():
 
 def test_flow_loss_with_empty_mask_is_finite():
     pred = torch.randn(4, 24, 60, requires_grad=True)
-    mse, freq = _loss_host().flow_loss(pred, torch.randn_like(pred), torch.zeros_like(pred).bool(), torch.ones_like(pred))
+    mse, freq = _loss_host().flow_loss(
+        pred, torch.randn_like(pred), torch.zeros_like(pred).bool(), torch.ones_like(pred)
+    )
     assert mse.item() == 0.0 and freq.item() == 0.0
     (mse + freq).backward()
     assert pred.grad is not None
@@ -120,7 +128,9 @@ def _policy(vlm, tmp_path, action_dim, n_cams, weights=None):
             }
         )
     )
-    inputs = {f"observation.images.cam{i}": PolicyFeature(FeatureType.VISUAL, (3, 96, 128)) for i in range(n_cams)}
+    inputs = {
+        f"observation.images.cam{i}": PolicyFeature(FeatureType.VISUAL, (3, 96, 128)) for i in range(n_cams)
+    }
     inputs["observation.state"] = PolicyFeature(FeatureType.STATE, (28,))
     config = XiaomiRoboticsConfig(
         input_features=inputs,
@@ -190,7 +200,9 @@ def test_xr1_width_78_loads_60_wide_checkpoint_and_reloads(tiny_vlm, tmp_path):
     torch.testing.assert_close(
         policy.model.action_projector.layers[0].weight[:, :60], source.action_projector.layers[0].weight
     )
-    torch.testing.assert_close(policy.model.dit.layers[0].attn.qkv_proj.weight, source.dit.layers[0].attn.qkv_proj.weight)
+    torch.testing.assert_close(
+        policy.model.dit.layers[0].attn.qkv_proj.weight, source.dit.layers[0].attn.qkv_proj.weight
+    )
 
     optimizer = policy.config.get_optimizer_preset().build(policy.get_optim_params())
     policy.train()

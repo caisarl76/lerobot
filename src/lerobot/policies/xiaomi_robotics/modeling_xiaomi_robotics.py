@@ -63,11 +63,11 @@ from .configuration_xiaomi_robotics import XiaomiRoboticsConfig
 
 logger = logging.getLogger(__name__)
 
-SCORE_TOKEN = "<score>"
-STATE_TOKEN = "<state>"
+SCORE_TOKEN = "<score>"  # nosec B105 (a prompt token, not a password)
+STATE_TOKEN = "<state>"  # nosec B105
 NUM_ACTION_TOKENS = 60
 ACTION_TOKENS = [f"<a_{i}>" for i in range(NUM_ACTION_TOKENS)]
-IM_START_TOKEN = "<|im_start|>"
+IM_START_TOKEN = "<|im_start|>"  # nosec B105
 ACTION_EPS = 1e-6
 VLM_PROCESSOR_DIRNAME = "vlm_processor"
 # Released XR-1 layout: a 60-wide action/state vector.
@@ -824,7 +824,7 @@ class XiaomiRoboticsPolicy(PreTrainedPolicy):
         for name, param in self.model.named_parameters():
             if not param.requires_grad:
                 continue
-            (other if any(nd in name.lower() for nd in no_decay) else decay).append(param)
+            (other if any(token in name.lower() for token in no_decay) else decay).append(param)
         return [
             {"params": decay, "weight_decay": self.config.optimizer_weight_decay},
             {"params": other, "weight_decay": 0.0},

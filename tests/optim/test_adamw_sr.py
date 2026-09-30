@@ -24,7 +24,9 @@ from lerobot.optim.optimizers import AdamWSRConfig
 def test_stochastic_rounding_is_unbiased_and_on_grid():
     torch.manual_seed(0)
     lo = torch.tensor(0.02, dtype=torch.bfloat16).float()
-    hi = torch.nextafter(torch.tensor(0.02, dtype=torch.bfloat16), torch.tensor(1.0, dtype=torch.bfloat16)).float()
+    hi = torch.nextafter(
+        torch.tensor(0.02, dtype=torch.bfloat16), torch.tensor(1.0, dtype=torch.bfloat16)
+    ).float()
     x = torch.full((200_000,), float(lo + 0.3 * (hi - lo)))
     rounded = stochastic_round_to_bf16(x).float()
     assert set(rounded.unique().tolist()) <= {lo.item(), hi.item()}

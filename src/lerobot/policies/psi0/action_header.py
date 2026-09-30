@@ -58,7 +58,7 @@ class TimeNetwork(nn.Module):
         return self.out_net(x)
 
 
-class CombinedTimestepTextProjEmbeddingsND(CombinedTimestepTextProjEmbeddings):
+class CombinedTimestepTextProjEmbeddingsPerToken(CombinedTimestepTextProjEmbeddings):
     """SD3 `combined_temb` embedding that also accepts per-token (B, T) timesteps."""
 
     def forward(self, timestep: torch.Tensor, pooled_projection: torch.Tensor) -> torch.Tensor:
@@ -386,7 +386,7 @@ class ActionTransformerModel(nn.Module):
         self.combined_temb = combined_temb
         self.last_state_drop_frac: float | None = None
         if combined_temb:
-            self.time_ins_embed = CombinedTimestepTextProjEmbeddingsND(
+            self.time_ins_embed = CombinedTimestepTextProjEmbeddingsPerToken(
                 embedding_dim=inner_dim, pooled_projection_dim=pooled_projection_dim
             )
         else:

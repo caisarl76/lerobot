@@ -1,0 +1,207 @@
+# Psi0 and Xiaomi-Robotics-1 as native LeRobot policies for the G1 Dex3 pipeline (2026-09-30)
+
+Design note and running status for adding **Psi0** (USC PSI Lab) and **Xiaomi-Robotics-1** (XR-1) to the G1
+training pipeline next to GR00T, Pi0.5, ACT and the others retrained in
+[`2026-09-30-official-retraining-handover.md`](./2026-09-30-official-retraining-handover.md). Both are trained on
+both datasets (Humanoid Everyday "HE", Unitree) and both action spaces:
+
+- **28D**: 14 arm joints + 7 left + 7 right Dex3 joints, the `joint28` datasets.
+- **78D**: 64 SONIC v1.1 tokens + 14 Dex3 joints, the `sonic78_nolimit_sonicstate` datasets (relabelled state).
+
+This repository is public: addresses, user names and credentials are left out on purpose.
+
+## Status (keep up to date)
+
+| Item                                                                                    | State                                              |
+| --------------------------------------------------------------------------------------- | -------------------------------------------------- |
+| Native policies `psi0`, `xiaomi_robotics`; optimizer `adamw_sr`                         | Implemented, 20 unit tests pass (CPU, tiny models) |
+| Configs for the 8 combinations (`*_ho5_official_{smoke,full}`)                          | Written on the H100 by `write_psi0_xr1_configs.py` |
+| XR-1 per-step action statistics (4 files)                                               | Computed (`xr1_action_stats.py`)                   |
+| HE `joint28_g2` (joint28 on the fast AV1 videos)                                        | Created                                            |
+| Smoke runs (8)                                                                          | See [Smoke runs](#smoke-runs)                      |
+| Load-and-predict (`finalize_baseline.py`) and open-loop checks on the smoke checkpoints | See [Smoke runs](#smoke-runs)                      |
+| Full runs                                                                               | **Not started: waiting for approval** (plan below) |
+
+## The two models
+
+|                        | Psi0                                                                                                                                                   | Xiaomi-Robotics-1 (XR-1)                                                                                                                                                                                    |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Source                 | github.com/physical-superintelligence-lab/Psi0 (arXiv 2603.12263), checkpoints `USC-PSI-Lab/psi-model`                                                 | github.com/XiaomiRobotics/Xiaomi-Robotics-1 (arXiv 2607.15330), checkpoint `XiaomiRobotics/Xiaomi-Robotics-1-5B`                                                                                            |
+| License                | Code Apache 2.0. The weights repo has no license tag (the project README badge says Apache 2.0). CLIP-L (used by the SONIC recipe): MIT                | Code and weights Apache 2.0; Qwen3-VL-4B Apache 2.0                                                                                                                                                         |
+| Backbone               | Qwen3-VL-2B (pre-trained on EgoDex + HE by PSI Lab)                                                                                                    | Qwen3-VL-4B (36 layers, hidden 2560)                                                                                                                                                                        |
+| Action expert          | "Action header": SD3-style MM-DiT, hidden 1536, 24 heads. Action tokens and VLM-context tokens attend jointly; flow matching (velocity noise − action) | 36-layer DiT, hidden 1024, one DiT layer per VLM layer: each DiT layer attends to that VLM layer's **key/value cache** (Mixture-of-Transformers). Flow matching (velocity action − noise), 5 Euler steps    |
+| Extra heads / losses   | none                                                                                                                                                   | VLM "choice policy": 5 action hypotheses (winner-take-all L1) + predicted errors, on action query tokens in the VLM. Frequency-domain loss on the chunk. Loss = 0.5 MSE + 1.0 freq + 0.5 choice + 0.5 score |
+| Params                 | 2.1B VLM + 0.5B (6-block) or 0.67B (12-block) header                                                                                                   | 4.4B VLM + 0.6B DiT = 5.1B                                                                                                                                                                                  |
+| Chunk / horizon        | 30 steps, all executed                                                                                                                                 | 30 steps (60 action query tokens available)                                                                                                                                                                 |
+| Released action layout | AMO era: 36-D (14 hands, 14 arms, torso, base). SONIC: 80-D = 64 SONIC v1.1 tokens + 14 Dex3 + 2 neck                                                  | 60-D: relative end-effector pose + gripper per arm, waist, base velocity; per-step mean/std                                                                                                                 |
+
+**What differs from Xiaomi-Robotics-0** (assessed in the 2026-09-28 handover): XR-1 is a new model, not a re-release.
+The action shape grew from `[30, 32]` to `[30, 60]`; the DiT reads the VLM's per-layer KV cache; the VLM gets the
+choice-policy head, special `<state>`, `<a_i>` and `<score>` tokens, and a frequency loss; training is asynchronous
+(a random clean action prefix of 1–6 steps half of the time, with part of the prefix masked). Its loader is still a
+JSON + video format for dual-arm end-effector data, and it pins transformers 4.57.1 and flash-attn.
+
+## Why a native port instead of the upstream trainers
+
+Both upstream trainers need their own environment (Psi0: Python 3.11, torch 2.7, transformers 4.57.1, flash-attn;
+XR-1: torch 2.8, transformers 4.57.1, DeepSpeed, Lightning, decord) and their own data format. The ports run on the
+existing LeRobot image (`4cbe2a3f7fc6`: Python 3.12, torch 2.11, transformers 5.5.4, diffusers 0.39, no flash-attn),
+read the LeRobot datasets directly (held-out exclusions, `LEROBOT_VIDEO_DECODER_CACHE_SIZE`, the queue runner,
+`finalize_baseline.py` and the open-loop scripts all apply unchanged), and save standard LeRobot checkpoints. **No new
+Docker image was needed.** Upstream module and parameter names are kept, so the released weights load as they are.
+
+Port differences that cannot change the math: attention uses PyTorch SDPA instead of flash-attn; XR-1 batches are
+right-padded instead of flash-attn "packed"; XR-1's special token embeddings are injected with a forward hook on the
+token embedding; XR-1's per-layer KV cache comes from a transformers `DynamicCache`; images stay tensors instead of
+PIL (resize kernels differ slightly).
+
+## Action and state mapping
+
+| Model | Space | Action head                                                                                                                                                                                                    | Trained from scratch                                                                                                                                                                                   |
+| ----- | ----- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Psi0  | 28D   | **Pad** to 36 (official real-G1 recipe pads to 36); padded dims masked out of the loss. State padded to 36                                                                                                     | Time embedding, observation projection, action in/out projections (the released 36-D header has chunk 16, so the official loader keeps only its 6 transformer blocks — same for any real-G1 fine-tune) |
+| Psi0  | 78D   | **Pad** to 80: tokens 0–63, hands 64–77 (same order as UnifoLM's `action[:14]`, checked: identical per-dim min/max), neck 78–79 masked. State into the 45-D layout: arms 15–28, hands 29–42, legs/waist/neck 0 | Nothing: the whole SONIC v1.1 header and VLM load (same chunk and width)                                                                                                                               |
+| XR-1  | 28D   | **Pad** to 60; unused dims masked (loss) and zeroed (input), as XR-1 does for its unused slots                                                                                                                 | Nothing; the 60-D layers keep their weights (their meaning changes from end-effector deltas to joint deltas)                                                                                           |
+| XR-1  | 78D   | **Resize** to 78: action in/out layers and the choice head keep their 60 pretrained rows/columns per hypothesis; the 18 new ones start from XR-1's init (N(0, 0.02))                                           | The 18 new dims of those three layers                                                                                                                                                                  |
+
+- XR-1 state (60-D): left arm 0–6, right arm 8–14, both hands 16–29 (grippers 7/15 unused); XR-1's arm slots are
+  7-DoF joint positions, like the G1's.
+- XR-1 actions are **relative** as in the release: every action dim with a state counterpart is `a[t+k] − s[t]`
+  (all 28 joints; the 14 hands in 78D); SONIC tokens stay absolute. Per-step mean/std over complete 30-step windows,
+  state q01/q99, both from `xr1_action_stats.py`, stored as model buffers (saved in `model.safetensors`). The policy
+  returns absolute actions; the streamer is unaffected.
+- Psi0 normalization is its "bounds" (min/max → [−1, 1], clipped), as released, for 28D and 78D. **Departure:** the
+  Unitree **state** uses q01/q99 (clipped), because the stored min/max are corrupt (next section).
+
+## Data finding: corrupt Unitree state frames
+
+The Unitree `observation.state` (in `joint28` and every `sonic78*` variant) has **266 frames in 39 episodes** with
+right-hand values up to ±3363 (dims 24–27, right index/middle; `find_bad_state.py`-style scan, threshold 3.2 rad).
+Episode 2202 (already `always_excluded`) is not among them; two held-out episodes (1245, 2451) are. The stored
+min/max (and the mean/std) include them.
+
+- Psi0 on Unitree: state normalized with q01/q99 and clipped, so these frames saturate instead of squashing the
+  whole right-hand range.
+- XR-1: `xr1_action_stats.py` skips windows whose anchor state exceeds 3.2 rad (262 of 2.38M), and the model clamps
+  the state to the valid range before it anchors a relative action.
+- **Other policies are affected too**: ACT/Diffusion (MEAN_STD state) see inputs of ~10⁴ std on those frames, and
+  every policy's state normalization includes them. Not fixed here; see open questions.
+
+## Cameras
+
+- HE: one egocentric view. Unitree: `cam_left_high` and `cam_right_high`, both fed (like the other policies).
+- Psi0: all views go into the Qwen3-VL prompt as images followed by the instruction; resize to 240×320 (28D) or
+  270×480 (78D) with nearest neighbour, as released. Unitree doubles the VLM tokens (2 × 80 or 2 × 120).
+- XR-1: prompt "The following observations are captured from multiple views.\n# <view>\n<image>…Generate robot
+  actions for the task:\n<task> /no_cot", assistant "<cot></cot>". XR-1 was trained with "Ego View", "Left-Wrist
+  View", "Right-Wrist View"; we use "Ego View" (HE) and "Ego View (left camera)" / "Ego View (right camera)"
+  (Unitree). Images resized to multiples of 32 with at most 160,000 pixels (640×480 → 448×320, 140 tokens each).
+
+## Official fine-tuning recipes and ours
+
+"Update" = one optimizer step. LeRobot steps the scheduler per micro-batch, so the configs multiply `steps`, warmup
+and decay by the accumulation factor (pitfall in the retraining handover).
+
+### Psi0
+
+| Setting            | Official, 28D (`finetune-real-psi0.sh`)                                                              | Official, 78D (`finetune-real-sonic-psi0-2.8B-sonic1.1-robust.sh`)                                                                              | Ours                                                                                      |
+| ------------------ | ---------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| Init               | VLM `pre.fast.1by1.2601091803.ckpt.ego200k.he30k`, header `postpre.1by1.pad36.2601131206.ckpt.he30k` | VLM + header `postpre.sonic1.1.unifolm.2609181726.40k` (post-trained on 50 h UnifoLM G1 in SONIC v1.1 tokens)                                   | same                                                                                      |
+| Batch × updates    | 16/GPU × 8 GPUs = **128 × 40K** (5.1M samples)                                                       | **128 × 40K**                                                                                                                                   | 28D: 32 × 4 accumulation; 78D: 16 × 8. Same 128 × 40K                                     |
+| Optimizer          | AdamW β (0.95, 0.999), wd 1e-6, clip 1.0, lr 1e-4                                                    | same; VLM tuned: language 1e-6, vision 1e-5, merger 1e-4                                                                                        | same (78D: `foreach=False`)                                                               |
+| Schedule           | cosine to 0, warmup 1K                                                                               | same                                                                                                                                            | same (LeRobot `cosine_annealing_with_warmup` = transformers "cosine")                     |
+| Precision          | bf16 autocast; header fp32; frozen VLM bf16                                                          | bf16 autocast; tuned VLM fp32 weights, gradient checkpointing                                                                                   | same                                                                                      |
+| VLM                | frozen                                                                                               | tuned (final norm frozen, as upstream)                                                                                                          | same                                                                                      |
+| Header             | 6 blocks, last-layer VLM context, state as context token, dropout 0.1, state-feature dropout 0.2     | 12 blocks, one VLM layer per block (3…28), qk RMSNorm, CLIP-L pooled task embedding, state as action token 0 with learned null token (drop 0.1) | same                                                                                      |
+| RTC                | training-time RTC, delay 0–7                                                                         | off (test-time RTC)                                                                                                                             | same                                                                                      |
+| Images             | 240×320, ColorJitter(0.2, 0.8–1.2, 0.8–1.2, 0.05)                                                    | 270×480, same jitter + view crop 85–100 %                                                                                                       | same                                                                                      |
+| State augmentation | none                                                                                                 | noise N(0, 0.05) on the normalized state; ±10-frame temporal jitter (p 0.5)                                                                     | noise yes; **temporal jitter not implemented** (needs a 21-frame state window per sample) |
+| Normalization      | bounds (min/max), state normalized                                                                   | bounds                                                                                                                                          | bounds; **Unitree state q01/q99** (corrupt frames)                                        |
+| Chunk padding      | not masked                                                                                           | not masked                                                                                                                                      | same (`mask_padded_actions=false`)                                                        |
+
+### XR-1
+
+| Setting         | Official (`xr1/configs`, 1-GPU default)                                                                                             | Ours                                                                                                                                                                                                                                                                                                                 |
+| --------------- | ----------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Init            | `Xiaomi-Robotics-1-5B`                                                                                                              | same                                                                                                                                                                                                                                                                                                                 |
+| Batch × updates | **48 × 10K** (480K samples; the config is written for a 5-episode demo set)                                                         | 16 × 3 accumulation = 48 × 10K; see the plan for a longer option                                                                                                                                                                                                                                                     |
+| Trainable       | everything but the token embedding (4.72B)                                                                                          | same (4.72B)                                                                                                                                                                                                                                                                                                         |
+| Optimizer       | DeepSpeed FusedAdam, β (0.9, 0.95), wd 0.1 (none on bias/norm/rotary/adaLN), clip 1.0                                               | AdamW with the same groups. **Departure:** bf16 weights and **bf16 moments with stochastic rounding** (`adamw_sr`); DeepSpeed keeps fp32 master weights and moments, which need ~75 GB for 4.7B parameters and do not fit one 80 GB GPU. Plain bf16 AdamW would drop most updates at lr 2e-5 (below half a bf16 ULP) |
+| Schedule        | warmup 500 from 5e-7 to 2e-5, cosine to 5e-6 at 10K                                                                                 | LeRobot `cosine_decay_with_warmup` (warmup from ~0; cosine measured from step 0)                                                                                                                                                                                                                                     |
+| Precision       | bf16 weights (`model.to(bf16)`), bf16-mixed                                                                                         | same                                                                                                                                                                                                                                                                                                                 |
+| Memory          | MLP gradient checkpointing in the VLM, vision checkpointing                                                                         | same                                                                                                                                                                                                                                                                                                                 |
+| Losses          | 0.5 MSE (weighted by prefix error) + freq + 0.5 choice + 0.5 score; 4 noise draws per sample; freq loss excludes base-velocity dims | same; no excluded dims                                                                                                                                                                                                                                                                                               |
+| Async training  | prefix 1–6 with p 0.5; half of the prefix (but the last 2) hidden from the suffix                                                   | same                                                                                                                                                                                                                                                                                                                 |
+| Images          | multiple of 32, ≤ 160K pixels; brightness ±32/255, contrast and saturation 0.5–1.5, each p 0.5, shared by views                     | same                                                                                                                                                                                                                                                                                                                 |
+| Actions         | relative end-effector/gripper deltas, per-step mean/std; state q01/q99                                                              | relative joints (tokens absolute), per-step mean/std; state q01/q99                                                                                                                                                                                                                                                  |
+
+## Dependencies and environment
+
+- Image `4cbe2a3f7fc6` and venv `/run-output/environment/venv` as for every other policy; code mounted at
+  `/workspace/lerobot`. Extras: Psi0 needs `transformers` + `diffusers` (for SD3 attention blocks); XR-1 needs
+  `transformers`.
+- Extra mounts: `-v /mnt/data01/jhkim/model_weight/Psi0:/psi-weights:ro` and
+  `-v /mnt/data01/jhkim/model_weight/XiaomiRobotics:/xr1-weights:ro`, plus the usual `/source-datasets` mount,
+  `LEROBOT_VIDEO_DECODER_CACHE_SIZE=5000` and `--memory`.
+- Downloaded 2026-09-30 (in a container): `psi0/postpre.sonic1.1.unifolm.2609181726.40k` (11 GB) into the Psi0
+  directory, `model_states.pt` (10 GB) into `XiaomiRobotics/Xiaomi-Robotics-1-5B/`; Qwen3-VL-4B processor/config files
+  and CLIP-L into the shared HF cache.
+- Checkpoints carry the Qwen processor (`pretrained_model/vlm_processor/`) and the VLM config, so they load without
+  the base-weight directories. The Psi0 78D policy still needs `openai/clip-vit-large-patch14` in the HF cache.
+
+## Risks
+
+- **XR-1 on one GPU** runs with bf16 weights and bf16 moments (stochastic rounding), not DeepSpeed's fp32 master
+  copy. Unbiased, but noisier than the official setup. With a whole free 80 GB GPU, fp32 moments at micro-batch 8
+  might fit (not measured).
+- **XR-1 sample count**: the released 48 × 10K is a demo setting and is 2–4× below the other policies' official
+  sample counts on our data (0.3 pass over HE).
+- **Psi0 28D starts from the AMO-era checkpoint** (only its transformer blocks load), as the official real-G1 recipe
+  does. The SONIC v1.1 checkpoint has a better G1 VLM but a token-space action head; using it for joints would be a
+  departure.
+- **Min/max action normalization of SONIC tokens** (Psi0, official): the VLA-JEPA note found MIN_MAX makes token
+  errors 2–3× worse for that model. Kept because it is Psi0's own recipe (its SONIC checkpoint was trained that way).
+- **XR-1 prompt views**: XR-1 never saw two head cameras; the view names are our choice.
+- **Relative XR-1 actions and the SONIC state gap**: relative targets are anchored on the relabelled (sonicstate) or
+  measured (joint28) state. In closed loop the anchor is the robot's measured state.
+
+## Implementation
+
+| File                                                                                                                      | What                                                                               |
+| ------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| `src/lerobot/policies/psi0/{configuration,modeling,processor}_psi0.py`, `action_header.py`                                | Psi0 policy; the header port keeps upstream names (released weights load strictly) |
+| `src/lerobot/policies/xiaomi_robotics/{configuration,modeling,processor}_xiaomi_robotics.py`                              | XR-1 policy                                                                        |
+| `src/lerobot/optim/adamw_sr.py`, `AdamWSRConfig` (`adamw_sr`)                                                             | AdamW with stochastic rounding for bf16 weights and moments                        |
+| `examples/g1_dex3_training/write_psi0_xr1_configs.py`                                                                     | The 16 configs (8 combinations × smoke/full)                                       |
+| `examples/g1_dex3_training/xr1_action_stats.py`                                                                           | XR-1 per-step statistics                                                           |
+| `finalize_baseline.py`, `ho5_openloop_eval.py`, `openloop_smooth.py`                                                      | Accept the two policy types and 28D (arms/hands split)                             |
+| `tests/policies/psi0`, `tests/policies/xiaomi_robotics`, `tests/optim/test_adamw_sr.py`, `tests/policies/tiny_qwen3vl.py` | 20 tests                                                                           |
+
+Tests (CPU, tiny random Qwen3-VL with the real processor files):
+
+```bash
+HF_HUB_OFFLINE=1 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 PYTHONPATH=src uv run --no-project \
+  --python /path/to/lerobot/.venv/bin/python --with pytest python -m pytest \
+  tests/optim/test_adamw_sr.py tests/policies/psi0 tests/policies/xiaomi_robotics
+```
+
+They cover: the flow sampler against diffusers' `FlowMatchEulerDiscreteScheduler`; both header variants with
+per-sample and per-token (RTC) timesteps; padded-context masking; full vs blocks-only header loading; XR-1 checkpoint
+key conversion and 60 → 78 resizing per choice block; the XR-1 losses (including the upstream edge-case tests);
+relative normalization round trip; training with and without an action prefix; save → `from_pretrained(strict=True)`
+→ identical actions; stochastic rounding (unbiased, equals `torch.optim.AdamW` for fp32, keeps sub-ULP updates).
+
+## Smoke runs
+
+GPU 2 on the H100 (container `jihun-lerobot-psi0xr1-gpu2-20260930`, 72 GB free next to another user's 7.5 GB).
+Psi0: 200 micro-batches; XR-1: 90. Each saves a checkpoint for the load and open-loop checks.
+
+(filled in below as runs finish)
+
+## Full-training plan (awaiting approval)
+
+(filled in after the smoke runs)
+
+## Open questions for the user
+
+(filled in after the smoke runs)

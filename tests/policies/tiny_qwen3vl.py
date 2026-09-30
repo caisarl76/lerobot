@@ -85,7 +85,11 @@ def build_tiny_clip(out: Path, projection_dim: int = 32) -> Path:
         pytest.skip(f"CLIP tokenizer unavailable: {error}")
     out.mkdir(parents=True, exist_ok=True)
     config = CLIPTextConfig(
-        hidden_size=32, intermediate_size=64, num_hidden_layers=2, num_attention_heads=2, projection_dim=projection_dim
+        hidden_size=32,
+        intermediate_size=64,
+        num_hidden_layers=2,
+        num_attention_heads=2,
+        projection_dim=projection_dim,
     )
     CLIPTextModelWithProjection(config).save_pretrained(out)
     tokenizer.save_pretrained(out)

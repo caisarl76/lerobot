@@ -52,7 +52,11 @@ def test_flow_sigmas_match_diffusers_euler_scheduler():
 
 @pytest.mark.parametrize("layerwise", [False, True])
 def test_header_amo_and_sonic_variants_forward_backward(layerwise):
-    kwargs = dict(action_pred_horizon=30, action_dim=36 if not layerwise else 80, odim=36 if not layerwise else 45)
+    kwargs = {
+        "action_pred_horizon": 30,
+        "action_dim": 36 if not layerwise else 80,
+        "odim": 36 if not layerwise else 45,
+    }
     if layerwise:
         kwargs.update(
             action_num_blocks=3,
@@ -114,12 +118,16 @@ def test_header_weights_load_fully_or_blocks_only():
     before = longer.action_proj_in.ac_proj[0].weight.clone()
     missing, unexpected, skipped = load_action_header_weights(longer, state, chunk_size=30, action_dim=36)
     assert not unexpected and all(not k.startswith("transformer_blocks") for k in missing)
-    torch.testing.assert_close(longer.transformer_blocks[0].attn.to_q.weight, source.transformer_blocks[0].attn.to_q.weight)
+    torch.testing.assert_close(
+        longer.transformer_blocks[0].attn.to_q.weight, source.transformer_blocks[0].attn.to_q.weight
+    )
     torch.testing.assert_close(longer.action_proj_in.ac_proj[0].weight, before)  # re-initialised layer kept
 
 
 def _features(n_cams, action_dim):
-    inputs = {f"observation.images.cam{i}": PolicyFeature(FeatureType.VISUAL, (3, 96, 128)) for i in range(n_cams)}
+    inputs = {
+        f"observation.images.cam{i}": PolicyFeature(FeatureType.VISUAL, (3, 96, 128)) for i in range(n_cams)
+    }
     inputs["observation.state"] = PolicyFeature(FeatureType.STATE, (28,))
     return inputs, {"action": PolicyFeature(FeatureType.ACTION, (action_dim,))}
 
@@ -142,31 +150,43 @@ def tiny_assets(tmp_path_factory):
 @pytest.mark.parametrize("recipe", ["amo_joint28", "sonic78"])
 def test_psi0_policy_trains_samples_and_reloads(recipe, tiny_assets, tmp_path):
     vlm, clip = tiny_assets
-    common = dict(vlm_path=str(vlm), hidden_dim=64, num_heads=4, attention_head_dim=16, view_feature_dim=64)
+    common = {
+        "vlm_path": str(vlm),
+        "hidden_dim": 64,
+        "num_heads": 4,
+        "attention_head_dim": 16,
+        "view_feature_dim": 64,
+    }
     if recipe == "amo_joint28":
         n_cams, action_dim = 1, 28
-        extra = dict(num_blocks=2, model_action_dim=36, model_state_dim=36, rtc=True, image_size=(48, 64))
+        extra = {
+            "num_blocks": 2,
+            "model_action_dim": 36,
+            "model_state_dim": 36,
+            "rtc": True,
+            "image_size": (48, 64),
+        }
     else:
         n_cams, action_dim = 2, 78
-        extra = dict(
-            num_blocks=2,
-            model_action_dim=80,
-            model_state_dim=45,
-            state_slots=list(range(15, 43)),
-            vlm_layer_indices=[2, 4],
-            qk_norm="rms_norm",
-            combined_temb=True,
-            pooled_projection_dim=32,
-            pooled_text_encoder_path=str(clip),
-            state_as_action_token=True,
-            state_null_token=True,
-            state_drop_prob=0.1,
-            state_noise_std=0.05,
-            tune_vlm=True,
-            gradient_checkpointing=True,
-            view_aug=True,
-            image_size=(54, 96),
-        )
+        extra = {
+            "num_blocks": 2,
+            "model_action_dim": 80,
+            "model_state_dim": 45,
+            "state_slots": list(range(15, 43)),
+            "vlm_layer_indices": [2, 4],
+            "qk_norm": "rms_norm",
+            "combined_temb": True,
+            "pooled_projection_dim": 32,
+            "pooled_text_encoder_path": str(clip),
+            "state_as_action_token": True,
+            "state_null_token": True,
+            "state_drop_prob": 0.1,
+            "state_noise_std": 0.05,
+            "tune_vlm": True,
+            "gradient_checkpointing": True,
+            "view_aug": True,
+            "image_size": (54, 96),
+        }
     inputs, outputs = _features(n_cams, action_dim)
     config = Psi0Config(input_features=inputs, output_features=outputs, device="cpu", **common, **extra)
     policy = Psi0Policy(config).train()
