@@ -330,6 +330,10 @@ class XR1Model(nn.Module):
         self.register_buffer("action_std", torch.ones(config.chunk_size, action_dim))
         self.register_buffer("state_q01", torch.zeros(state_dim))
         self.register_buffer("state_q99", torch.zeros(state_dim))
+        # Valid state range (the stats exclude corrupt frames); the state is clamped to it before it anchors
+        # relative actions, so a corrupt reading cannot produce an unbounded target or command.
+        self.register_buffer("state_min", torch.full((state_dim,), -1e4))
+        self.register_buffer("state_max", torch.full((state_dim,), 1e4))
 
         self._state_embeds: Tensor | None = None
         self.vlm.language_model.embed_tokens.register_forward_hook(self._embedding_hook)
@@ -369,6 +373,9 @@ class XR1Model(nn.Module):
         self.action_std.copy_(std)
         self.state_q01.copy_(torch.tensor(stats["state_q01"], dtype=torch.float32))
         self.state_q99.copy_(torch.tensor(stats["state_q99"], dtype=torch.float32))
+        if "state_min" in stats:
+            self.state_min.copy_(torch.tensor(stats["state_min"], dtype=torch.float32))
+            self.state_max.copy_(torch.tensor(stats["state_max"], dtype=torch.float32))
 
     def load_xr1_weights(self, path: str) -> None:
         checkpoint = torch.load(path, map_location="cpu", mmap=True, weights_only=True)
@@ -500,6 +507,7 @@ class XR1Model(nn.Module):
         rel = self.relative_index >= 0
         if not rel.any():
             return actions
+        state = torch.maximum(torch.minimum(state, self.state_max), self.state_min)
         offset = torch.zeros_like(actions[:, :1])
         offset[..., rel] = state[:, None, self.relative_index[rel]]
         return actions + sign * offset
