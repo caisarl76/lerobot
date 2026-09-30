@@ -12,15 +12,15 @@ This repository is public: addresses, user names and credentials are left out on
 
 ## Status (keep up to date)
 
-| Item                                                                                    | State                                              |
-| --------------------------------------------------------------------------------------- | -------------------------------------------------- |
-| Native policies `psi0`, `xiaomi_robotics`; optimizer `adamw_sr`                         | Implemented, 20 unit tests pass (CPU, tiny models) |
-| Configs for the 8 combinations (`*_ho5_official_{smoke,full}`)                          | Written on the H100 by `write_psi0_xr1_configs.py` |
-| XR-1 per-step action statistics (4 files)                                               | Computed (`xr1_action_stats.py`)                   |
-| HE `joint28_g2` (joint28 on the fast AV1 videos)                                        | Created                                            |
-| Smoke runs (8)                                                                          | See [Smoke runs](#smoke-runs)                      |
-| Load-and-predict (`finalize_baseline.py`) and open-loop checks on the smoke checkpoints | See [Smoke runs](#smoke-runs)                      |
-| Full runs                                                                               | **Not started: waiting for approval** (plan below) |
+| Item                                                                                    | State (2026-09-30 06:50 UTC)                                                         |
+| --------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| Native policies `psi0`, `xiaomi_robotics`; optimizer `adamw_sr`                         | Implemented; 20 new tests pass (plus the existing optimizer tests), pre-commit clean |
+| Configs for the 8 combinations (`*_ho5_official_{smoke,full}`)                          | Written on the H100 by `write_psi0_xr1_configs.py`                                   |
+| XR-1 per-step action statistics (4 files)                                               | Computed (`/run-output/psi0_xr1/stats/`)                                             |
+| HE `joint28_g2` (joint28 on the fast AV1 videos)                                        | Created                                                                              |
+| Smoke runs (8)                                                                          | **All 8 passed** (exit 0)                                                            |
+| Load-and-predict (`finalize_baseline.py`) and open-loop checks on the smoke checkpoints | **All 8 pass** (`/run-output/psi0_xr1/smoke_checks/`)                                |
+| Full runs                                                                               | **Not started: waiting for approval** (plan below)                                   |
 
 ## The two models
 
@@ -193,15 +193,89 @@ relative normalization round trip; training with and without an action prefix; s
 
 ## Smoke runs
 
-GPU 2 on the H100 (container `jihun-lerobot-psi0xr1-gpu2-20260930`, 72 GB free next to another user's 7.5 GB).
-Psi0: 200 micro-batches; XR-1: 90. Each saves a checkpoint for the load and open-loop checks.
+GPU 2 on the H100 (container `jihun-lerobot-psi0xr1-gpu2-20260930`, code at
+`/mnt/data01/jhkim/code/lerobot-g1-psi0-xr1-dev`, `--memory 200g`, `LEROBOT_VIDEO_DECODER_CACHE_SIZE=5000`, the
+`/source-datasets` mount; 72–76 GB free next to another user's 3–7 GB). Psi0: 200 micro-batches; XR-1: 90. Queue
+runner: `official_queue.sh` with `/run-output/psi0_xr1/queue_gpu2_smoke.txt`; logs and `.exit` files in each root's
+`logs/`. Speeds are after step 30 (data loading warmed up).
 
-(filled in below as runs finish)
+| Dataset | Job                    | Micro × accum | Trainable | Samples/s | Peak GPU memory | Loss first → last (smoke) |
+| ------- | ---------------------- | ------------- | --------- | --------- | --------------- | ------------------------- |
+| HE      | psi0_joint28           | 32 × 4        | 0.49B     | 138       | 14 GB           | 32.4 → 23.5               |
+| HE      | psi0_sonic78sonicstate | 16 × 8        | 2.80B     | 25        | 50 GB           | 12.9 → 8.1                |
+| HE      | xr1_joint28            | 16 × 3        | 4.72B     | 16        | 56 GB           | 6.8 → 5.2                 |
+| HE      | xr1_sonic78sonicstate  | 16 × 3        | 4.72B     | 15        | 56 GB           | 8.8 → 7.4                 |
+| Unitree | psi0_joint28           | 32 × 4        | 0.49B     | 90        | 15 GB           | 33.8 → 25.0               |
+| Unitree | psi0_sonic78sonicstate | 16 × 8        | 2.80B     | 20        | 53 GB           | 9.6 → 5.6                 |
+| Unitree | xr1_joint28            | 8 × 6         | 4.72B     | 8.3       | 52 GB           | 6.4 → 4.9                 |
+| Unitree | xr1_sonic78sonicstate  | 8 × 6         | 4.72B     | 9.6       | 52 GB           | 9.1 → 7.4                 |
+
+- Weights: Psi0 SONIC v1.1 header and VLM load completely (0 missing, 0 unexpected); the AMO header loads its 6
+  transformer blocks (19 keys re-initialised, as upstream); XR-1 loads strictly, resizing 3 layers for 78D.
+- **First attempt of the Unitree XR-1 smokes failed**: `xr1_joint28` ran out of GPU memory at 16 × 3 (two cameras
+  double the VLM tokens to ~490; 66 GB at step 40 plus the other user's 7.5 GB), and `xr1_sonic78sonicstate` was
+  stopped by SIGTERM (exit 143) during the same window; the container was not OOM-killed (host memory cap 200 GB).
+  Rerun at 8 × 6 (same 48 per update): both pass. Failed logs kept as `logs/xr1_*_smoke.{log,exit}.failed-0533`.
+- Checks on every smoke checkpoint (`check_smokes.sh`): `finalize_baseline.py` (strict reload, finite forward loss,
+  chunk shape (1, 30, 28/78)), `ho5_openloop_eval.py` (all held-out episodes, stride 60) and `openloop_smooth.py`
+  (one held-out episode). Held-out error at step 0, in std units (hold-previous in brackets) — **pipeline checks
+  only; the models saw 15–50 updates**:
+
+  | Checkpoint             | HE                                   | Unitree                              |
+  | ---------------------- | ------------------------------------ | ------------------------------------ |
+  | psi0_joint28           | arms 3.77, hands 2.59 (0.02, 0.07)   | arms 3.45, hands 1.93 (0.01, 0.01)   |
+  | psi0_sonic78sonicstate | tokens 0.64, hands 1.16 (0.02, 0.07) | tokens 0.48, hands 0.36 (0.01, 0.01) |
+  | xr1_joint28            | arms 0.22, hands 0.50                | arms 0.07, hands 0.47                |
+  | xr1_sonic78sonicstate  | tokens 1.02, hands 0.59              | tokens 1.05, hands 0.54              |
+
+  As expected at this stage: Psi0 28D starts from re-initialised projections (still in warmup); the SONIC-pretrained
+  Psi0 header already places tokens well after ~25 updates; XR-1's relative arm actions start near "hold previous".
+
+- `ho5_openloop_eval.py` had a bug on `feat/g1-combined-eval` (`zip(offsets, lengths, strict=True)` with one more
+  offset than lengths) that made it exit 1 for every run; fixed on this branch.
+- Smoke optimizer states were deleted (≈ 230 GB); the smoke model weights are kept for re-checks.
 
 ## Full-training plan (awaiting approval)
 
-(filled in after the smoke runs)
+Official batch × updates for every run; LeRobot `steps` = updates × accumulation (already in the `_full` configs).
+Time = samples / measured samples per second (checkpoint saves add minutes).
+
+| Run                            | Samples (batch × updates) | Samples/s | Estimate            | GPU memory |
+| ------------------------------ | ------------------------- | --------- | ------------------- | ---------- |
+| HE psi0_joint28                | 128 × 40K = 5.1M          | 138       | **10 h**            | 14 GB      |
+| Unitree psi0_joint28           | 5.1M                      | 90        | **16 h**            | 15 GB      |
+| HE psi0_sonic78sonicstate      | 5.1M                      | 25        | **56 h**            | 50 GB      |
+| Unitree psi0_sonic78sonicstate | 5.1M                      | 20        | **71 h**            | 53 GB      |
+| HE xr1_joint28                 | 48 × 10K = 480K           | 16        | **8 h**             | 56 GB      |
+| HE xr1_sonic78sonicstate       | 480K                      | 15        | **9 h**             | 56 GB      |
+| Unitree xr1_joint28            | 480K                      | 8.3       | **16 h**            | 52 GB      |
+| Unitree xr1_sonic78sonicstate  | 480K                      | 9.6       | **14 h**            | 52 GB      |
+| **Total**                      |                           |           | **≈ 200 GPU-hours** |            |
+
+Proposal (nothing started):
+
+- **GPU 2** (this container; 72+ GB free): the 4 XR-1 runs (~47 h), then HE Psi0 SONIC (56 h): ~4.3 days.
+- **GPU 6, after its official queue ends** (expected this evening): the two Psi0 joint28 runs (15 GB; fit next to the
+  ~40 GB other users hold): ~26 h. Unitree Psi0 SONIC (53 GB) does not fit there unless four idle containers of ours
+  on GPU 6 (`jihun_psi0_table_manual_40000_gpu6_20260922`, `jihun_psi0_bridge_probe_20260911_gpu6_r2`, and two
+  `jihun_gr00t_n17_pnp_table_*_eval_gpu6_*`, ~28 GB together) are removed; then it runs there after the joint28
+  runs (71 h): ~4 days in total.
+- Queue files `/run-output/psi0_xr1/queue_gpu2.txt` / `queue_gpu6.txt` with `official_queue.sh`, code exported from
+  a fixed commit of this branch, containers set up like `jihun-lerobot-psi0xr1-gpu2-20260930`.
+- Then `finalize_baseline.py`, `ho5_openloop_eval.py` and `openloop_smooth.py` on each final checkpoint, as for the
+  other policies.
 
 ## Open questions for the user
 
-(filled in after the smoke runs)
+1. **Approve the full runs and the GPU plan** (GPU 2 now; GPU 6 after its queue; may the four idle containers on
+   GPU 6 be removed?).
+2. **XR-1 length**: the released 48 × 10K is written for a 5-episode demo and is 0.3 pass over HE (the other policies
+   got 0.6–3 passes). Keep it (official), or 48 × 30K (~1.4M samples, 3× the time: +100 GPU-hours)?
+3. **Psi0 SONIC cost**: 128 × 40K takes 56 h (HE) and 71 h (Unitree). Keep the official count, or cap (e.g. 20K
+   updates)?
+4. **Psi0 joint28 base**: official real-G1 recipe from the AMO-era checkpoint (chosen), or the newer SONIC v1.1
+   checkpoint (better G1 VLM, but its action head is in token space; would be a departure)?
+5. **Corrupt Unitree state** (266 frames, 39 episodes): fix the datasets (e.g. hold the last valid value) and
+   recompute the stats for all policies, or leave as is (handled only inside Psi0/XR-1)?
+6. XR-1 on one GPU uses bf16 moments with stochastic rounding; fp32 moments were not measured with a whole free GPU.
+   Acceptable?
