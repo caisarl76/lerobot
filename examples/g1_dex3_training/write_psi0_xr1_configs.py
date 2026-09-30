@@ -170,6 +170,9 @@ def write(run_output: Path, only: set[str] | None, smoke_steps: dict[str, int]) 
                 if only and name not in only:
                     continue
                 micro, accum, updates, warmup = RECIPES[model, space]
+                if model == "xr1" and dataset == "unitree":
+                    # Two cameras double the VLM tokens: 16 x 3 ran out of memory; keep 48 samples per update.
+                    micro, accum = 8, 6
                 repo_id, ds_root = DATASETS[dataset, space]
                 policy = psi0_policy(space, dataset) if model == "psi0" else xr1_policy(space, dataset)
                 # LeRobot steps the scheduler per micro-batch: steps, warmup and decay are micro-batch counts.
