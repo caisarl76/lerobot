@@ -4,8 +4,11 @@ The Unitree state (identical in `joint28`, `sonic78_nolimit` and `sonic78_nolimi
 relabels dims 0:14) has isolated frames with right-hand values up to ~3000 rad (dims 24-27, right index/middle),
 266 frames in 39 episodes (found 2026-09-30). Every policy's state normalization includes them.
 
-Method, per episode and per state dimension: a value is corrupt when it is non-finite or |value| > --threshold
-(3.2 rad, beyond every G1 arm and Dex3 joint range). Corrupt values are replaced by linear interpolation in
+Method, per episode and per state dimension: a value is corrupt when it is non-finite, |value| > --threshold
+(3.2 rad, beyond every G1 arm and Dex3 joint range), or, for --range-dims (default the spiking right index/middle
+dims 24-27), outside the commanded range of the same joint +- --range-margin (0.5 rad; bounds = action min/max of
+--range-stats, the joint28 stats, whose actions are clean). Thumb dims 14 and 21 also leave the commanded range, but
+as long constant stretches (a hand offset, not spikes); they are not changed. Corrupt values are replaced by linear interpolation in
 frame_index between the nearest valid values of the same dimension (np.interp; at an episode edge the nearest valid
 value is held). Valid values, other dimensions, other columns, actions and videos are not changed.
 
@@ -46,9 +49,9 @@ def state_column(values: np.ndarray, like: pa.DataType) -> pa.Array:
     return pa.ListArray.from_arrays(offsets, flat).cast(like)
 
 
-def repair(state: np.ndarray, episodes: np.ndarray, frames: np.ndarray, threshold: float):
-    """Return repaired copy, bad mask, and per-episode notes."""
-    bad = ~np.isfinite(state) | (np.abs(state) > threshold)
+def repair(state, episodes, frames, threshold: float, lo: np.ndarray, hi: np.ndarray):
+    """Return repaired copy, bad mask, and per-episode notes. lo/hi: per-dim valid range (+-inf = unchecked)."""
+    bad = ~np.isfinite(state) | (np.abs(state) > threshold) | (state < lo) | (state > hi)
     fixed = state.copy()
     notes = {}
     for episode in np.unique(episodes[bad.any(axis=1)]):
@@ -96,7 +99,7 @@ def backup_and_replace(path: Path, write, suffix: str) -> None:
     os.replace(tmp, path)
 
 
-def process(root: Path, threshold: float, apply: bool, suffix: str) -> dict:
+def process(root: Path, threshold: float, apply: bool, suffix: str, lo, hi) -> dict:
     report: dict = {"root": str(root), "files": {}, "episodes": {}}
     files = sorted((root / "data").rglob("*.parquet"))
     all_states, all_fixed = [], []
@@ -106,7 +109,7 @@ def process(root: Path, threshold: float, apply: bool, suffix: str) -> dict:
         state = state_array(table)
         episodes = table.column("episode_index").to_numpy()
         frames = table.column("frame_index").to_numpy()
-        fixed, bad, notes = repair(state, episodes, frames, threshold)
+        fixed, bad, notes = repair(state, episodes, frames, threshold, lo, hi)
         all_states.append(state)
         all_fixed.append(fixed)
         for episode in notes:
@@ -251,11 +254,23 @@ def main():
     parser.add_argument("--suffix", default=".bak-corruptstate-20260930")
     parser.add_argument("--report", type=Path, required=True)
     parser.add_argument("--apply", action="store_true")
+    parser.add_argument("--range-dims", type=int, nargs="*", default=[24, 25, 26, 27])
+    parser.add_argument("--range-margin", type=float, default=0.5)
+    parser.add_argument(
+        "--range-stats", type=Path, default=Path("/run-output/datasets/joint28/meta/stats.json")
+    )
     args = parser.parse_args()
+    ref = json.loads(args.range_stats.read_text())["action"]
+    lo = np.full(28, -np.inf, dtype=np.float32)
+    hi = np.full(28, np.inf, dtype=np.float32)
+    for d in args.range_dims:
+        lo[d] = ref["min"][d] - args.range_margin
+        hi[d] = ref["max"][d] + args.range_margin
+    print("valid ranges:", {d: (round(float(lo[d]), 3), round(float(hi[d]), 3)) for d in args.range_dims})
     reports = []
     for root in args.root:
         _episode_cache.clear()
-        report = process(root, args.threshold, args.apply, args.suffix)
+        report = process(root, args.threshold, args.apply, args.suffix, lo, hi)
         reports.append(report)
         print(
             f"{root}: {len(report['episodes'])} episodes, "
