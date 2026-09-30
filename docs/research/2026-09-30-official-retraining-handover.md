@@ -57,14 +57,17 @@ Layout under `/mnt/data01/jhkim/model_weight/g1_dex3_20260922` (= `/run-output` 
 - Dataset in both: `datasets/sonic78_nolimit_sonicstate`, with the ho5 exclusions.
 - Jobs are named `<policy>_sonic78sonicstate_ho5_official_{smoke,full}`.
 
-**Containers** (image `4cbe2a3f7fc6`, venv `/run-output/environment/venv`, HF cache mounted, `HF_HUB_OFFLINE=1`):
+**Containers.** All use image `4cbe2a3f7fc6`, venv `/run-output/environment/venv`, HF cache mounted,
+`HF_HUB_OFFLINE=1`.
 
-| Container                                 | GPU | Code mounted at `/workspace/lerobot`                                |
-| ----------------------------------------- | --- | ------------------------------------------------------------------- |
-| `jihun-lerobot-he-official-gpu6-20260929` | 6   | `/mnt/data01/jhkim/code/lerobot-g1-groot-fix-20260929` (`dfe36b45`) |
-| `jihun-lerobot-he-official-gpu0-20260929` | 0   | `/mnt/data01/jhkim/code/lerobot-g1-official-20260929-ceb40b77`      |
+| Container                                 | GPU | Code mounted at `/workspace/lerobot`                                | Role (2026-09-30 02:10 UTC)                                                                                                                                                                                    |
+| ----------------------------------------- | --- | ------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `jihun-lerobot-he-official-gpu6-20260929` | 6   | `/mnt/data01/jhkim/code/lerobot-g1-groot-fix-20260929` (`dfe36b45`) | Recreated 2026-09-30 with `--memory 250g`, `LEROBOT_VIDEO_DECODER_CACHE_SIZE=5000` and the `/source-datasets` mount. Runs the GPU 6 queue.                                                                     |
+| `jihun-lerobot-official-gpu0b-20260930`   | 0   | `/mnt/data01/jhkim/code/lerobot-g1-official-20260929-ceb40b77`      | New on 2026-09-30, with the same three fixes and `--memory 300g`. Its queue runner waits for HE Pi0.5's `.exit`, then runs `gpu0.txt`.                                                                         |
+| `jihun-lerobot-he-official-gpu0-20260929` | 0   | same as `gpu0b`                                                     | Old. Still runs HE Pi0.5 (container PID 8870) and a watcher that writes `HE/logs/pi05_..._official_full.exit` when it ends ("End of training" gives 0, else 1). Remove it after that; it has no Unitree mount. |
 
-Each code directory is a `git archive` export of the named commit. They are not git checkouts.
+Each code directory is a `git archive` export of the named commit. They are not git checkouts. Start any new training
+container like `gpu0b`: with the `/source-datasets` mount, the cache variable and a memory cap.
 
 **Queues:**
 
@@ -74,20 +77,37 @@ Each code directory is a `git archive` export of the named commit. They are not 
 - A job is done when `<root>/logs/<job>.exit` exists.
 - A `_full` job is skipped (exit `skip`) if its `_smoke` job failed.
 
-**Order and state**, as last seen on 2026-09-29 09:23 UTC (H100 clock):
+**State at 2026-09-30 ~02:10 UTC (H100 clock):**
 
-- **GPU 6:**
-  - `HE groot` full: running at the time, ETA ~10:10. It was launched by hand, outside the queue.
-  - Then the queue: HE act smoke → full, HE diffusion smoke → full, Unitree groot, act, diffusion (smoke → full each).
-  - The queue started when `HE/logs/groot_..._official_full.exit` appeared.
-- **GPU 0:**
-  - A hand-launched loop: HE pi05 full (running, ETA ~21:30), then HE vla_jepa full.
-  - The queue waits for `HE/logs/vla_jepa_..._official_full.exit`, then runs, each smoke → full: Unitree pi05, vla_jepa;
-    HE molmoact2, fastwam; Unitree molmoact2, fastwam.
-- **Unchecked at handover:** at 2026-09-30 00:31 UTC GPU 0 showed **80.9 GB used and 0 % utilization**, GPU 6 40.8 GB at
-  0 %. This session could not look further because its tool permission check failed.
-  - HE vla_jepa should have been running on GPU 0 then (52 GB in its smoke run). A full GPU at 0 % may be a hang or
-    OOM. **Check this first.**
+| Policy    | HE (1 camera)                                                                           | Unitree (2 cameras)                               |
+| --------- | --------------------------------------------------------------------------------------- | ------------------------------------------------- |
+| GR00T     | Done (exit 0, 20K); being judged open-loop and served by session `f189249f` (see below) | Training on GPU 6: smoke started 01:58, then full |
+| ACT       | Done (exit 0, 200K); not yet evaluated                                                  | Queued on GPU 6, next                             |
+| Diffusion | Queued on GPU 6, from scratch (the leaked run is kept as `runs/..._leaked`)             | Queued on GPU 6, last                             |
+| Pi0.5     | Training on GPU 0: 62 %, ~5.5 h left                                                    | Queued on GPU 0, 2nd                              |
+| VLA-JEPA  | Queued on GPU 0, 1st (after HE Pi0.5)                                                   | Queued on GPU 0, 3rd                              |
+| MolmoAct2 | Queued on GPU 0, 4th                                                                    | Queued on GPU 0, 6th                              |
+| FastWAM   | Queued on GPU 0, 5th                                                                    | Queued on GPU 0, 7th                              |
+
+- `gpu6.txt` order: Unitree groot → Unitree act → HE diffusion → Unitree diffusion. The HE groot and act lines are done
+  and skipped.
+- `gpu0.txt` order: HE vla_jepa → Unitree pi05 → Unitree vla_jepa → HE molmoact2 → HE fastwam → Unitree molmoact2 →
+  Unitree fastwam.
+- Earlier versions of the queue files are kept as `gpu{0,6}.txt.bak-20260930`.
+- Failed attempts are kept under renamed files:
+  - Unitree groot, act and diffusion smoke tests from 01:48, which failed on the missing mount:
+    `logs/*.{exit,log}.failed-nomount`
+  - the leaked HE Diffusion run: `HE/logs/diffusion_..._full.{exit,log}.leaked`
+
+**Workstation (not the H100).** Session `f189249f` (listed as `lerobot-16`) is doing three things:
+
+- copying the new HE GR00T checkpoint to `/mnt/data/jihun/g1_models/he_groot_sonic78sonicstate_ho5_official_full`
+- running `openloop_smooth.py` on workstation GPU 1, against the old HE GR00T, with a bf16 backbone
+- then serving the new model on workstation GPU 0, port 5561
+
+The held-out episodes 91, 102, 1208, 1219, 1293 and 1300 are copied to
+`/mnt/data/jihun/datasets/he_sonic78_nolimit_sonicstate_heldout6`. H100 checkpoint files are root-owned with mode 0600,
+so copy them out through `docker exec <container> tar c`.
 
 ## Recipes (details and sources in the issue note)
 
@@ -130,17 +150,21 @@ each).
 
 **Fix in place, no code change:**
 
-- Both containers run with `LEROBOT_VIDEO_DECODER_CACHE_SIZE=5000`.
-- GPU 6 was recreated with `--memory 250g`.
-- GPU 0 got a live `docker update --memory 300g`, so a leak now kills only its own job.
-- The GPU 6 queue was reordered: Diffusion (HE and Unitree) moved to the end. HE Diffusion must restart or resume
-  from `checkpoints/050000`; its run folder already exists, so rename it or set resume before it runs.
-- GPU 0:
-  - The old hand-started loop and runner were replaced by a watcher. It writes Pi0.5's `.exit` from its log
-    ("End of training" gives 0), then starts the runner with the cache setting.
-  - HE VLA-JEPA is now the first line of `gpu0.txt`.
+- All training containers run with `LEROBOT_VIDEO_DECODER_CACHE_SIZE=5000` and a memory cap, so a leak kills only its
+  own job. See the containers table.
+- Diffusion (HE and Unitree) was moved to the end of the GPU 6 queue, as the user asked.
+- HE Diffusion reruns from scratch: rerunning costs ~7 h, and resuming from `050000` would only save ~1.7 h.
 
-**Next time:** start every container with the env var and a memory cap.
+**Follow-up the same night: every Unitree job failed.** The Unitree videos are symlinks into `/source-datasets`
+(`/mnt/data01/jhkim/datasets/unitreerobotics`), which the new containers did not mount.
+
+- `LeRobotDataset`'s `reader.try_load()` then failed. The dataset fell back to a Hub download, which
+  `HF_HUB_OFFLINE=1` turns into `OfflineModeIsEnabled`.
+- GPU 6 was recreated with the mount.
+- GPU 0 could not be, without killing Pi0.5. The second container `gpu0b` was added instead.
+
+**Next time:** start every container with the cache variable, a memory cap, and `-v
+/mnt/data01/jhkim/datasets/unitreerobotics:/source-datasets:ro`.
 
 ## Pitfalls learned (keep)
 
@@ -173,7 +197,7 @@ each).
 ## Status check
 
 ```bash
-ssh h100 'docker exec jihun-lerobot-he-official-gpu0-20260929 bash -lc "cd /run-output; \
+ssh h100 'docker exec jihun-lerobot-official-gpu0b-20260930 bash -lc "cd /run-output; \
   for e in humanoid_everyday_g1_20260923/logs/*official*.exit logs/*official*.exit; do echo \"\$e: \$(cat \$e)\"; done; \
   for l in humanoid_everyday_g1_20260923/logs/*official_full.log logs/*official_full.log; do \
     [ -f \${l%.log}.exit ] || echo \"\$l: \$(tail -c 400 \$l | tr \"\\r\" \"\\n\" | grep -a Training: | tail -1 | cut -c1-80)\"; done"; \
@@ -185,13 +209,26 @@ and Diffusion. A run's folder appears at its first checkpoint.
 
 ## Next steps
 
-1. **Check GPU 0** (0 % utilization with full memory at 00:31 UTC). Look at the HE vla_jepa log and `gpu0.runner.log`.
-   Fix and re-queue: delete a failed job's `.exit` file and the queue reruns it.
-2. **Check every `.exit` file.** `skip` means the smoke run failed: read the smoke log, fix the config, delete both
+1. **Unitree GR00T smoke on GPU 6.** It is the first Unitree job with the mount fix; check its `.exit`.
+2. **HE Pi0.5 → GPU 0 handover** (~07:40 UTC):
+   - `HE/logs/pi05_..._official_full.exit` should read 0.
+   - `runs/pi05_..._official_full/checkpoints/` should hold `120000` and its EMA copy.
+   - `gpu0b` should then start HE VLA-JEPA (`queue_official/gpu0.runner.log`).
+   - Then `docker rm` the old `gpu0` container.
+3. **First MolmoAct2 and FastWAM smoke runs** (GPU 0, about 1–2 days out). Their memory is unmeasured.
+   - If full-fine-tune MolmoAct2 at 8 × 2 OOMs, use 4 × 4. Keep the per-update batch of 16 and scale steps, warmup
+     and decay by the new K.
+   - Then delete both `.exit` files so the queue reruns them.
+4. **Check every `.exit` file.** `skip` means the smoke run failed: read the smoke log, fix the config, delete both
    `.exit` files.
-3. **Judge each finished model** with `examples/g1_dex3_training/openloop_smooth.py` (tokens and hands, in std units)
+5. **Judge each finished model** with `examples/g1_dex3_training/openloop_smooth.py` (tokens and hands, in std units)
    before any sim or robot run.
-   - Target for GR00T: consecutive-chunk disagreement near ACT's ~0.10, down from 0.24. Compare with the old HE
-     GR00T's local copy.
-4. Then sim (planner start, table 25 cm), then robot, per the first-runs note.
-5. Optionally move the Unitree MolmoAct2 and FastWAM lines to a third GPU if one frees up.
+   - Target for GR00T: consecutive-chunk disagreement near ACT's ~0.10, down from 0.24.
+   - HE GR00T is in progress in session `f189249f`. HE ACT is next.
+6. Then sim (planner start, table 25 cm), then robot, per the first-runs note.
+7. GPU 6 empties around 2026-09-30 evening; GPU 0 has ~8 days left. If another 80 GB GPU frees up, move the Unitree
+   MolmoAct2 and FastWAM lines to its own queue and container, set up like `gpu0b`.
+8. Optional upstream reports:
+   - the torchcodec cache default of 100 leaks on datasets with many video files
+   - the GR00T processor fallback for Hub ids (fixed on this branch)
+9. The branch is not pushed.
