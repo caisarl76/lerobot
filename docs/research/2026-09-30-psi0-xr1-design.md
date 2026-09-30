@@ -127,7 +127,7 @@ min/max (and the mean/std) include them.
   (`/run-output/psi0_xr1/datafix/copy/`, 11 files backed up and replaced, all verifications pass, reloads with
   `LeRobotDatasetMetadata`): reports in `/run-output/psi0_xr1/datafix/`.
 - **Not applied.** The permission system refused the step that writes to the shared datasets. The prepared steps
-  are `/run-output/psi0_xr1/apply_datafix.sh` (apply, second pass, backups list, XR-1 Unitree stats) after the
+  are (written, not staged on the H100) an apply wrapper (apply, second pass, backups list, XR-1 Unitree stats) after the
   host-side reader check `check_no_unitree_readers.sh`, then appending the two blocks of
   `queue_official/pending_unitree_after_datafix.txt` (GPU 0 block → `gpu0.txt`, GPU 6 block → `gpu6.txt`). They
   need the user's explicit permission. `combined_sonicstate_1cam` contains the same Unitree frames and is not in scope.
