@@ -16,7 +16,17 @@ import tempfile
 from pathlib import Path
 
 RUNS_ROOT = Path("/run-output/runs")
-POLICY_TYPES = {"act", "diffusion", "pi05", "groot", "molmoact2", "vla_jepa", "fastwam"}
+POLICY_TYPES = {
+    "act",
+    "diffusion",
+    "pi05",
+    "groot",
+    "molmoact2",
+    "vla_jepa",
+    "fastwam",
+    "psi0",
+    "xiaomi_robotics",
+}
 
 
 def _check_tree(path: Path):

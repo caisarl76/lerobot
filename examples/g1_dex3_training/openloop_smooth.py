@@ -1,7 +1,7 @@
 """Open-loop smoothness of predicted chunks on held-out episodes (no robot, no closed loop).
 
 Every 12 frames (0.4 s replan at 30 Hz) predict a chunk from the recorded observation, then measure, in units of the
-per-dimension action std (tokens 0:64, hands 64:78):
+per-dimension action std (78D: tokens 0:64, hands 64:78; 28D: arms 0:14, hands 14:28):
   overlap  - disagreement between consecutive chunks over their shared future frames
   seam     - jump at each seam of the chunks spliced as executed (first 12 frames of each), vs the recorded step
   step     - frame-to-frame step inside the spliced sequence away from seams, and the recording's step
@@ -24,7 +24,11 @@ R = 12
 cp = ChunkPolicy(path, "cuda")
 with open(f"{root}/meta/stats.json") as f:
     std = np.asarray(json.load(f)["action"]["std"], np.float32).clip(1e-6)
-parts = {"tokens": slice(0, 64), "hands": slice(64, 78)}
+parts = (
+    {"tokens": slice(0, 64), "hands": slice(64, 78)}
+    if len(std) == 78
+    else {"arms": slice(0, 14), "hands": slice(14, 28)}
+)
 acc = {p: {k: [] for k in ("overlap", "seam", "step", "gt_step", "curv", "gt_curv")} for p in parts}
 for ep in episodes:
     ds = LeRobotDataset("local/x", root=root, episodes=[ep], video_backend="torchcodec")
