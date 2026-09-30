@@ -30,13 +30,13 @@ fallback when a policy has none, but every policy had one.
 
 ## Code (branch `feat/g1-combined-eval`, not pushed)
 
-| Commit     | Change                                                                                                                                                                                                                                          |
-| ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `dfe36b45` | GR00T processor: without checkpoint sidecars (Hub id), use the base checkpoint's processor values: q01/q99, state dropout 0.2, letterbox + crop 0.95 + ColorJitter (new), embodiment map filled so `new_embodiment` is slot 10, not 0. Test `tests/policies/groot/test_groot_new_embodiment_defaults.py`. |
-| `b01a01db` | VLA-JEPA `optimizer_module_lrs` (per-submodule peak LR). Test `tests/policies/vla_jepa/test_optim_groups.py`.                                                                                                                                  |
-| `ceb40b77` | `AdamWConfig.foreach` (False avoids multi-tensor temporaries; needed for fp32 Pi0.5 + EMA on 80 GB).                                                                                                                                             |
-| `4b55559b` | `examples/g1_dex3_training/official_queue.sh`: per-GPU queue runner.                                                                                                                                                                           |
-| `65893b97`, `69719330`, `c44b3242` | Issue-note sections: comparisons, retraining, full matrix.                                                                                                                                                      |
+| Commit                             | Change                                                                                                                                                                                                                                                                                                    |
+| ---------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `dfe36b45`                         | GR00T processor: without checkpoint sidecars (Hub id), use the base checkpoint's processor values: q01/q99, state dropout 0.2, letterbox + crop 0.95 + ColorJitter (new), embodiment map filled so `new_embodiment` is slot 10, not 0. Test `tests/policies/groot/test_groot_new_embodiment_defaults.py`. |
+| `b01a01db`                         | VLA-JEPA `optimizer_module_lrs` (per-submodule peak LR). Test `tests/policies/vla_jepa/test_optim_groups.py`.                                                                                                                                                                                             |
+| `ceb40b77`                         | `AdamWConfig.foreach` (False avoids multi-tensor temporaries; needed for fp32 Pi0.5 + EMA on 80 GB).                                                                                                                                                                                                      |
+| `4b55559b`                         | `examples/g1_dex3_training/official_queue.sh`: per-GPU queue runner.                                                                                                                                                                                                                                      |
+| `65893b97`, `69719330`, `c44b3242` | Issue-note sections: comparisons, retraining, full matrix.                                                                                                                                                                                                                                                |
 
 Tests pass locally:
 
@@ -59,10 +59,10 @@ Layout under `/mnt/data01/jhkim/model_weight/g1_dex3_20260922` (= `/run-output` 
 
 **Containers** (image `4cbe2a3f7fc6`, venv `/run-output/environment/venv`, HF cache mounted, `HF_HUB_OFFLINE=1`):
 
-| Container                                 | GPU | Code mounted at `/workspace/lerobot`                          |
-| ----------------------------------------- | --- | ------------------------------------------------------------- |
+| Container                                 | GPU | Code mounted at `/workspace/lerobot`                                |
+| ----------------------------------------- | --- | ------------------------------------------------------------------- |
 | `jihun-lerobot-he-official-gpu6-20260929` | 6   | `/mnt/data01/jhkim/code/lerobot-g1-groot-fix-20260929` (`dfe36b45`) |
-| `jihun-lerobot-he-official-gpu0-20260929` | 0   | `/mnt/data01/jhkim/code/lerobot-g1-official-20260929-ceb40b77` |
+| `jihun-lerobot-he-official-gpu0-20260929` | 0   | `/mnt/data01/jhkim/code/lerobot-g1-official-20260929-ceb40b77`      |
 
 Each code directory is a `git archive` export of the named commit. They are not git checkouts.
 
@@ -91,15 +91,15 @@ Each code directory is a `git archive` export of the named commit. They are not 
 
 ## Recipes (details and sources in the issue note)
 
-| Policy    | Batch per update (micro × accum)  | Updates | Key settings                                                                                                                                     |
-| --------- | --------------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
-| GR00T     | HE 32 × 1, Unitree 16 × 2          | 20K     | lr 1e-4 cosine, 5 % warmup via `policy.max_steps` (= `steps`); fixed processor                                                                   |
-| ACT       | 8 × 1                             | 200K    | official batch 8; rest as before                                                                                                                 |
-| Diffusion | 64 × 1                            | 200K    | AdamW (0.95, 0.999) wd 1e-6 no clip, cosine warmup 500, EMA (power 0.75), ResNet18 from scratch + GroupNorm, 240×320 crop 0.9, horizon 64/32 kept |
-| Pi0.5     | HE 8 × 4, Unitree 4 × 8            | 30K     | fp32 weights + bf16 autocast, EMA 0.99, openpi aug, AdamW (0.9, 0.95) wd 1e-10 clip 1, `foreach=False`, cosine 2.5e-5 → 2.5e-6 warmup 1K updates  |
-| VLA-JEPA  | 8 × 4                             | 30K     | fp32 weights, per-module LR (base 3e-5, Qwen 1e-5, head 1e-4, predictor 5e-4), warmup 5K, floor = 1/3 peak, MIN_MAX                               |
-| MolmoAct2 | 8 × 2                             | 50K     | full fine-tune (user choice: paper real-world recipe), preset per-module LRs, warmup 200, decay to 10 %, official aug without blur             |
-| FastWAM   | 8 × 2                             | 30K     | user choice: paper real-robot 30K at batch 16; AdamW (0.9, 0.95) wd 0.01 clip 1, cosine 1e-4 → 1e-6, 5 % warmup, bf16, gradient checkpointing   |
+| Policy    | Batch per update (micro × accum) | Updates | Key settings                                                                                                                                      |
+| --------- | -------------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| GR00T     | HE 32 × 1, Unitree 16 × 2        | 20K     | lr 1e-4 cosine, 5 % warmup via `policy.max_steps` (= `steps`); fixed processor                                                                    |
+| ACT       | 8 × 1                            | 200K    | official batch 8; rest as before                                                                                                                  |
+| Diffusion | 64 × 1                           | 200K    | AdamW (0.95, 0.999) wd 1e-6 no clip, cosine warmup 500, EMA (power 0.75), ResNet18 from scratch + GroupNorm, 240×320 crop 0.9, horizon 64/32 kept |
+| Pi0.5     | HE 8 × 4, Unitree 4 × 8          | 30K     | fp32 weights + bf16 autocast, EMA 0.99, openpi aug, AdamW (0.9, 0.95) wd 1e-10 clip 1, `foreach=False`, cosine 2.5e-5 → 2.5e-6 warmup 1K updates  |
+| VLA-JEPA  | 8 × 4                            | 30K     | fp32 weights, per-module LR (base 3e-5, Qwen 1e-5, head 1e-4, predictor 5e-4), warmup 5K, floor = 1/3 peak, MIN_MAX                               |
+| MolmoAct2 | 8 × 2                            | 50K     | full fine-tune (user choice: paper real-world recipe), preset per-module LRs, warmup 200, decay to 10 %, official aug without blur                |
+| FastWAM   | 8 × 2                            | 30K     | user choice: paper real-robot 30K at batch 16; AdamW (0.9, 0.95) wd 0.01 clip 1, cosine 1e-4 → 1e-6, 5 % warmup, bf16, gradient checkpointing     |
 
 Timing (rough):
 
@@ -107,6 +107,40 @@ Timing (rough):
 - GPU 0 runs about 8–9 days in total (MolmoAct2 and FastWAM speeds are not measured yet).
 - None of the GPU 0 jobs fit GPU 6: other users hold ~28–33 GB there.
 - A third 80 GB GPU would cut about 4 days; move the Unitree MolmoAct2 and FastWAM lines to its own queue.
+
+## Incident 2026-09-30: torchcodec decoder leak froze the H100
+
+**What happened.** The HE Diffusion full run leaked about 800 GB of host RAM in its 8 DataLoader workers (74–130 GB
+each).
+
+- It trained to step ~99.7K of 200K (checkpoint `050000` saved), then stalled for ~9.5 h while the host thrashed
+  (1 TB RAM, no swap, load average 64).
+- Every container and `docker exec` hung, and other users on the H100 were affected too.
+- Stopping the GPU 6 container freed the memory, and Pi0.5 on GPU 0 resumed.
+
+**Cause**, measured with a CPU-only probe (random HE samples with 2 frames, 60 GB-capped container):
+
+- torchcodec's `VideoDecoderCache` holds 100 decoders by default. HE has **4064 video files** (one per episode), so
+  random sampling evicts on almost every sample.
+- Evicted decoders do not return their memory: +0.7 MB per sample after the cache is full.
+- With the cache at 5000 (no eviction), memory grows only while new files are opened; the bound is about the file
+  count × 2 MB per worker.
+- PyAV stayed flat but was far too slow.
+- Unitree has 114 files, so it evicts too, just less often.
+
+**Fix in place, no code change:**
+
+- Both containers run with `LEROBOT_VIDEO_DECODER_CACHE_SIZE=5000`.
+- GPU 6 was recreated with `--memory 250g`.
+- GPU 0 got a live `docker update --memory 300g`, so a leak now kills only its own job.
+- The GPU 6 queue was reordered: Diffusion (HE and Unitree) moved to the end. HE Diffusion must restart or resume
+  from `checkpoints/050000`; its run folder already exists, so rename it or set resume before it runs.
+- GPU 0:
+  - The old hand-started loop and runner were replaced by a watcher. It writes Pi0.5's `.exit` from its log
+    ("End of training" gives 0), then starts the runner with the cache setting.
+  - HE VLA-JEPA is now the first line of `gpu0.txt`.
+
+**Next time:** start every container with the env var and a memory cap.
 
 ## Pitfalls learned (keep)
 
@@ -132,6 +166,7 @@ Timing (rough):
   - HE ACT and the combined GR00T in `~/work/g1_models/`
 
   The other policies' old numbers exist only in the docs.
+
 - H100 rules (memory `g1-real-robot-eval-setup`): nothing on the host itself, only containers and mounts. Write to
   `/mnt/data01` through a container, for example `git archive HEAD | ssh h100 docker run -i --rm -v …:/code … tar x`.
 
