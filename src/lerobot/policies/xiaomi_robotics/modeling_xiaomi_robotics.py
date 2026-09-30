@@ -655,9 +655,13 @@ class XR1Model(nn.Module):
         cache_layers, cache_mask, pos_base = self._condition(
             input_ids, inputs["attention_mask"], cache, position_ids, True
         )
-        prefix_length = random.randint(1, 6) if cfg.async_train and random.random() < 0.5 else 0
-        dit_pos, attn_mask = self._dit_inputs(cache_mask, pos_base, state, action_length, prefix_length, True)
-        repeat = cfg.training_repeat
+        # Asynchronous training and the 4 noise draws per sample are training-only (XR-1 `forward`/`_repeat`).
+        train = self.training
+        prefix_length = random.randint(1, 6) if train and cfg.async_train and random.random() < 0.5 else 0
+        dit_pos, attn_mask = self._dit_inputs(
+            cache_mask, pos_base, state, action_length, prefix_length, train
+        )
+        repeat = cfg.training_repeat if train else 1
         dit_pos = dit_pos.repeat_interleave(repeat, dim=1)
         act = actions.repeat_interleave(repeat, dim=0)
         act_mask = action_mask.repeat_interleave(repeat, dim=0).to(act.dtype)
