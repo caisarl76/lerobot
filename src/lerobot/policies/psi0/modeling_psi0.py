@@ -61,12 +61,23 @@ def flow_sigmas(num_steps: int, num_train_timesteps: int = 1000) -> Tensor:
 
 
 def load_action_header_weights(
-    header: nn.Module, state_dict: dict[str, Tensor], chunk_size: int, action_dim: int
+    header: nn.Module,
+    state_dict: dict[str, Tensor],
+    chunk_size: int,
+    action_dim: int,
+    mode: str = "official",
 ) -> tuple[list[str], list[str], list[str]]:
-    """Psi0 `FinetuneTrainer.init_models`: load the whole header when the chunk and action width match,
-    otherwise only `transformer_blocks.*`. Keys whose shapes still differ are skipped (strict=False
-    does not skip size mismatches). Returns (missing, unexpected, skipped)."""
-    if (
+    """Load a released `action_header.safetensors`. Returns (missing, unexpected, skipped).
+
+    - "official" (Psi0 `FinetuneTrainer.init_models`): the whole header when the chunk and action width match,
+      otherwise only `transformer_blocks.*`.
+    - "matching": every tensor whose shape matches; only the action-width layers (`action_proj_in.ac_proj`,
+      `action_proj_out.linear`) are re-initialised when the width differs (e.g. 28D joints on the 80-D SONIC header).
+
+    Keys whose shapes still differ are skipped (strict=False does not skip size mismatches)."""
+    if mode not in ("official", "matching"):
+        raise ValueError(f"unknown action header load mode {mode!r}")
+    if mode == "official" and (
         state_dict["action_proj_in.dec_pos"].shape[0] != chunk_size
         or state_dict["action_proj_out.linear.weight"].shape[0] != action_dim
     ):
@@ -139,14 +150,19 @@ class Psi0Model(nn.Module):
         if config.load_base_weights and config.action_header_path:
             path = Path(config.action_header_path) / "action_header.safetensors"
             missing, unexpected, skipped = load_action_header_weights(
-                self.header, load_file(str(path)), config.chunk_size, config.model_action_dim
+                self.header,
+                load_file(str(path)),
+                config.chunk_size,
+                config.model_action_dim,
+                config.action_header_load,
             )
             logger.info(
-                "Psi0 header from %s: %d missing, %d unexpected, %d skipped (shape)",
+                "Psi0 header from %s: %d missing, %d unexpected, %d skipped (shape): %s",
                 path,
                 len(missing),
                 len(unexpected),
                 len(skipped),
+                skipped,
             )
             if unexpected:
                 raise ValueError(f"Unexpected Psi0 header keys (architecture mismatch?): {unexpected[:10]}")

@@ -60,6 +60,9 @@ class Psi0Config(PreTrainedConfig):
     vlm_path: str = "Qwen/Qwen3-VL-2B-Instruct"
     # Directory holding `action_header.safetensors`; None trains the header from scratch.
     action_header_path: str | None = None
+    # "official": whole header if chunk and width match, else only the transformer blocks (upstream rule).
+    # "matching": every shape-matching tensor; only the action in/out layers are re-initialised on a width change.
+    action_header_load: str = "official"
     # Load base weights in __init__. `from_pretrained` switches it off (the checkpoint holds them).
     load_base_weights: bool = True
     # Qwen3-VL architecture, filled from `vlm_path` on the first build so checkpoints are self-contained.

@@ -124,6 +124,27 @@ def test_header_weights_load_fully_or_blocks_only():
     torch.testing.assert_close(longer.action_proj_in.ac_proj[0].weight, before)  # re-initialised layer kept
 
 
+def test_header_matching_load_reinitialises_only_action_width_layers():
+    """28D joints on the 80-D SONIC header: everything but the action in/out layers keeps its weights."""
+    source = _header(action_pred_horizon=30, action_dim=80, odim=45, action_num_blocks=2)
+    joint = _header(action_pred_horizon=30, action_dim=28, odim=45, action_num_blocks=2)
+    before = joint.action_proj_out.linear.weight.clone()
+    missing, unexpected, skipped = load_action_header_weights(
+        joint, source.state_dict(), chunk_size=30, action_dim=28, mode="matching"
+    )
+    assert not unexpected
+    assert sorted(k.split(":")[0] for k in skipped) == [
+        "action_proj_in.ac_proj.0.bias",
+        "action_proj_in.ac_proj.0.weight",
+        "action_proj_in.ac_proj.2.weight",
+        "action_proj_out.linear.bias",
+        "action_proj_out.linear.weight",
+    ]
+    torch.testing.assert_close(joint.action_proj_in.dec_pos, source.action_proj_in.dec_pos)
+    torch.testing.assert_close(joint.obs_proj._obs_proc[1].weight, source.obs_proj._obs_proc[1].weight)
+    torch.testing.assert_close(joint.action_proj_out.linear.weight, before)
+
+
 def _features(n_cams, action_dim):
     inputs = {
         f"observation.images.cam{i}": PolicyFeature(FeatureType.VISUAL, (3, 96, 128)) for i in range(n_cams)

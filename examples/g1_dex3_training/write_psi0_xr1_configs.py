@@ -7,14 +7,12 @@ Run inside a training container (paths below are container paths):
   python examples/g1_dex3_training/write_psi0_xr1_configs.py --run-output /run-output [--only psi0_joint28 ...]
 
 Recipes (see docs/research/2026-09-30-psi0-xr1-design.md for sources and departures):
-* Psi0 joint28: `finetune-real-psi0.sh` (AMO-era real-G1 fine-tune): frozen VLM `pre.fast...ego200k.he30k`,
-  6-block header from `postpre.1by1.pad36...` (only its transformer blocks load: its chunk is 16),
-  36-D padding, training-time RTC, global batch 128 x 40K, AdamW(0.95, 0.999) lr 1e-4 wd 1e-6 clip 1, cosine,
-  warmup 1K, bf16 autocast, 240x320 images with colour jitter.
-* Psi0 sonic78: `finetune-real-sonic-psi0-2.8B-sonic1.1-robust.sh`: VLM + 12-block header from
+* Psi0 (both spaces): `finetune-real-sonic-psi0-2.8B-sonic1.1-robust.sh`: VLM + 12-block header from
   `postpre.sonic1.1.unifolm.2609181726.40k`, 80-D (64 tokens + 14 hands + 2 unused neck), tuned VLM
   (language 1e-6, vision 1e-5, merger 1e-4), CLIP-L pooled task embedding, state as action token with a learned
   null token (drop 0.1), state noise 0.05, 270x480 images with view and colour augmentation, 128 x 40K.
+  joint28 uses the same checkpoint (user decision; the official joint recipe is the AMO-era
+  `finetune-real-psi0.sh`) with the token-space action in/out layers re-initialised at width 28.
 * XR-1 (both spaces): `xr1/configs` post-training: full fine-tune of Qwen3-VL-4B + DiT from
   `Xiaomi-Robotics-1-5B`, batch 48 x 10K, AdamW(0.9, 0.95) wd 0.1 clip 1, lr 2e-5 cosine to 5e-6, warmup 500,
   relative actions with per-step mean/std (tokens stay absolute), frequency + choice losses, async training.
@@ -46,6 +44,7 @@ CAMERAS = {"unitree": ["cam_left_high", "cam_right_high"], "he": ["egocentric"]}
 SPACE_NAME = {"joint28": "joint28", "sonic78": "sonic78sonicstate"}
 # Our 28-D state is [left arm 7, right arm 7, left hand 7, right hand 7] (Dex3 order, same as UnifoLM).
 XR1_STATE_SLOTS = list(range(0, 7)) + list(range(8, 15)) + list(range(16, 30))
+UNITREE_STATE_QUANTILES = False
 PSI0_SONIC_STATE_SLOTS = list(range(15, 43))  # body29 (legs 0-11, waist 12-14, arms 15-28) + hands 29-42
 
 
@@ -65,32 +64,24 @@ def psi0_policy(space: str, dataset: str) -> dict:
         "optimizer_weight_decay": 1e-6,
         "optimizer_grad_clip_norm": 1.0,
         "img_aug": True,
-        # Psi0 "bounds" (min/max). The Unitree state has corrupt right-hand values in episode 2202 (+-3000,
-        # excluded from training but inside the stored min/max), so it uses q01/q99; the model clips to [-1, 1].
+        # Psi0 "bounds" (min/max) as released. Before fix_unitree_corrupt_state.py the Unitree state stats hold
+        # corrupt right-hand frames (+-3000); --unitree-state-quantiles then switches that state to q01/q99.
         "normalization_mapping": {
             "VISUAL": "IDENTITY",
-            "STATE": "QUANTILES" if dataset == "unitree" else "MIN_MAX",
+            "STATE": "QUANTILES" if dataset == "unitree" and UNITREE_STATE_QUANTILES else "MIN_MAX",
             "ACTION": "MIN_MAX",
         },
     }
-    if space == "joint28":
-        return {
-            **common,
-            "vlm_path": f"{PSI}/pre.fast.1by1.2601091803.ckpt.ego200k.he30k",
-            "action_header_path": f"{PSI}/postpre.1by1.pad36.2601131206.ckpt.he30k",
-            "model_action_dim": 36,
-            "model_state_dim": 36,
-            "num_blocks": 6,
-            "rtc": True,
-            "max_delay": 8,
-            "tune_vlm": False,
-            "image_size": [240, 320],
-        }
     return {
         **common,
         "vlm_path": f"{PSI}/psi0/postpre.sonic1.1.unifolm.2609181726.40k",
         "action_header_path": f"{PSI}/psi0/postpre.sonic1.1.unifolm.2609181726.40k",
-        "model_action_dim": 80,
+        # 78D: the whole 80-D header loads (64 tokens + 14 hands + 2 masked neck dims).
+        # 28D (user decision 2026-09-30, departure from the AMO-era real-G1 recipe): same SONIC v1.1 checkpoint and
+        # architecture; the header's token-space action in/out layers are re-initialised at width 28, every other
+        # tensor (VLM, blocks, time/CLIP embedding, state token, positional table) loads.
+        "model_action_dim": 80 if space == "sonic78" else 28,
+        "action_header_load": "official" if space == "sonic78" else "matching",
         "model_state_dim": 45,
         "state_slots": PSI0_SONIC_STATE_SLOTS,
         "num_blocks": 12,
@@ -151,7 +142,7 @@ def xr1_policy(space: str, dataset: str) -> dict:
 
 # (micro-batch, accumulation, updates, warmup updates) per model and space.
 RECIPES = {
-    ("psi0", "joint28"): (32, 4, 40_000, 1_000),
+    ("psi0", "joint28"): (16, 8, 40_000, 1_000),
     ("psi0", "sonic78"): (16, 8, 40_000, 1_000),
     ("xr1", "joint28"): (16, 3, 10_000, 500),
     ("xr1", "sonic78"): (16, 3, 10_000, 500),
@@ -238,9 +229,15 @@ if __name__ == "__main__":
     )
     parser.add_argument("--run-output", type=Path, default=Path("/run-output"))
     parser.add_argument("--only", nargs="*", help="e.g. psi0_joint28 xr1_sonic78sonicstate")
+    parser.add_argument(
+        "--unitree-state-quantiles",
+        action="store_true",
+        help="Psi0 Unitree state q01/q99 (uncorrected datasets)",
+    )
     parser.add_argument("--smoke-steps-psi0", type=int, default=SMOKE_MICRO_STEPS["psi0"])
     parser.add_argument("--smoke-steps-xr1", type=int, default=SMOKE_MICRO_STEPS["xr1"])
     args = parser.parse_args()
+    UNITREE_STATE_QUANTILES = args.unitree_state_quantiles
     write(
         args.run_output,
         set(args.only) if args.only else None,
