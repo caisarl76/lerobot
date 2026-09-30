@@ -143,7 +143,7 @@ def evaluate(episodes, std):
     lengths = [meta.episodes[e]["length"] for e in episodes]
     offsets = np.cumsum([0, *lengths])
     assert offsets[-1] == len(ds)
-    idx = [int(o) + f for o, n in zip(offsets, lengths, strict=True) for f in range(0, n, STRIDE)]
+    idx = [int(o) + f for o, n in zip(offsets[:-1], lengths, strict=True) for f in range(0, n, STRIDE)]
     dl = torch.utils.data.DataLoader(torch.utils.data.Subset(ds, idx), batch_size=BATCH, num_workers=8)
     acc, raw, per_ep = defaultdict(list), defaultdict(list), defaultdict(list)
     for b in dl:
