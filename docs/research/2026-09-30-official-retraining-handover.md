@@ -191,6 +191,24 @@ the stats for all policies.
   `~/work/g1_models/groot_combined_sonicstate_1cam_ho5_full` (combined Unitree + HE) and
   `/mnt/data/jihun/g1_models/groot_sonic78nolimit_ho5_full`. See memory `h100-old-weights-deleted`.
 
+## Disk: finished runs are pruned (2026-10-01)
+
+`/mnt/data01` was at 96 %. `examples/g1_dex3_training/prune_finished_runs.sh` (on the H100 as
+`/run-output/queue_official/prune_finished_runs.sh`) keeps only the final checkpoint's `pretrained_model/` and
+`pretrained_model_ema/` of runs that exited 0 with "End of training". It deletes:
+
+- the intermediate step folders
+- the final step's resume-only files: optimizer state, `ema_state.pt`, RNG state
+
+So **finished runs can no longer be resumed**, and their intermediate checkpoints are gone.
+
+First pass, by hand, on HE ACT, Diffusion, GR00T and Pi0.5, plus the abandoned `diffusion_..._leaked` run: freed
+289 GB, from 446 GB to 735 GB free.
+
+An hourly loop in container `gpu0b` now prunes the seven policies' `*_sonic78sonicstate_ho5_official_full` runs on both
+datasets as they finish. Its log is `queue_official/prune.log`. It never touches running jobs, failed jobs, or the
+XR-1/Psi0 runs of session `lerobot-15`; those keep their intermediate checkpoints, 28 GB each.
+
 ## Pitfalls learned (keep)
 
 - **The LeRobot scheduler steps per micro-batch.** `AcceleratorConfig` builds
