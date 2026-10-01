@@ -192,6 +192,30 @@ the stats for all policies.
   `~/work/g1_models/groot_combined_sonicstate_1cam_ho5_full` (combined Unitree + HE) and
   `/mnt/data/jihun/g1_models/groot_sonic78nolimit_ho5_full`. See memory `h100-old-weights-deleted`.
 
+## HE Psi0 jobs share GPU 0 (2026-10-01)
+
+The user asked, via the Psi0/XR-1 session, to run the two HE Psi0 jobs on GPU 0. Their GPU 2 container was killed in
+the 06:41 UTC Docker restart; the killed 78D log is kept as `HE/logs/psi0_sonic78sonicstate_ho5_official_full.log.killed`.
+
+Psi0 needs the code of branch `feat/g1-psi0-xiaomi-policies`, so it runs in its own container,
+`jihun-lerobot-psi0-gpu0-20261001`:
+
+- Code: `/mnt/data01/jhkim/code/lerobot-g1-psi0-xr1-dev`.
+- Extra mounts: `/psi-weights`, `/xr1-weights`.
+- `--memory 200g`.
+- Queue: `/run-output/psi0_xr1/queue_gpu0.txt`, Psi0 78D then 28D, about 50 GB each.
+
+GPU 0 order:
+
+1. HE MolmoAct2, running, ~18 h left.
+2. Psi0 78D: the Psi0 runner waits for MolmoAct2's `.exit`. ~56 h.
+3. Psi0 28D.
+4. Our remaining lines, held in `queue_official/gpu0_after_psi0.txt`: HE FastWAM and the Unitree Pi0.5, VLA-JEPA,
+   MolmoAct2 and FastWAM. A watcher in `gpu0c` appends them back to `gpu0.txt` and restarts our runner once both Psi0
+   `.exit` files exist.
+
+This pushes the Unitree GPU 0 block back by roughly 4–5 days.
+
 ## Open-loop smoothness of the finished HE models (2026-10-01)
 
 `openloop_smooth.py` on the six held-out HE episodes (91, 102, 1208, 1219, 1293, 1300), random noise, on a workstation
