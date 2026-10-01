@@ -1,6 +1,6 @@
 """Episode-local G1 joint references for the official SONIC v1.1 encoder.
 
-The input has no measured legs, waist, or root pose. These targets therefore
+The input has no measured legs or root pose; the waist is nominal unless a 31D action supplies it. These targets therefore
 describe stationary manipulation with the explicitly recorded nominal stance.
 Native G1 mode uses [mode_id,0,0,0], ten 29D poses, ten velocities, and ten
 row-major 6D heading rotations. All other observation terms are masked to zero.
@@ -117,8 +117,9 @@ def build_encoder_inputs(
     """
     actions = np.asarray(actions, dtype=np.float64)
     limits = np.asarray(limits, dtype=np.float64)
-    if actions.ndim != 2 or actions.shape[1] != 28 or not len(actions) or not np.isfinite(actions).all():
-        raise ValueError("expected nonempty finite actions [N,28]")
+    if actions.ndim != 2 or actions.shape[1] not in (28, 31) or not len(actions) or not np.isfinite(actions).all():
+        raise ValueError("expected nonempty finite actions [N,28] or [N,31]")
+    waist, actions = actions[:, 28:31], actions[:, :28]  # waist is [N,0] for 28D
     if limits.shape != (28, 2) or not np.isfinite(limits).all() or np.any(limits[:, 0] >= limits[:, 1]):
         raise ValueError("expected finite increasing limits [28,2]")
     clipped = np.clip(actions, limits[:, 0], limits[:, 1])
@@ -138,6 +139,8 @@ def build_encoder_inputs(
         filtered[i] = filtered[i - 1] + np.clip(desired[i] - filtered[i - 1], -max_step, max_step)
     body = np.tile(NOMINAL_BODY, (len(filtered), 1))
     body[:, 15:] = filtered[:, :14]
+    if waist.shape[1]:  # 31D: commanded waist (yaw, roll, pitch) instead of the nominal one, no slew limit
+        body[:, 12:15] = np.column_stack([np.interp(dense_times, source_times, waist[:, i]) for i in range(3)])
     body = body[:, ISAAC_FROM_MOTOR]
     velocities = np.gradient(body, 0.02, axis=0) if len(body) > 1 else np.zeros_like(body)
     # Terminal reference is explicitly held, including zero reference velocity.
@@ -157,7 +160,9 @@ def build_encoder_inputs(
         "reference_fps": 50,
         "preview_frames": 10,
         "preview_step": 5,
-        "lower_body_assumption": "fixed_nominal_standing_legs_and_waist",
+        "lower_body_assumption": "fixed_nominal_standing_legs_waist_from_action"
+        if waist.shape[1]
+        else "fixed_nominal_standing_legs_and_waist",
         "root_orientation_wxyz": [1, 0, 0, 0],
         "nominal_body_motor_order": NOMINAL_BODY.tolist(),
         "arm_speed_limit_rad_s": arm_speed_limit,
@@ -183,7 +188,7 @@ def combine_tokens_and_hands(tokens: np.ndarray, hands: np.ndarray) -> np.ndarra
 def joint_chunk_to_sonic(
     chunk: np.ndarray, limits: np.ndarray, encoder: SonicEncoder, fps: float = 30
 ) -> np.ndarray:
-    """Online counterpart of prepare_sonic_dataset for a 28D policy chunk: [N,28] joints -> [N,78] tokens + hands.
+    """Online counterpart of prepare_sonic_dataset for a policy chunk: [N,28] or [N,31] joints (31D: + waist yaw/roll/pitch) -> [N,78] tokens + hands.
 
     Speed limits are off, as in the sonic78_nolimit datasets. The encoder previews 0.9 s ahead; past the chunk's
     end the last pose is held (as at an episode end), so each chunk should cover the replan interval + 0.9 s.
