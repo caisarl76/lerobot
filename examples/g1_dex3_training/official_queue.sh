@@ -35,6 +35,12 @@ while true; do
     echo skip >"$root/logs/$name.exit"
     continue
   fi
+  # A container can lose its GPU (NVML "Unknown Error" after a host cgroup reset); LeRobot would then
+  # silently train on the CPU. Stop the queue instead; recreate the container and restart the runner.
+  if ! "$PY" -c "import sys, torch; sys.exit(0 if torch.cuda.is_available() else 1)" >/dev/null 2>&1; then
+    echo "no CUDA in this container; queue stopped before $next" >&2
+    exit 2
+  fi
   "$PY" -m lerobot.scripts.lerobot_train --config_path="$root/configs/$name.json" >"$root/logs/$name.log" 2>&1
   echo $? >"$root/logs/$name.exit"
 done
