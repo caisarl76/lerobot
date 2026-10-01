@@ -1,6 +1,6 @@
 # G1 whole-body control backends for 28D / 31D joint policies (design)
 
-Date: 2026-10-01. Revision 2 (review items 1–7 addressed). Status: awaiting written-spec review.
+Date: 2026-10-01. Revision 3 (review rounds 1 and 2 addressed). Status: awaiting written-spec review.
 
 ## Goal
 
@@ -74,10 +74,10 @@ The first 28 columns equal `joint28`.
 | Lower-body policy config | its `GEAR_WBC_CONFIG` = `decoupled_wbc/sim2mujoco/resources/robots/g1/g1_gear_wbc.yaml`: `num_obs` 516 (86 × 6 history), `num_actions` 15, `rpy_cmd`, `height_cmd` 0.74, `cmd_scale` [2, 2, 0.5], `freq_cmd` 0.75. The other `teleop/configs/g1_gear_wbc.yaml` (570 obs, 29 gains, no `rpy_cmd`) is not referenced by the pinned code and is not used. |
 | Policy ONNX | `model_path` = `policy/GR00T-WholeBodyControl-Balance.onnx,policy/GR00T-WholeBodyControl-Walk.onnx` under `decoupled_wbc/sim2mujoco/resources/robots/g1/` (git-lfs; fetched explicitly, SHA-256 recorded in the run log). Walking command is always zero, so Balance runs throughout. |
 | Body PD gains (29) | `MOTOR_KP` / `MOTOR_KD` from `g1_29dof_gear_wbc.yaml` (legs 150/150/150/200/40/40, waist 250 ×3, arms 100/100/40/40/20/20/20; KD 2/2/2/4/2/2, 5 ×3, 5/5/2/2/2/2/2). Sim, so the `env_type == "real"` waist-pitch KD change does not apply. |
-| Hand PD gains (14) | Neither upstream yaml has them. Use the Dex3 gains A's host already uses (`gear_sonic` `SimLoopConfig(hand_profile="dex3")`), so the hands are identical in both backends. |
+| Hand PD gains (14) | Neither upstream yaml has them. A's applied gains come from the deploy's hand commands, not from `SimLoopConfig`: `Dex3Hands` initializes every motor to kp 1.5 / kd 0.1 (`dex3_hands.hpp:396-397`), `open()`/`close()` use the same defaults, and the per-tick `setAllJointsCommand` (`g1_deploy_onnx_ref.cpp:4108`) leaves them unchanged. The sim applies torque = kp·(q* − q) + kd·(0 − dq) from the received command (`base_sim.compute_hand_torques`). Checked in A's container (`jihun/sonic-vla-sim:startupfix-20260907`) source. C applies the same 1.5 / 0.1 with the same formula, so the hands are identical in both backends; test 8 confirms the gains A applies at run time. |
 | Robot model | `instantiate_g1_robot_model(waist_location=...)`: `"lower_and_upper_body"` for 31D (the commanded waist is in the upper-body target and its FK gives `torso_orientation_rpy`), `"lower_body"` for 28D (torso command 0). |
 | Upper-body policy | `IdentityPolicy`: the streamer already resamples to 50 Hz, so both backends get the same targets. (Upstream's default `InterpolationPolicy` would add its own joint-speed cap.) |
-| Activation sequence | (1) after release from the band, call `set_goal({"toggle_policy_action": True})` once (`use_policy_action` defaults to False = RL output ignored, lower body holds measured q); (2) every per-tick goal carries `base_height_command=[0.74]` and `navigate_cmd=[0, 0, 0]`, which sets `use_teleop_policy_cmd=True` (defaults to False = torso commands ignored); (3) the host asserts both flags are True before writing `GATE/settled`. |
+| Activation sequence | `IdentityPolicy.get_action()` returns its last goal unchanged, and the whole-body wrapper's `set_goal()` replaces the upper-body goal with only the keys it is given, so every goal sent through the wrapper must be complete. (1) Before the first `get_action()`, send through the wrapper a complete goal: `target_upper_body_pose` = measured upper-body pose, `base_height_command=[0.74]`, `navigate_cmd=[0, 0, 0]`. This sets `use_teleop_policy_cmd=True` (default False = torso commands ignored). (2) After release from the band, activate the RL output by calling the lower-body policy directly, once: `wbc.lower_body_policy.set_goal({"toggle_policy_action": True})` (`use_policy_action` defaults to False = lower body holds measured q). Never send a toggle-only goal through the wrapper. (3) Every per-tick goal through the wrapper carries all three keys: `target_upper_body_pose` (from the joint message), height and walking command. (4) The host asserts both flags are True before writing `GATE/settled`. |
 | Rates | Physics 500 Hz (`SIMULATE_DT` 0.002), control 50 Hz. |
 | Joint mapping | Body targets by motor index 0–28 → MuJoCo joint names (the `BODY` list in the host); hands by explicit name table from the dataset hand order. The SONIC bridge's right-hand index↔middle swap is not assumed for C; the round-trip test decides it. |
 
@@ -127,9 +127,12 @@ phase ended normally.
    last sim sample (today it clips to the last sample). Same rule for A and C. Invalid runs never enter a comparison.
 2. **Backend-aware.** Token and stored-token metrics only when the log has `token` (backend sonic). Hands vs dataset
    for both.
-3. **Palm error two ways.** Against FK of the **sent joint target** (controller error) and against FK of the
-   **recorded action** (policy + controller; equals the first in replay). For 31D, both FK targets include the
-   commanded waist.
+3. **Palm error two ways.** Against FK of the **joint reference** (controller error; see "Joint reference log") and
+   against FK of the **recorded action** (policy + controller). The two can differ even in replay: resampling,
+   chunk blending, lead-in, clipping and dropped messages separate them, so both are always reported. For C, a third
+   value against the **applied** target (after clipping and drop-hold) isolates the PD/RL tracking. For 31D, FK
+   targets include the commanded waist. **A-native runs (stored tokens, 78D policies) have no joint reference and get
+   recorded-action metrics only.**
 4. **Added metrics:** torso orientation reached vs commanded (31D; per axis median/p95), table contacts during
    `episode` (reuse `sonic_stream_phases.py` clearance code), arm joint speed p95, arm jerk p95 and palm jerk p95
    (the windowed third difference from `robot_run_smoothness.py`, applied to arm joints and to the logged palm positions), clip and dropped-message counts (C).
@@ -137,16 +140,30 @@ phase ended normally.
    (`single_obs[4:7]`) every tick; the scorer reports its error vs FK of the commanded waist and marks the run
    invalid if `rpy_cmd` stays at 0 while the commanded waist moves.
 
+## Joint reference log
+
+- **Streamer, both backends** (`--action-space joint28|joint31`): each 50 Hz tick logs `joint_ref` f32[31]
+  (arms 14 | hands 14 | waist 3; waist = `NOMINAL_BODY[12:15]` for 28D) with the tick's `wall` time and `phase`. It
+  is the target for that tick after resampling, `--chunk-blend-s` and lead-in/return blending — the value the
+  backend is asked to reach. For A it is taken before encoding (the encoder's look-ahead uses the following ticks;
+  the reference for time t is still the pose for t). For C it is the joint message's content.
+- **C host** logs, per 50 Hz control tick, `applied_ref` f32[31] (after clipping and drop-hold), a per-joint
+  `clipped` mask, a `held` flag (non-finite or stale message), and the received `seq`.
+- **Alignment:** the scorer matches `joint_ref` (and `applied_ref`) to sim state by wall time, as it already does for
+  tokens; ticks outside `episode` are not scored.
+- **A-stored / A-native:** no `joint_ref` exists (no joint chunk); only recorded-action metrics are computed.
+
 ## Comparison gates
 
 Repeats: every configuration × episode runs 3 times (timing over ZMQ makes runs non-identical). Statistics are the
 per-episode mean over valid repeats; "spread" is max − min over the repeats.
 
-- **G0 — online A is faithful** (before any A-vs-C claim): for each episode, |A-28D − A-stored| ≤ max(0.5 cm, spread
-  of A-stored) on palm p50 and ≤ max(1.0 cm, spread) on palm p95.
+- **G0 — online A is faithful** (before any A-vs-C claim): for each episode, on the recorded-action palm error (the
+  only metric A-stored has), |A-28D − A-stored| ≤ max(0.5 cm, spread of A-stored) on p50 and ≤ max(1.0 cm, spread)
+  on p95.
 - **G1 — equal balance:** all repeats valid (no `fell`); max tilt ≤ A's max tilt on that episode + 2°; table contacts
   during `episode` ≤ A's.
-- **G2 — C better at tracking:** mean palm p95 over the 6 episodes (vs sent target) lower than A-28D by ≥ 1.0 cm,
+- **G2 — C better at tracking:** mean palm p95 over the 6 episodes (vs `joint_ref`) lower than A-28D by ≥ 1.0 cm,
   and lower on ≥ 4 of 6 episodes. Wrist orientation p95 reported alongside, without a threshold.
 - **31D synthetic (per backend):** valid, no fall, palm p95 ≤ the same episode's 28D replay + 2 cm, and (C) the
   waist-reaches-policy check passes. Torso error reported, no threshold yet.
@@ -174,15 +191,23 @@ closed loop on the same six episodes, 3 repeats, with the HE 78D GR00T `*_offici
 
 1. `assert`: `joint_chunk_to_sonic` on 31D with waist = `NOMINAL_BODY[12:15]` gives tokens identical to the 28D input.
 2. `assert`: `--replay` returns the recorded chunk for each replan time.
-3. Joint round trip (C host, sim): command 14 distinct finger values and distinct values on every arm and waist
-   joint; the state message must return each value on the same named joint (within PD settling), proving the body
-   and hand mappings including the right-hand order.
-4. Activation: after `settled`, both flags True; with a 31D waist command, logged `rpy_cmd` ≠ 0 and within 0.01 rad of
-   FK of the commanded waist.
+3. State mapping (C host, sim, no physics step): assign distinct `qpos` values to all 29 body and 14 hand joints by
+   MuJoCo name; the published state message must return each value at its documented index.
+4. Command mapping (C host): send a joint message with distinct values on every arm and hand slot; the host's
+   `applied_ref` / PD targets must hold each value on the expected MuJoCo joint name (decides the right-hand order;
+   no settling involved). Waist command mapping is checked at the policy input: with a 31D waist command, after
+   `settled` both flags are True and the logged `rpy_cmd` (`single_obs[4:7]`) is ≠ 0 and within 0.01 rad of FK of the
+   commanded waist. Physical waist/torso tracking is not tested here; it is the synthetic-waist evaluation.
 5. Host smoke: C stands 30 s with constant arm targets; valid, tilt < 3°.
 6. Scorer: a run truncated by a forced `fell` and a run with a missing tail are both reported invalid.
 7. Regression: after the `sim_scene.py` extraction, one A episode (stored tokens) scores within G0 tolerance of a
    pre-extraction run; `sonic_joint28_stream_check.py` still passes.
+8. A's applied hand gains: during one A run, the sim host logs the received hand command's kp/kd once after
+   `Init Done` and once during `episode`; both must be 1.5 / 0.1 on all 14 motors (otherwise C's hand gains are
+   changed to match before any comparison).
+9. Activation goal: a unit check that the first wrapper goal and every per-tick goal contain
+   `target_upper_body_pose`, `base_height_command` and `navigate_cmd`, and that `get_action()` runs after the
+   lower-body toggle without `KeyError`.
 
 ## Out of scope
 
