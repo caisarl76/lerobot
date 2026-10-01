@@ -192,6 +192,45 @@ the stats for all policies.
   `~/work/g1_models/groot_combined_sonicstate_1cam_ho5_full` (combined Unitree + HE) and
   `/mnt/data/jihun/g1_models/groot_sonic78nolimit_ho5_full`. See memory `h100-old-weights-deleted`.
 
+## Open-loop smoothness of the finished HE models (2026-10-01)
+
+`openloop_smooth.py` on the six held-out HE episodes (91, 102, 1208, 1219, 1293, 1300), random noise, on a workstation
+RTX 3060. Units are per-dimension action std. "Disagree" is consecutive-chunk disagreement over the frames the chunks
+share; "seam" is the jump at each switch. Replanning is every 12 frames unless noted.
+
+| Model (new = official recipe)  | Tokens: disagree | Tokens: seam | Tokens: step (rec. 0.019) | Tokens: curvature (rec. 0.038) | Hands: disagree | Hands: seam |
+| ------------------------------ | ---------------- | ------------ | ------------------------- | ------------------------------ | --------------- | ----------- |
+| ACT new (200K)                 | **0.085**        | 0.087        | 0.017                     | 0.008                          | 0.101           | 0.120       |
+| ACT old                        | 0.096            | 0.092        | 0.016                     | 0.014                          | 0.108           | 0.129       |
+| Pi0.5 new, EMA, bf16           | 0.150            | 0.140        | 0.028                     | 0.032                          | 0.246           | 0.245       |
+| GR00T new, bf16 backbone       | 0.170            | 0.139        | 0.023                     | 0.026                          | 0.242           | –           |
+| Diffusion new, EMA             | 0.205            | 0.164        | 0.035                     | 0.043                          | 0.315           | 0.270       |
+| GR00T old                      | 0.241            | 0.215        | 0.034                     | 0.049                          | 0.324           | –           |
+| VLA-JEPA new, bf16, replan 4\* | 0.068            | 0.065        | 0.028                     | 0.037                          | 0.142           | 0.136       |
+
+\* VLA-JEPA's chunk is 7 frames, so it replans every 4 frames and consecutive chunks share only 3 frames. Its numbers are
+not comparable with the 12-frame rows, and on the robot it would need a new prediction every 0.13 s.
+
+**Reading:**
+
+- ACT is deterministic, and the retrain improved it slightly.
+- Every stochastic generative policy, flow or diffusion, sits at 0.15–0.21 token disagreement, about 2× ACT, even with
+  the official recipes.
+- Within-chunk smoothness is fine for all of them. The common problem is sample variance at chunk switches, so the
+  inference-side fixes (fixed noise seed, RTC, chunk blending) are worth trying on all of them, not only GR00T.
+
+**Eval notes:**
+
+- `ChunkPolicy` now always loads on the CPU first, then moves to the device, so 12 GB GPUs can run Pi0.5 and VLA-JEPA
+  with a bf16 config.
+- `openloop_smooth.py` takes `REPLAN=<frames>`.
+- Local copies are in `/mnt/data/jihun/g1_models/he_*_official_full`. In those copies Pi0.5's `dtype` and VLA-JEPA's
+  `torch_dtype` are set to `bfloat16`.
+- **VLA-JEPA checkpoint bug:** the saved `model.safetensors` lacks `model.qwen.model.model.language_model.embed_tokens.weight`.
+  It is tied to `lm_head`, so safetensors kept only one copy, and `from_pretrained` fails strict loading.
+  - The local copy was patched by adding the key, cloned from `lm_head.weight`.
+  - Any server or eval on the original checkpoint needs the same patch, or a loader fix.
+
 ## Incident 2026-10-01: containers lost their GPU
 
 Around 2026-10-01 03:30 UTC both training containers lost GPU access: `nvidia-smi` in them gives

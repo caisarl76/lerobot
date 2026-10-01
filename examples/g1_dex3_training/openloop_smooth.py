@@ -7,9 +7,11 @@ per-dimension action std (tokens 0:64, hands 64:78):
   step     - frame-to-frame step inside the spliced sequence away from seams, and the recording's step
   curv     - second difference inside each predicted chunk vs the recording's
 Usage: python openloop_smooth.py POLICY_PATH DATASET_ROOT MODE(random|fixed) EP [EP ...]
+REPLAN=<frames> overrides the 12-frame replan interval (needed when a policy's chunk is shorter, e.g. VLA-JEPA's 7).
 """
 
 import json
+import os
 import sys
 
 import numpy as np
@@ -20,7 +22,7 @@ from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
 path, root, mode = sys.argv[1], sys.argv[2], sys.argv[3]
 episodes = [int(e) for e in sys.argv[4:]]
-R = 12
+R = int(os.environ.get("REPLAN", 12))
 cp = ChunkPolicy(path, "cuda")
 with open(f"{root}/meta/stats.json") as f:
     std = np.asarray(json.load(f)["action"]["std"], np.float32).clip(1e-6)

@@ -222,12 +222,13 @@ class ChunkPolicy:
         from lerobot.policies.factory import get_policy_class, make_pre_post_processors
 
         cfg = PreTrainedConfig.from_pretrained(path)
-        # With a backbone cast, load on the CPU first: the float32 model may not fit the GPU before the cast.
-        cfg.device = "cpu" if backbone_dtype else device
+        # Load on the CPU first: a float32 checkpoint may not fit a 12 GB GPU before the backbone cast or
+        # before a bf16 config (Pi0.5 `dtype`, VLA-JEPA `torch_dtype`) converts it.
+        cfg.device = "cpu"
         policy = get_policy_class(cfg.type).from_pretrained(path, config=cfg)
         if backbone_dtype:
             cast_groot_backbone(policy, getattr(torch, backbone_dtype))
-            cfg.device = device
+        cfg.device = device
         self.policy = policy.to(device).eval()
         self.pre, self.post = make_pre_post_processors(
             policy_cfg=cfg,
