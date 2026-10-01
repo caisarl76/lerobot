@@ -178,9 +178,9 @@ the stats for all policies.
   on 2026-10-01. Their logs are kept as `logs/*.corruptdata`, and both are re-queued in the pending GPU 6 block.
 - A watcher died in the old GPU 0 container: HE Pi0.5's `.exit` was never written, so GPU 0 sat idle from 07:22 to
   09:45 UTC on 2026-09-30. The exit was then written by hand.
-- Workstation copies still trained on uncorrected Unitree data: `~/work/g1_models/groot_combined_sonicstate_1cam_ho5_full`
-  (combined Unitree + HE) and `/mnt/data/jihun/g1_models/groot_sonic78nolimit_ho5_full`. Keep or remove them per the
-  user.
+- The workstation copies trained on uncorrected Unitree data were deleted on 2026-10-01 at the user's request:
+  `~/work/g1_models/groot_combined_sonicstate_1cam_ho5_full` (combined Unitree + HE) and
+  `/mnt/data/jihun/g1_models/groot_sonic78nolimit_ho5_full`. See memory `h100-old-weights-deleted`.
 
 ## Pitfalls learned (keep)
 
