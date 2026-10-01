@@ -178,6 +178,15 @@ the stats for all policies.
   on 2026-10-01. Their logs are kept as `logs/*.corruptdata`, and both are re-queued in the pending GPU 6 block.
 - A watcher died in the old GPU 0 container: HE Pi0.5's `.exit` was never written, so GPU 0 sat idle from 07:22 to
   09:45 UTC on 2026-09-30. The exit was then written by hand.
+- **The fix was applied on 2026-10-01 ~01:20 UTC by session `lerobot-15` (formerly `lerobot-e2`), with the user's
+  approval:**
+  - Datasets: `/run-output/datasets/{joint28,sonic78_nolimit,sonic78_nolimit_sonicstate,combined_sonicstate_1cam}`.
+  - 267 frames in 40 episodes, state dims 24–27 only, linearly interpolated in time.
+  - `observation.state` in `meta/stats.json` and the per-episode stats were recomputed.
+  - Backups: `*.bak-corruptstate-20260930`. A re-scan finds no corrupt frames.
+  - Both pending blocks were appended to the queues, and the GPU 6 runner was restarted. The Unitree GR00T rerun
+    started at ~01:30 UTC on the corrected data.
+  - The GPU 0 Unitree block runs after HE MolmoAct2 and FastWAM.
 - The workstation copies trained on uncorrected Unitree data were deleted on 2026-10-01 at the user's request:
   `~/work/g1_models/groot_combined_sonicstate_1cam_ho5_full` (combined Unitree + HE) and
   `/mnt/data/jihun/g1_models/groot_sonic78nolimit_ho5_full`. See memory `h100-old-weights-deleted`.
