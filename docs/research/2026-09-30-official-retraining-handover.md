@@ -166,6 +166,22 @@ each).
 **Next time:** start every container with the cache variable, a memory cap, and `-v
 /mnt/data01/jhkim/datasets/unitreerobotics:/source-datasets:ro`.
 
+## Unitree data fix hold (2026-09-30 / 10-01)
+
+Session `lerobot-e2` (Psi0/XR-1 work) found 266 corrupt right-hand state frames, with values up to ±3000, in 39
+Unitree episodes. They are also baked into the stored statistics. The user decided to fix the datasets and recompute
+the stats for all policies.
+
+- The Unitree jobs not yet run are held in `queue_official/pending_unitree_after_datafix.txt`, with the GPU 0 and
+  GPU 6 blocks. `lerobot-e2` appends them after the fix and restarts any runner that has exited.
+- The user decided to delete the two Unitree models trained on the uncorrected data, `runs/{groot,act}_..._official_full`,
+  on 2026-10-01. Their logs are kept as `logs/*.corruptdata`, and both are re-queued in the pending GPU 6 block.
+- A watcher died in the old GPU 0 container: HE Pi0.5's `.exit` was never written, so GPU 0 sat idle from 07:22 to
+  09:45 UTC on 2026-09-30. The exit was then written by hand.
+- Workstation copies still trained on uncorrected Unitree data: `~/work/g1_models/groot_combined_sonicstate_1cam_ho5_full`
+  (combined Unitree + HE) and `/mnt/data/jihun/g1_models/groot_sonic78nolimit_ho5_full`. Keep or remove them per the
+  user.
+
 ## Pitfalls learned (keep)
 
 - **The LeRobot scheduler steps per micro-batch.** `AcceleratorConfig` builds
