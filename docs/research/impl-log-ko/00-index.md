@@ -29,9 +29,9 @@
 
 ```mermaid
 flowchart LR
-  A[Unitree 13개 데이터셋<br/>3,152 에피소드] --> C[28D 관절 데이터]
-  B[Humanoid Everyday<br/>4,064 에피소드] --> C
-  C --> D[SONIC v1.1 인코딩<br/>78D = 토큰 64 + 손 14]
+  A[Unitree 13개 데이터셋<br/>3,152 에피소드] --> C[팔 14 + 손 14 추출<br/>28D 관절 데이터]
+  B[Humanoid Everyday<br/>4,064 에피소드<br/>다리·허리 15D는 버림] --> C
+  C --> D[SONIC v1.1 인코딩<br/>다리·허리는 고정 서기 자세<br/>78D = 토큰 64 + 손 14]
   D --> E[정책 학습<br/>GR00T, Pi0.5, ACT 등 7종]
   F[G1 머리 카메라 D435i<br/>+ 관절 상태] --> G[정책 서버<br/>워크스테이션 GPU]
   E --> G
