@@ -1,6 +1,6 @@
 # G1 whole-body control backends for 28D / 31D joint policies (design)
 
-Date: 2026-10-01. Status: approved in conversation, awaiting written-spec review.
+Date: 2026-10-01. Revision 2 (review items 1–7 addressed). Status: awaiting written-spec review.
 
 ## Goal
 
@@ -9,12 +9,12 @@ Run VLA policies that output joint targets — 28D (14 arm + 14 Dex3 hand, as in
 same simulated scene:
 
 - **A — SONIC** (existing): joints → SONIC tokens on the robot side (encoder mode 0) → NVIDIA C++ deploy.
-- **C — GR00T decoupled WBC** (new): NVIDIA's official lower-body RL policy (legs + waist) from
-  `NVlabs/GR00T-WholeBodyControl` `decoupled_wbc`, arm and hand targets straight to PD. This is the controller
-  behind GR00T N1.5/N1.6 on G1.
+- **C — GR00T decoupled WBC** (new): NVIDIA's lower-body RL policy (legs + waist) from `NVlabs/GR00T-WholeBodyControl`
+  `decoupled_wbc` at pinned commit `b042411fae` (2026-09-23); arm and hand targets straight to PD. This is the
+  controller behind GR00T N1.5/N1.6 on G1.
 
-Success: C reaches lower palm error than A at equal balance (no falls, tilt and foot contacts comparable), scored
-by the unchanged `sonic_stream_eval.py` on the same held-out HE episodes and table scene.
+Success is decided by the numerical gates in "Comparison gates" below, on held-out HE episodes in the same table
+scene, scored by one scorer that applies the same validity rules to A and C.
 
 ## Background and decisions
 
@@ -22,20 +22,16 @@ by the unchanged `sonic_stream_eval.py` on the same held-out HE episodes and tab
   legs and waist fixed at `NOMINAL_BODY`.
 - Palm error has two sources: SONIC's own tracking (round-trip audit: p50 1.4–1.9 cm, p95 3–5 cm; SONIC picks its
   own arm posture) and the policy's error (closed-loop median 6–9 cm). A controller change can only remove the first.
-  SONIC's VR 3-point mode is worse (paper: 6 cm mean wrist error), so it is not considered.
-- Official decoupled WBC accepts the waist through `instantiate_g1_robot_model(waist_location="lower_and_upper_body")`:
-  forward kinematics of the commanded waist gives the torso roll/pitch/yaw passed to the lower-body policy
-  (`G1DecoupledWholeBodyPolicy.get_action`). With `"lower_body"` the torso command is zero (28D case).
+  SONIC's VR 3-point mode is worse (paper: 6 cm mean wrist error) and is not considered.
 - HE's waist is static: over 60 sampled episodes the measured waist (`observation.leg_joints[12:15]`) has std
-  0.004 / 0.003 / 0.017 rad (yaw/roll/pitch) and a per-episode range p90 ≤ 0.031 rad. So 31D is built and tested
-  with a synthetic waist; no HE `joint31` dataset is built.
-- Evaluation is sim-first in the existing scene; real-robot C comes later (out of scope).
-- Order: (1) replay recorded actions through A and C (no model, isolates the controller); (2) train a 28D GR00T on
+  0.004 / 0.003 / 0.017 rad (yaw/roll/pitch), per-episode range p90 ≤ 0.031 rad. 31D is built and tested with a
+  synthetic waist; no HE `joint31` dataset is built.
+- Sim first in the existing scene; real-robot C later (out of scope).
+- Order: (1) 28D replay through A and C with valid scoring; (2) synthetic-waist 31D replay; (3) train a 28D GR00T on
   HE and compare closed loop.
-- Rejected alternatives: LeRobot `UnitreeG1` + `GrootLocomotionController` (reimplementation, no waist→torso step,
-  different scene and gains); the official `run_g1_control_loop.py` as-is (own sim and DDS loop, hard to align with
-  our table, startup and logs); Unitree built-in locomotion + `arm_sdk` and research WBCs (ULC, AMO, HOMIE, TWIST2)
-  — possible later.
+- Rejected: LeRobot `UnitreeG1` + `GrootLocomotionController` (reimplementation, no waist→torso step, different scene
+  and gains); upstream `run_g1_control_loop.py` as-is (own sim and DDS loop); Unitree built-in locomotion + `arm_sdk`
+  and research WBCs (ULC, AMO, HOMIE, TWIST2) — possible later.
 
 ## Architecture
 
@@ -43,12 +39,14 @@ by the unchanged `sonic_stream_eval.py` on the same held-out HE episodes and tab
 policy server (GPU, unchanged, returns 28D)  ── or ──  --replay (recorded action chunks)
                          │ chunk [N, 28|31]
                          ▼
-sonic_policy_streamer.py (robot side, CPU)
-  ├─ --backend sonic      joint → tokens (encoder; waist from action if 31D) → 50 Hz tokens → NVIDIA deploy → MuJoCo
-  └─ --backend decoupled  same 30→50 Hz resampler → 29 body + 14 hand targets → decoupled_wbc_sim_host.py → MuJoCo
-                                                                         │ same scene, table, sim_state.npz
-                                                                         ▼
-                                                           sonic_stream_eval.py (unchanged)
+sonic_policy_streamer.py (robot side, CPU), existing 30→50 Hz resampler
+  ├─ --backend sonic      joint → tokens (encoder; waist from action if 31D) → token msg → NVIDIA deploy ─┐
+  └─ --backend decoupled  joint msg (below) ──────────────────────────────────→ decoupled_wbc_sim_host.py ─┤
+                                                                                                         ▼
+                                        sim_scene.py (shared MuJoCo scene, table, recording, termination)
+                                                                                                         ▼
+                                                     sonic_stream_eval.py (backend-aware, validity-gated)
+launcher: sonic_official_sim_eval.sh with BACKEND=sonic|decoupled (one script)
 ```
 
 ## Components
@@ -57,83 +55,147 @@ All under `examples/g1_dex3_training/`.
 
 | File | Change |
 | --- | --- |
-| `sonic_targets.py` | `joint_chunk_to_sonic()` accepts `[N, 31]`; columns 28–30 replace `NOMINAL_BODY[12:15]` in the encoder's 29D body target. 28D unchanged. |
-| `sonic_policy_streamer.py` | `--action-space joint31`; `--backend {sonic,decoupled}` (default `sonic`); `--replay`: serve the episode's recorded action chunks (same chunk length and replan times) instead of querying a policy; `--synthetic-waist`: append the generated waist track below to a 28D chunk. With `decoupled`, publish 50 Hz joint targets on the action port and skip the planner / POSE token handoff. |
-| `decoupled_wbc_sim_host.py` (new, ~200 lines) | Same scene, table, gates, video and `sim_state.npz` as `sonic_official_sim_host.py`, reusing its table and recording helpers (imported or factored out, not copied). Physics 500 Hz; at 50 Hz runs the official `G1GearWbcPolicy` (Balance/Walk ONNX; walking command zero; height 0.74) for legs + waist; arms and hands get the streamer targets through PD with the official `g1_gear_wbc.yaml` gains; torso command from the robot model (`lower_and_upper_body` for 31D, zero for 28D). Publishes robot state in the NVIDIA deploy's ZMQ state format on the same port. |
-| `decoupled_wbc_sim_eval.sh` (new) | Copy of `sonic_official_sim_eval.sh` that starts the new host. Official repo mounted at pinned commit `b042411fae` (2026-09-23); onnxruntime from a mounted `PYTHONPATH` folder (container Python 3.10 already has pinocchio 2.7, torch, mujoco 3.12). Nothing installed on the host. |
-| `sonic_stream_eval.py` | For 31D runs, the palm FK target uses the commanded waist instead of `NOMINAL_BODY[12:15]`. |
+| `sim_scene.py` (new, extracted) | Scene setup, table park/move-in and clearance, per-tick state recording, video, gate helpers and the termination record, moved out of `sonic_official_sim_host.py` into functions with no import-time side effects. Today that module runs setup and launches the deploy at import, so its helpers cannot be imported; the extraction is a required first step. |
+| `sonic_official_sim_host.py` | Uses `sim_scene.py`; behaviour unchanged (regression check in Tests). Gains the termination record and fall detection. |
+| `decoupled_wbc_sim_host.py` (new) | Backend C host; integration contract below. |
+| `sonic_targets.py` | `joint_chunk_to_sonic()` accepts `[N, 31]`; columns 28–30 replace `NOMINAL_BODY[12:15]` in the encoder's body target. 28D unchanged. |
+| `sonic_policy_streamer.py` | `--action-space joint31`; `--backend {sonic,decoupled}` (default `sonic`); `--replay` serves the episode's recorded action chunks at the same chunk length and replan times; `--synthetic-waist` appends the waist track below to 28D chunks. With `decoupled`: sends the joint message, skips the planner / POSE token handoff and `TOKEN_BOUND` (which only applies to tokens), and uses the startup in "Startup, handoff and safety". |
+| `sonic_official_sim_eval.sh` | Parameterized, not copied: `BACKEND=sonic` (default, current behaviour) or `decoupled` selects the host script, its mounts (pinned upstream checkout, onnxruntime `PYTHONPATH` folder) and the streamer flags. Containers, gates, cleanup, datasets and scoring stay shared. |
+| `sonic_stream_eval.py` | Backend-aware and validity-gated; see "Scorer". |
 
-31D action layout: `[arms 14 | hands 14 | waist 3]`, waist in motor order yaw, roll, pitch (indices 12–14). The
-first 28 columns equal `joint28`, so 28D models, stats and tools are unaffected.
+31D action layout: `[arms 14 | hands 14 | waist 3]`, waist in motor order yaw, roll, pitch (motor indices 12–14).
+The first 28 columns equal `joint28`.
+
+## Backend C integration contract (upstream commit `b042411fae`)
+
+| Item | Value |
+| --- | --- |
+| WBC top-level config | `decoupled_wbc/control/main/teleop/configs/g1_29dof_gear_wbc.yaml` |
+| Lower-body policy config | its `GEAR_WBC_CONFIG` = `decoupled_wbc/sim2mujoco/resources/robots/g1/g1_gear_wbc.yaml`: `num_obs` 516 (86 × 6 history), `num_actions` 15, `rpy_cmd`, `height_cmd` 0.74, `cmd_scale` [2, 2, 0.5], `freq_cmd` 0.75. The other `teleop/configs/g1_gear_wbc.yaml` (570 obs, 29 gains, no `rpy_cmd`) is not referenced by the pinned code and is not used. |
+| Policy ONNX | `model_path` = `policy/GR00T-WholeBodyControl-Balance.onnx,policy/GR00T-WholeBodyControl-Walk.onnx` under `decoupled_wbc/sim2mujoco/resources/robots/g1/` (git-lfs; fetched explicitly, SHA-256 recorded in the run log). Walking command is always zero, so Balance runs throughout. |
+| Body PD gains (29) | `MOTOR_KP` / `MOTOR_KD` from `g1_29dof_gear_wbc.yaml` (legs 150/150/150/200/40/40, waist 250 ×3, arms 100/100/40/40/20/20/20; KD 2/2/2/4/2/2, 5 ×3, 5/5/2/2/2/2/2). Sim, so the `env_type == "real"` waist-pitch KD change does not apply. |
+| Hand PD gains (14) | Neither upstream yaml has them. Use the Dex3 gains A's host already uses (`gear_sonic` `SimLoopConfig(hand_profile="dex3")`), so the hands are identical in both backends. |
+| Robot model | `instantiate_g1_robot_model(waist_location=...)`: `"lower_and_upper_body"` for 31D (the commanded waist is in the upper-body target and its FK gives `torso_orientation_rpy`), `"lower_body"` for 28D (torso command 0). |
+| Upper-body policy | `IdentityPolicy`: the streamer already resamples to 50 Hz, so both backends get the same targets. (Upstream's default `InterpolationPolicy` would add its own joint-speed cap.) |
+| Activation sequence | (1) after release from the band, call `set_goal({"toggle_policy_action": True})` once (`use_policy_action` defaults to False = RL output ignored, lower body holds measured q); (2) every per-tick goal carries `base_height_command=[0.74]` and `navigate_cmd=[0, 0, 0]`, which sets `use_teleop_policy_cmd=True` (defaults to False = torso commands ignored); (3) the host asserts both flags are True before writing `GATE/settled`. |
+| Rates | Physics 500 Hz (`SIMULATE_DT` 0.002), control 50 Hz. |
+| Joint mapping | Body targets by motor index 0–28 → MuJoCo joint names (the `BODY` list in the host); hands by explicit name table from the dataset hand order. The SONIC bridge's right-hand index↔middle swap is not assumed for C; the round-trip test decides it. |
+
+## Joint message (streamer → C host)
+
+One ZMQ PUB message per 50 Hz tick on the action port, msgpack:
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `t_wall` | f64 | streamer wall-clock send time |
+| `seq` | u64 | strictly increasing |
+| `phase` | str | `leadin`, `hold`, `episode`, `return` |
+| `frame` | i64 | source dataset frame (−1 outside `episode`) |
+| `q_body` | f32[29] | motor order 0–28 (legs ignored by C; waist used only for 31D) |
+| `q_hand` | f32[14] | dataset hand order: left thumb0–2, middle0–1, index0–1; right thumb0–2, index0–1, middle0–1 |
+
+Limits: no token-style magnitude bound. The host rejects a message with non-finite values (holds the previous
+target and logs it); finite values are clipped to the MuJoCo joint ranges and every clip is counted per joint in the
+log. A message older than 0.1 s on arrival is dropped and counted. State goes back in the NVIDIA deploy's ZMQ state
+format on the state port (read from the deploy source before writing the host), so `--state-source robot` and the
+state-age check are unchanged.
 
 ## Startup, handoff and safety (backend C)
 
-1. Robot hangs on the elastic band at the official default pose; host releases it; Balance policy stands it up with
-   arms at the gear-WBC default. After 5 s settled, host writes `GATE/deploy_ready`, then `GATE/settled`.
-2. Table parked 10 m away, moved in after `settled` (as in A). HE episodes: `TABLE_GAP_CM=30`, matching A's HE
-   runs (`--start planner`, table 25 cm further out).
+1. Robot hangs on the elastic band at the official default pose; host releases it, activates the policy (contract
+   above). After 5 s settled with both flags True, host writes `GATE/deploy_ready`, then `GATE/settled`.
+2. Table parked 10 m away, moved in after `settled` (as in A). HE episodes: `TABLE_GAP_CM=30`, matching A's HE runs
+   (`--start planner`, table 25 cm further out).
 3. Streamer blends arms (and waist for 31D) linearly in joint space from the measured pose to the episode's first
-   action over 2 s, holds 1 s, then streams.
-4. At episode end or `GATE/done`: blend back to the start pose over 2 s; host stops 3 s later.
+   action over 2 s (`leadin`), holds 1 s (`hold`), then streams (`episode`).
+4. End of episode or `GATE/done`: blend back over 2 s (`return`); host stops 3 s later.
 
-Safety in sim: the streamer's state-age, max-chunk-age and `--chunk-blend-s` work unchanged. No joint-step cap in
-sim (arm speed is logged); it is required before real-robot C. The host logs `fell` and stops if tilt > 20° or
-both feet leave the ground, so a failed run is never scored as normal.
+Safety in sim: streamer state-age, max-chunk-age and `--chunk-blend-s` unchanged. No joint-step cap in sim (arm
+speed is logged); required before real-robot C.
 
-## 31D waist per backend
+## Termination record and fall detection (both backends)
 
-- A: the waist columns go into the encoder's body target; SONIC tracks them with its own posture choice.
-- C: the commanded waist → torso orientation → `torso_orientation_rpy` of the lower-body policy, which moves waist
-  and legs to follow it (not direct PD; NVIDIA's design).
+Both hosts write `termination.json`: `{"reason": "completed" | "fell" | "timeout" | "error", "t_wall", "phase",
+"detail"}`. Fall detection is armed only after `GATE/settled` (the robot hangs before that): tilt > 20° or both feet
+off the ground for > 0.2 s ⇒ `fell`, stop. `completed` requires the streamer's `GATE/done` after the `episode`
+phase ended normally.
 
-Synthetic waist track (on a real HE episode's 28D actions), one axis at a time: yaw ±0.4 rad sine at 0.2 Hz, then
-roll ±0.15 rad sine at 0.2 Hz, then pitch 0 → 0.3 rad → 0 (each ramp 2 s, hold 2 s). Joint limits: yaw ±2.6,
-roll/pitch ±0.52 rad.
+## Scorer (`sonic_stream_eval.py`)
 
-Reported per backend: torso orientation reached vs commanded (median / p95 per axis), palm error vs FK including the
-commanded waist, tilt, foot contacts, fall. Pass: no fall and palm p95 at most 2 cm worse than the same episode
-replayed as 28D. Torso error is reported without a threshold (nothing to base one on yet).
+1. **Validity first.** Output `{"valid": false, "reason": ...}` and exit non-zero unless `termination.json` says
+   `completed` and the scored source frames cover ≥ 98% of the episode's frames, with no streamer timestamp past the
+   last sim sample (today it clips to the last sample). Same rule for A and C. Invalid runs never enter a comparison.
+2. **Backend-aware.** Token and stored-token metrics only when the log has `token` (backend sonic). Hands vs dataset
+   for both.
+3. **Palm error two ways.** Against FK of the **sent joint target** (controller error) and against FK of the
+   **recorded action** (policy + controller; equals the first in replay). For 31D, both FK targets include the
+   commanded waist.
+4. **Added metrics:** torso orientation reached vs commanded (31D; per axis median/p95), table contacts during
+   `episode` (reuse `sonic_stream_phases.py` clearance code), arm joint speed p95, arm jerk p95 and palm jerk p95
+   (the windowed third difference from `robot_run_smoothness.py`, applied to arm joints and to the logged palm positions), clip and dropped-message counts (C).
+5. **Waist reaches the policy (31D, C).** The C host logs the lower-body observation's `rpy_cmd` slice
+   (`single_obs[4:7]`) every tick; the scorer reports its error vs FK of the commanded waist and marks the run
+   invalid if `rpy_cmd` stays at 0 while the commanded waist moves.
+
+## Comparison gates
+
+Repeats: every configuration × episode runs 3 times (timing over ZMQ makes runs non-identical). Statistics are the
+per-episode mean over valid repeats; "spread" is max − min over the repeats.
+
+- **G0 — online A is faithful** (before any A-vs-C claim): for each episode, |A-28D − A-stored| ≤ max(0.5 cm, spread
+  of A-stored) on palm p50 and ≤ max(1.0 cm, spread) on palm p95.
+- **G1 — equal balance:** all repeats valid (no `fell`); max tilt ≤ A's max tilt on that episode + 2°; table contacts
+  during `episode` ≤ A's.
+- **G2 — C better at tracking:** mean palm p95 over the 6 episodes (vs sent target) lower than A-28D by ≥ 1.0 cm,
+  and lower on ≥ 4 of 6 episodes. Wrist orientation p95 reported alongside, without a threshold.
+- **31D synthetic (per backend):** valid, no fall, palm p95 ≤ the same episode's 28D replay + 2 cm, and (C) the
+  waist-reaches-policy check passes. Torso error reported, no threshold yet.
+- **Closed loop (step 3):** G1 applies; palm error reported both ways; no pass threshold set until the replay
+  numbers exist.
 
 ## Evaluation plan
 
-Step 1 — replay (no model). Six held-out HE episodes (ho5 split), chosen with a fixed seed across tasks, including
-1293 and 1300. Per episode:
+Step 1 — 28D replay. Six held-out HE episodes (ho5 split), fixed seed across tasks, including 1293 and 1300.
+Configurations A-stored (stored `sonic78_nolimit` tokens), A-28D (`--replay --backend sonic`), C-28D
+(`--replay --backend decoupled`), 3 repeats each. Check G0, then G1/G2.
 
-| Run | Source | Backend |
-| --- | --- | --- |
-| A-stored | stored `sonic78_nolimit` tokens | sonic |
-| A-28D | recorded 28D actions, `--replay` | sonic |
-| C-28D | recorded 28D actions, `--replay` | decoupled |
+Step 2 — synthetic 31D. Waist track, one axis at a time: yaw ±0.4 rad sine at 0.2 Hz, roll ±0.15 rad sine at
+0.2 Hz, pitch 0 → 0.3 → 0 rad (2 s ramps, 2 s holds); joint limits yaw ±2.6, roll/pitch ±0.52 rad. A and C, two of
+the episodes, 3 repeats.
 
-Plus the synthetic-waist run (A and C) on two of the episodes. Gate: A-28D must match A-stored within run-to-run
-noise before any A-vs-C conclusion. Metrics: palm p50/p95/max, wrist orientation, max tilt, min foot contacts,
-table contacts, arm speed p95, palm jerk p95.
-
-Step 2 — closed loop. Train GR00T (official recipe) on HE `joint28` (GR00T normalizes with mean/std, so the stale
-`joint28` quantiles do not matter). Ask the user for the H100 queue slot (GPUs 0/6, shared with the retraining)
-before queueing. Then A-28D vs C-28D closed loop on the same six episodes, with the existing HE 78D GR00T
-`*_official_full` (A-native) as the baseline.
+Step 3 — closed loop. Recompute exact quantiles on HE `joint28` (`augment_joint_quantiles.py --root <dataset>`, the H100 copy used on 2026-09-25 — it is not in this repo, so
+add it under `examples/g1_dex3_training/` first;
+GR00T N1.7 normalizes with q01/q99 — `tests/policies/groot/test_groot_new_embodiment_defaults.py` asserts
+`use_percentiles`), then train GR00T with the official recipe and verify the saved processor's q01/q99 equal the
+recomputed stats. Ask the user for the H100 queue slot (GPUs 0/6, shared) before queueing. Then A-28D vs C-28D
+closed loop on the same six episodes, 3 repeats, with the HE 78D GR00T `*_official_full` (A-native) as baseline.
 
 ## Tests
 
 1. `assert`: `joint_chunk_to_sonic` on 31D with waist = `NOMINAL_BODY[12:15]` gives tokens identical to the 28D input.
 2. `assert`: `--replay` returns the recorded chunk for each replan time.
-3. Host smoke: backend C stands 30 s with constant arm targets; no fall, tilt < 3°.
-4. Existing `sonic_joint28_stream_check.py` still passes.
+3. Joint round trip (C host, sim): command 14 distinct finger values and distinct values on every arm and waist
+   joint; the state message must return each value on the same named joint (within PD settling), proving the body
+   and hand mappings including the right-hand order.
+4. Activation: after `settled`, both flags True; with a 31D waist command, logged `rpy_cmd` ≠ 0 and within 0.01 rad of
+   FK of the commanded waist.
+5. Host smoke: C stands 30 s with constant arm targets; valid, tilt < 3°.
+6. Scorer: a run truncated by a forced `fell` and a run with a missing tail are both reported invalid.
+7. Regression: after the `sim_scene.py` extraction, one A episode (stored tokens) scores within G0 tolerance of a
+   pre-extraction run; `sonic_joint28_stream_check.py` still passes.
 
 ## Out of scope
 
-Real-robot backend C (and its joint-step cap); walking and base-height commands; an HE `joint31` dataset; changes to
-the policy server; Unitree built-in locomotion and research WBCs.
+Real-robot backend C (and its joint-step cap); walking and base-height commands beyond the constants above; an HE
+`joint31` dataset; changes to the policy server; Unitree built-in locomotion and research WBCs.
 
 ## Risks
 
-- Official `decoupled_wbc` imports may pull heavy dependencies (robocasa); if so, import only the lower-body policy
-  and robot model modules.
-- NVIDIA's MuJoCo bridge swaps Dex3 right-hand index/middle; reuse `--dex3-right-order swap` in the new host.
-- Lower-body policy ONNX files are git-lfs objects in the official repo
-  (`decoupled_wbc/sim2mujoco/resources/robots/g1/policy/GR00T-WholeBodyControl-{Balance,Walk}.onnx`); fetch them
-  explicitly at the pinned commit.
+- Upstream `decoupled_wbc` imports may pull heavy dependencies (robocasa); if so, import only the policy, robot-model
+  and config modules.
+- The sim container (Python 3.10) has pinocchio 2.7, torch, mujoco 3.12 but no onnxruntime; it comes from a mounted
+  `PYTHONPATH` folder. Nothing is installed on the host.
+- `sim_scene.py` extraction can change A's behaviour; test 7 guards it.
 
 ## Deliverables
 
