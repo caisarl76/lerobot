@@ -6,8 +6,8 @@ b042411fae with only decoupled_wbc/ mounted at /upstream/decoupled_wbc; onnxrunt
   lower body  G1GearWbcPolicy with GEAR_WBC_CONFIG of control/main/teleop/configs/g1_29dof_gear_wbc.yaml (516 obs,
               15 actions) and the Balance/Walk ONNX; walking command 0, height 0.74 (Balance runs throughout)
   upper body  IdentityPolicy: the streamer's 50 Hz targets as they are; every wrapper goal is complete;
-              the first goal is the measured pose (arms down after the reset), since the gear-WBC default arm
-              pose reaches table-top height (0.80 m)
+              the first goal is the start pose: arms in A's planner-stance pose (START_ARMS), hands and waist at the
+              measured pose; the gear-WBC default arm pose reaches table-top height (0.80 m)
   waist       robot model waist_location lower_body (28D: torso command 0) or lower_and_upper_body (31D: torso
               roll/pitch/yaw from FK of the commanded waist, RL moves waist + legs to follow)
   activation  RL output switched on through the lower-body policy (key "]"), never a toggle-only wrapper goal
@@ -54,6 +54,11 @@ FIRST_MSG_S = 600.0  # must exceed policy-server load (MolmoAct2 ~2 min) + strea
 GOAL_CONST = {"base_height_command": np.array([0.74]), "navigate_cmd": np.zeros(3)}
 OBS_DIM = 86  # one frame of the lower-body observation (516 = 86 x 6)
 T_ACTIVATE, T_BAND, T_RESET, T_SETTLED = 1.0, 3.0, 4.0, 9.0
+# Arms during hang/settle: the SONIC planner stance backend A holds before its episode (mean of the pre-episode records
+# of WBC_A28_ep1293_r1 on h100_174, std <= 0.007 rad). The G1 zero arm pose holds the forearms forward at table-top
+# height (palms ~0.78 m); this pose keeps the palms at ~0.62 m, below an 80 cm table, as for backend A.
+START_ARMS = np.array([-0.046, 0.293, -0.628, 1.027, -0.162, -0.119, 0.099,
+                       -0.054, -0.267, 0.663, 1.128, -0.162, 0.251, -0.165])  # REF_NAMES[:14] order (motor 15..28)
 
 
 def make_wbc(waist_location: str):
@@ -122,6 +127,7 @@ class Controller:
         self.plant = Plant(scene, kp, kd)
         # start from the measured pose (arms down after the reset); the gear-WBC default arm pose reaches table-top height
         self.ref = {n: float(scene.d.qpos[m.jnt_qposadr[m.joint(n).id]]) for n in set(self.upper_names) | set(REF_NAMES)}
+        self.ref.update(zip(REF_NAMES[:14], START_ARMS.tolist()))  # arms as A's planner stance; hands and waist stay measured
         self.ranges = {n: m.jnt_range[m.joint(n).id].copy() for n in REF_NAMES}
         self.clipped, self.held, self.seq = np.zeros(len(REF_NAMES), bool), False, -1
         self.counts = {"messages": 0, "stale": 0, "nonfinite": 0, "seq_gap": 0, "clipped_values": 0}
