@@ -47,9 +47,15 @@ def main():
         help="reseed the sampling noise before every chunk: a flow-matching policy (GR00T) then returns consistent "
         "chunks for similar observations instead of a fresh random sample at every replan (default: unseeded)",
     )
+    p.add_argument(
+        "--noise-scale",
+        type=float,
+        help="scale the sampler's initial noise (temperature): 0 = deterministic mean-path chunks, which open loop "
+        "were smoother and more accurate for GR00T and Pi0.5 (2026-10-01). Default: 1 (unscaled)",
+    )
     a = p.parse_args()
 
-    policy = ChunkPolicy(a.policy_path, a.device, a.backbone_dtype, a.noise_seed)
+    policy = ChunkPolicy(a.policy_path, a.device, a.backbone_dtype, a.noise_seed, a.noise_scale)
     blank = [{k: np.zeros(policy.shapes[k][1:] + (3,), np.uint8) for k in policy.image_keys}] * policy.n_obs
     for _ in range(3):  # warm up on this (the serving) thread: VLA first calls take 2-5 s
         policy.chunk([np.zeros(28, np.float32)] * policy.n_obs, blank, "warm up")

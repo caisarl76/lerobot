@@ -101,14 +101,15 @@ g1" episodes 1293, 1300) kept all feet down, tilt 2.4–3.7°.
 
 ## Real-robot runs
 
-| Runs  | Model                  | Task / setup                                         | Result                                                                                                         |
-| ----- | ---------------------- | ---------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
-| 01–03 | combined GR00T (1 cam) | apple; 1280×720 stretched; table path; slew 0.05     | Full cycle; chunks 0.20 s; left hand caught a table leg in the startup; no contact, fingers flexed in the air. |
-| 05–07 | HE ACT                 | "push duck g1" (yellow tube); 640×480; planner start | Smooth (arm ≤ 1.33 rad/s, slew 0–6 ticks); right hand approached, no contact.                                  |
-| 08    | HE GR00T               | push duck, 90 s                                      | Stopped by the state-age check (0.22 s) after ~80 s; `.npz` not saved (written only at the end).               |
-| 09–10 | HE GR00T               | push duck (run10 with slew 0.1)                      | Back-and-forth arm motion; every chunk switch at the slew cap; run10 arm peak 5.09 rad/s.                      |
-| 11–14 | HE ACT                 | "close a laptop g1"                                  | Right palm 14–33 cm forward against 39–44 cm in training: does not reach the laptop (camera gap, no language). |
-| 15–16 | HE GR00T               | "close a laptop g1"                                  | Right palm 41–43 cm forward, as in training; touched the laptop; palm jerk p95 101–133 m/s³ (ACT 16–26).       |
+| Runs  | Model                            | Task / setup                                         | Result                                                                                                         |
+| ----- | -------------------------------- | ---------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| 01–03 | combined GR00T (1 cam)           | apple; 1280×720 stretched; table path; slew 0.05     | Full cycle; chunks 0.20 s; left hand caught a table leg in the startup; no contact, fingers flexed in the air. |
+| 05–07 | HE ACT                           | "push duck g1" (yellow tube); 640×480; planner start | Smooth (arm ≤ 1.33 rad/s, slew 0–6 ticks); right hand approached, no contact.                                  |
+| 08    | HE GR00T                         | push duck, 90 s                                      | Stopped by the state-age check (0.22 s) after ~80 s; `.npz` not saved (written only at the end).               |
+| 09–10 | HE GR00T                         | push duck (run10 with slew 0.1)                      | Back-and-forth arm motion; every chunk switch at the slew cap; run10 arm peak 5.09 rad/s.                      |
+| 11–14 | HE ACT                           | "close a laptop g1"                                  | Right palm 14–33 cm forward against 39–44 cm in training: does not reach the laptop (camera gap, no language). |
+| 15–16 | HE GR00T                         | "close a laptop g1"                                  | Right palm 41–43 cm forward, as in training; touched the laptop; palm jerk p95 101–133 m/s³ (ACT 16–26).       |
+| 20–21 | HE GR00T official, noise scale 0 | "close a laptop g1"; slew 0.1; 2026-10-02            | Zero-shot result acceptable (user). **Reference GR00T inference setting**: `g1_groot_real_run.sh`.             |
 
 ## GR00T smoothness
 
