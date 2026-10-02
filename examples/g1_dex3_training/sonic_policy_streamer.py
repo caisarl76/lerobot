@@ -189,11 +189,19 @@ def cast_groot_backbone(policy, dtype) -> None:
 
 class ChunkPolicy:
     def __init__(
-        self, path: str, device: str, backbone_dtype: str | None = None, noise_seed: int | None = None
+        self,
+        path: str,
+        device: str,
+        backbone_dtype: str | None = None,
+        noise_seed: int | None = None,
+        noise_scale: float | None = None,
     ):
         import torch
 
         self.noise_seed = noise_seed
+        # noise_scale ("temperature") scales the flow/diffusion sampler's initial noise; 0 gives the deterministic
+        # mean-path sample (smoother and, open loop, more accurate chunks; less motion inside a chunk)
+        self.noise_scale = noise_scale
 
         from lerobot.configs.policies import PreTrainedConfig
         from lerobot.policies.factory import get_policy_class, make_pre_post_processors
@@ -206,6 +214,13 @@ class ChunkPolicy:
             cast_groot_backbone(policy, getattr(torch, backbone_dtype))
             cfg.device = device
         self.policy = policy.to(device).eval()
+        if noise_scale is not None and cfg.type == "pi05":
+            sample_noise = policy.model.sample_noise
+
+            def scaled_noise(shape, device):
+                return sample_noise(shape, device) * noise_scale
+
+            policy.model.sample_noise = scaled_noise
         self.pre, self.post = make_pre_post_processors(
             policy_cfg=cfg,
             pretrained_path=path,
@@ -225,8 +240,18 @@ class ChunkPolicy:
             # same sampling noise for every chunk: a flow-matching policy (GR00T) then gives consistent chunks
             # for similar observations instead of a fresh random sample at every replan
             torch.manual_seed(self.noise_seed)
-        with torch.inference_mode():
-            return self._chunk(states, images, task)
+        randn = torch.randn
+        if self.noise_scale is not None and self.policy.config.type != "pi05":
+            # GR00T and Diffusion draw their initial noise with torch.randn; scale it for this call only
+            def scaled_randn(*args, **kwargs):
+                return randn(*args, **kwargs) * self.noise_scale
+
+            torch.randn = scaled_randn
+        try:
+            with torch.inference_mode():
+                return self._chunk(states, images, task)
+        finally:
+            torch.randn = randn
 
     def _chunk(self, states, images, task):
         import torch
@@ -436,6 +461,12 @@ def main():
         type=int,
         help="--policy-path: reseed the sampling noise before every chunk (GR00T flow matching; see the server)",
     )
+    p.add_argument(
+        "--noise-scale",
+        type=float,
+        help="--policy-path: scale the sampler's initial noise (temperature); 0 = deterministic mean-path chunks "
+        "(open loop: smoother and more accurate for GR00T and Pi0.5). Default: 1 (unscaled)",
+    )
     p.add_argument("--duration-s", type=float, help="default: the episode's length")
     p.add_argument("--gate-dir", type=Path, help="sim: wait for flag files instead of Enter")
     p.add_argument("--log", type=Path, help="write a per-tick .npz log")
@@ -589,7 +620,7 @@ def main():
         policy = (
             RemotePolicy(a.policy_server, a.policy_timeout_s)
             if a.policy_server
-            else ChunkPolicy(a.policy_path, a.device, a.backbone_dtype, a.noise_seed)
+            else ChunkPolicy(a.policy_path, a.device, a.backbone_dtype, a.noise_seed, a.noise_scale)
         )
     if a.images == "zmq":
         images = LiveImages(
