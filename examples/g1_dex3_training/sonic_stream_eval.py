@@ -132,6 +132,8 @@ def score(run: Path, src: str, conv: str, ep: int) -> dict:
         "c_counts": term.get("counts") if backend == "decoupled" else None,
         "gate_5cm_p95": "PASS" if np.percentile(palm_orig, 95) <= 0.05 else "FAIL",
     }  # fmt: skip
+    if orig.shape[1] >= 28 and "hands" in s.files:  # logged hand target vs the dataset's hands, both backends
+        out["policy_hands_vs_dataset_abs_rad"] = stats(np.abs(s["hands"][ep_idx] - orig[frames, 14:28]))
     if backend == "sonic":
         stored = v3_episode(conv, row, info, ["frame_index", "action"])["action"].astype(np.float64)
         if stored.shape[1] == 78:
