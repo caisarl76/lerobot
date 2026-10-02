@@ -33,23 +33,12 @@ flags = {m.split(":")[0]: (m.split(":")[1] if ":" in m else None) for m in mode.
 episodes = [int(e) for e in sys.argv[4:]]
 R = int(os.environ.get("REPLAN", 12))
 D = int(os.environ.get("RTC_DELAY", 4))
-cp = ChunkPolicy(path, "cuda", os.environ.get("BACKBONE_DTYPE"))
-if "temp" in flags:
-    scale = float(flags["temp"])
-    if cp.policy.config.type == "pi05":
-        sample_noise = cp.policy.model.sample_noise
-
-        def scaled_noise(shape, device):
-            return sample_noise(shape, device) * scale
-
-        cp.policy.model.sample_noise = scaled_noise
-    else:  # GR00T draws its initial action noise with torch.randn
-        randn = torch.randn
-
-        def scaled_randn(*args, **kwargs):
-            return randn(*args, **kwargs) * scale
-
-        torch.randn = scaled_randn
+cp = ChunkPolicy(
+    path,
+    "cuda",
+    os.environ.get("BACKBONE_DTYPE"),
+    noise_scale=float(flags["temp"]) if "temp" in flags else None,
+)
 K = int(flags["avg"]) if "avg" in flags else 1
 if "rtc" in flags and cp.policy.config.type == "pi05":
     from lerobot.policies.rtc.configuration_rtc import RTCConfig
