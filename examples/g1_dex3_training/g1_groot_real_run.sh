@@ -12,10 +12,13 @@
 #   g1_groot_real_run.sh stop                    # stop the workstation server
 #
 # e.g. g1_groot_real_run.sh stream run20_he_groot_official_laptop_t0 "close a laptop g1"
-# Env: MODEL (checkpoint dir), GPU, PORT, NOISE_SCALE (empty = unscaled sampling), CAM_FPS (default 30).
+# Env: MODEL (checkpoint dir), GPU, PORT, NOISE_SCALE (default 0.5; 0 = runs 20-21; empty = unscaled sampling), CAM_FPS (default 30).
 set -e
 MODEL=${MODEL:-/mnt/data/jihun/g1_models/he_groot_sonic78sonicstate_ho5_official_full}
-GPU=${GPU:-1}; PORT=${PORT:-5560}; NOISE_SCALE=${NOISE_SCALE-0}
+# NOISE_SCALE 0.5 keeps some sample variety so the policy can escape a stall (user decision 2026-10-02; open loop seam
+# 0.103 vs 0.091 at 0; not yet run on the robot). NOISE_SCALE=0 reproduces the passed runs 20-21. If stalls become a
+# major problem: raise the noise only while the arm is stalled (impl log 10, option 4; not implemented).
+GPU=${GPU:-1}; PORT=${PORT:-5560}; NOISE_SCALE=${NOISE_SCALE-0.5}
 CAM_FPS=${CAM_FPS:-30}  # camera publish rate; capture is 30 Hz, so 30 is the max (server default 10)
 WS=192.168.0.62  # workstation address seen from PC2
 UNIT=groot-server-$PORT
