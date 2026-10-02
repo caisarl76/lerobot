@@ -310,8 +310,8 @@ branch), queue `/run-output/psi0_xr1/queue_gpu2.txt` run by `official_queue.sh`.
 | Run                            | Where             | State                                                     |
 | ------------------------------ | ----------------- | --------------------------------------------------------- |
 | HE xr1_joint28, xr1_sonic78    | H100 GPU 2        | done (step 30000); mid checkpoint and optimizer pruned    |
-| HE psi0_sonic78sonicstate      | H100 GPU 3        | `_matched640k` running, started 10-02 04:25 (~6.5 h)      |
-| HE psi0_joint28                | H100 GPU 0        | `_matched640k` queued after HE MolmoAct2; FastWAM after it |
+| HE psi0_sonic78sonicstate      | H100 GPU 0        | `_matched640k` after HE MolmoAct2 (GPU 3 cleared 10-02)    |
+| HE psi0_joint28                | H100 GPU 0        | `_matched640k` after the 78D run; FastWAM after it         |
 | Unitree xr1_joint28            | h100_174 GPU 4    | done (step 60000); pruned                                 |
 | Unitree xr1_sonic78sonicstate  | h100_174 GPU 4    | running, ~44% at 10-02 02:40                              |
 | Unitree psi0_sonic78sonicstate | h100_174 GPU 5    | `_matched640k` running, started 10-02 04:30 (~8.5 h)      |
