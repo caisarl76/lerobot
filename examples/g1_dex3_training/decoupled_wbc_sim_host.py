@@ -48,6 +48,7 @@ MODEL_PATH = "policy/GR00T-WholeBodyControl-Balance.onnx,policy/GR00T-WholeBodyC
 HAND_KP, HAND_KD = 1.5, 0.1  # Dex3Hands defaults in A's deploy (dex3_hands.hpp:396-397), kept by setAllJointsCommand
 DECIMATION = 4  # 200 Hz physics -> 50 Hz control
 MAX_MSG_AGE_S, SILENCE_S = 0.1, 5.0
+FIRST_MSG_S = 600.0  # must exceed policy-server load (MolmoAct2 ~2 min) + streamer startup + first inference
 GOAL_CONST = {"base_height_command": np.array([0.74]), "navigate_cmd": np.zeros(3)}
 OBS_DIM = 86  # one frame of the lower-body observation (516 = 86 x 6)
 T_ACTIVATE, T_BAND, T_RESET, T_SETTLED = 1.0, 3.0, 4.0, 9.0
@@ -266,8 +267,8 @@ def run(a) -> None:
                 if t_done is None and ctl.last_msg_wall is not None and time.time() - ctl.last_msg_wall > SILENCE_S:
                     reason, detail = "aborted", f"no joint message for {SILENCE_S:g} s and no GATE/done"
                     break
-                if "settled" in steps and ctl.last_msg_wall is None and t >= steps["settled"] + 60:
-                    reason, detail = "aborted", "no joint message within 60 s of settled"
+                if "settled" in steps and ctl.last_msg_wall is None and t >= steps["settled"] + FIRST_MSG_S:
+                    reason, detail = "aborted", f"no joint message within {FIRST_MSG_S:g} s of settled"
                     break
                 if t > 1800:
                     reason, detail = "timeout", "1800 s of sim time"
