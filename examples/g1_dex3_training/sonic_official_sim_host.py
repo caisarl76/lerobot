@@ -70,10 +70,13 @@ def seen(pattern):
 
 def log_hand_gains(when):
     """The Dex3 kp/kd the deploy's last hand commands carry (spec test 8: expected 1.5 / 0.1 on all 14 motors)."""
-    br = scene.env.unitree_bridge
-    cmds = [c for cmd in (br.left_hand_cmd, br.right_hand_cmd) for c in cmd.motor_cmd]
-    kp, kd = sorted({round(float(c.kp), 3) for c in cmds}), sorted({round(float(c.kd), 3) for c in cmds})
-    scene.mark(f"hand gains {when}: kp {kp} kd {kd}")
+    try:
+        br = scene.env.unitree_bridge
+        cmds = [c for cmd in (br.left_hand_cmd, br.right_hand_cmd) for c in cmd.motor_cmd]
+        kp, kd = sorted({round(float(c.kp), 3) for c in cmds}), sorted({round(float(c.kd), 3) for c in cmds})
+        scene.mark(f"hand gains {when}: kp {kp} kd {kd}")
+    except Exception as e:  # a diagnostic must never stop the run
+        scene.mark(f"hand gains {when}: unavailable ({e!r})")
 
 
 steps, t_control, t_settled, t_done, episode_end = {}, None, None, None, None
