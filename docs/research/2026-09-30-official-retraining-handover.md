@@ -255,6 +255,61 @@ not comparable with the 12-frame rows, and on the robot it would need a new pred
   - The local copy was patched by adding the key, cloned from `lm_head.weight`.
   - Any server or eval on the original checkpoint needs the same patch, or a loader fix.
 
+## Inference-side fixes for chunk jitter, open loop (2026-10-01)
+
+Same six held-out HE episodes, replanning every 12 frames. `openloop_smooth.py` gained these modes: `fixed` (one noise
+seed), `temp:<t>` (initial flow noise scaled by t), `avg:<K>` (mean of K samples) and `rtc` (each chunk conditioned on
+the previous chunk's unexecuted tail, 4 frames frozen; GR00T uses its native overlap inpainting, Pi0.5 LeRobot's
+guided RTC). Modes combine with `+`. **err** is the mean |executed − recorded| over the executed frames, i.e. accuracy.
+Units are action std; "seam" is the jump at the chunk switch, and the step inside a chunk is ~0.02. Workstation RTX
+3060: GR00T with a bf16 backbone, Pi0.5 EMA in bf16.
+
+| Model / mode       | Tokens: seam | Tokens: disagree | Tokens: **err** | Hands: seam | Hands: err | Hands: step (rec. 0.063) |
+| ------------------ | ------------ | ---------------- | --------------- | ----------- | ---------- | ------------------------ |
+| ACT                | 0.087        | 0.085            | 0.132           | 0.120       | 0.236      | 0.015                    |
+| GR00T random       | 0.140        | 0.166            | 0.149           | 0.231       | 0.268      | 0.042                    |
+| GR00T fixed seed   | 0.101        | 0.115            | –               | 0.137       | –          | 0.032                    |
+| GR00T avg:4        | 0.103        | 0.117            | –               | 0.154       | –          | 0.028                    |
+| GR00T temp:0.5     | 0.103        | 0.118            | –               | 0.163       | –          | 0.026                    |
+| **GR00T temp:0**   | 0.091        | 0.097            | **0.131**       | 0.128       | 0.233      | 0.014                    |
+| GR00T rtc          | **0.017**    | 0.142            | 0.503           | 0.015       | 0.527      | 0.016                    |
+| GR00T rtc+fixed    | 0.016        | 0.139            | 0.494           | 0.010       | 0.566      | 0.015                    |
+| GR00T rtc+temp:0.5 | 0.016        | 0.133            | 0.519           | 0.009       | 0.533      | 0.014                    |
+| Pi0.5 random       | 0.135        | 0.150            | 0.139           | 0.230       | 0.256      | 0.062                    |
+| Pi0.5 fixed seed   | 0.108        | 0.115            | –               | 0.228       | –          | 0.063                    |
+| Pi0.5 avg:4        | 0.097        | 0.104            | –               | 0.156       | –          | 0.042                    |
+| **Pi0.5 temp:0**   | 0.077        | 0.078            | **0.119**       | 0.105       | 0.213      | 0.013                    |
+| **Pi0.5 rtc**      | **0.024**    | 0.044            | 0.188           | 0.050       | 0.287      | 0.049                    |
+| Pi0.5 rtc+fixed    | 0.022        | 0.038            | 0.200           | 0.060       | 0.366      | 0.088                    |
+
+**Reading:**
+
+- **Zero-noise sampling (`temp:0`) is the best trade-off for both models.** It improves smoothness and accuracy
+  together: GR00T err 0.149 → 0.131, Pi0.5 0.139 → 0.119, below ACT's 0.132, with seams below ACT's.
+  - The cost is damped motion inside a chunk: hand step 0.013–0.014 against the recording's 0.063, like ACT's 0.015.
+    It is the flow's "mean path".
+- **RTC removes seams entirely**, with the seam at or below the step inside a chunk. Its cost differs by model:
+  - Pi0.5's guided RTC costs some accuracy (0.139 → 0.188).
+  - GR00T's native RTC drifts badly in open loop (err ~0.50). Each new chunk keeps re-using the previous plan, which
+    the recorded observations no longer support. In closed loop this may be smaller, but treat GR00T RTC with
+    caution. It could also be a mismatch in how the prefix is wired here; worth a check before any robot use.
+- Fixed seed, avg:4 and temp:0.5 help moderately (seam ~0.10).
+
+**Next:**
+
+1. Expose `temp` (noise scale) in `sonic_policy_server.py` and test Pi0.5 temp:0 and GR00T temp:0 in sim, then on the
+   robot.
+   - Optionally add Pi0.5 RTC: the server needs the previous chunk's normalized tail and the measured delay.
+2. Check GR00T's RTC wiring (`_prepare_n1_7_rtc_inputs` prefix alignment and ramp) before using it.
+
+Note: these open-loop runs load a ~13–20 GB fp32 checkpoint on the CPU first. On the workstation (62 GB RAM, 1 GB swap)
+two such loads at once, or one while the desktop is busy, triggered `systemd-oomd`, which killed the whole GNOME
+terminal scope including tmux (2026-10-01 18:29 and 18:47 KST). Run one at a time, as a memory-capped user service:
+
+```bash
+systemd-run --user --unit=openloop-eval -p MemoryMax=32G -p MemorySwapMax=0 -E PATH="$PATH" -E HOME="$HOME" <script>
+```
+
 ## Incident 2026-10-01: containers lost their GPU
 
 Around 2026-10-01 03:30 UTC both training containers lost GPU access: `nvidia-smi` in them gives
