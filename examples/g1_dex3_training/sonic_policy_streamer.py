@@ -833,8 +833,8 @@ def main():
                 None if a.backend == "decoupled" else joint_chunk_to_sonic(joints, *joint28, fps=images.fps)
             )
             joints = to_joint_ref(joints)
-        if chunk is not None and np.abs(chunk[:, :64]).max() > TOKEN_BOUND:
-            raise ValueError(f"rejected chunk at t={t_ep:.2f}s (|token| > {TOKEN_BOUND})")
+        if chunk is not None and (not np.isfinite(chunk).all() or np.abs(chunk[:, :64]).max() > TOKEN_BOUND):
+            raise ValueError(f"rejected chunk at t={t_ep:.2f}s (nonfinite or |token| > {TOKEN_BOUND})")
         return k, chunk, joints
 
     if dec:
