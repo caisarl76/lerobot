@@ -295,6 +295,11 @@ Units are action std; "seam" is the jump at the chunk switch, and the step insid
     caution. It could also be a mismatch in how the prefix is wired here; worth a check before any robot use.
 - Fixed seed, avg:4 and temp:0.5 help moderately (seam ~0.10).
 
+**Robot result (2026-10-02):** GR00T temp:0 gave an acceptable zero-shot real-robot result (runs 20–21, "close a laptop
+g1"). It is the reference GR00T inference setting: HE `groot_..._official_full`, bf16 backbone, `--noise-scale 0`, no
+RTC, replan 0.4 s, slew 0.1, planner start/end, head camera 640×480 `egocentric`. Launch it with
+`examples/g1_dex3_training/g1_groot_real_run.sh` (server, deploy, camera, stream).
+
 **Next:**
 
 1. Expose `temp` (noise scale) in `sonic_policy_server.py` and test Pi0.5 temp:0 and GR00T temp:0 in sim, then on the
