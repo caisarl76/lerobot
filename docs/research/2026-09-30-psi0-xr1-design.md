@@ -305,6 +305,41 @@ branch), queue `/run-output/psi0_xr1/queue_gpu2.txt` run by `official_queue.sh`.
 - The Unitree runs will be regenerated with `write_psi0_xr1_configs.py` after the fix (Psi0 state back to the
   official min/max; XR-1 stats recomputed) and appended to a queue.
 
+**Placement as of 2026-10-02 03:00 UTC** (the GPU 2 container was killed on 10-01, exit 137):
+
+| Run                            | Where             | State                                                     |
+| ------------------------------ | ----------------- | --------------------------------------------------------- |
+| HE xr1_joint28, xr1_sonic78    | H100 GPU 2        | done (step 30000); mid checkpoint and optimizer pruned    |
+| HE psi0_sonic78sonicstate      | H100 GPU 3        | running, started 10-02 02:25; a watcher writes its `.exit` |
+| HE psi0_joint28                | H100 GPU 0        | queued after HE MolmoAct2; FastWAM follows it on GPU 0     |
+| Unitree xr1_joint28            | h100_174 GPU 4    | done (step 60000); pruned                                 |
+| Unitree xr1_sonic78sonicstate  | h100_174 GPU 4    | running, ~44% at 10-02 02:40                              |
+| Unitree psi0_sonic78sonicstate | h100_174 GPU 5    | running, ~29% at 10-02 02:40                              |
+| Unitree psi0_joint28           | h100_174 GPU 6    | running, started 10-02 02:55 (~72 h)                      |
+
+## Open-loop results (2026-10-02)
+
+`openloop_smooth.py` on the six held-out HE episodes (91, 102, 1208, 1219, 1293, 1300), replan 12 frames, H100 GPU 7,
+code `/mnt/data01/jhkim/code/lerobot-g1-psi0-xr1-eval` (this branch merged with `feat/g1-combined-eval`). Std units;
+the baselines are from `2026-09-30-official-retraining-handover.md`. `temp:0` = zero initial flow noise.
+
+| Model / mode         | Tokens: seam | Tokens: disagree | Tokens: err | Hands: seam | Hands: err | Hands: step (rec. 0.063) |
+| -------------------- | ------------ | ---------------- | ----------- | ----------- | ---------- | ------------------------ |
+| ACT                  | 0.087        | 0.085            | 0.132       | 0.120       | 0.236      | 0.015                    |
+| GR00T temp:0         | 0.091        | 0.097            | 0.131       | 0.128       | 0.233      | 0.014                    |
+| Pi0.5 temp:0         | 0.077        | 0.078            | 0.119       | 0.105       | 0.213      | 0.013                    |
+| XR-1 78D random      | 0.115        | 0.123            | 0.135       | 0.194       | 0.248      | 0.058                    |
+| **XR-1 78D temp:0**  | 0.081        | 0.086            | 0.122       | 0.133       | 0.219      | 0.011                    |
+
+XR-1 28D (HE `joint28_g2`, arms 0:14 instead of tokens): random arms seam 0.081, disagree 0.087, err 0.082, hands
+seam 0.198, err 0.239; **temp:0** arms seam 0.060, disagree 0.066, err 0.073, hands seam 0.124, err 0.209. Not
+comparable with the token columns (different action space and std).
+
+- XR-1 78D at temp:0 sits between GR00T and Pi0.5 on tokens and is the second most accurate on hands. Like the others,
+  temp:0 trades the hands' motion inside a chunk (step 0.011 vs the recording's 0.063) for smoothness and accuracy.
+- With random noise XR-1's seams (0.115) are smaller than GR00T random's (0.140) but still above ACT.
+- Unitree XR-1 28D is not evaluated yet: its weights are on h100_174, whose usable GPUs are training.
+
 ## Open questions for the user
 
 1. **Permission to apply the Unitree data fix** (writes 11 files in each of the three shared datasets, backups
