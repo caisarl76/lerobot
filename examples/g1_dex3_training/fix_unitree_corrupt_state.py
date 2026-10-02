@@ -143,6 +143,11 @@ def process(root: Path, threshold: float, apply: bool, suffix: str, lo, hi) -> d
     state, fixed = np.concatenate(all_states), np.concatenate(all_fixed)
     changed_dims = np.flatnonzero((state != fixed).any(0))
     same_dims = np.setdiff1d(np.arange(state.shape[1]), changed_dims)
+    if changed_dims.size == 0:  # nothing corrupt, e.g. a verify pass after --apply
+        report.update(
+            changed_dims=[], max_abs_state_after=float(np.abs(fixed).max()), episode_stats={"files": []}
+        )
+        return report
 
     # Global stats.json: verify the method on unchanged dims, then recompute.
     stats_path = root / "meta/stats.json"
