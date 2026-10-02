@@ -5,7 +5,9 @@ Contract (docs/superpowers/specs/2026-10-01-g1-wbc-backends-design.md; upstream 
 b042411fae with only decoupled_wbc/ mounted at /upstream/decoupled_wbc; onnxruntime on PYTHONPATH):
   lower body  G1GearWbcPolicy with GEAR_WBC_CONFIG of control/main/teleop/configs/g1_29dof_gear_wbc.yaml (516 obs,
               15 actions) and the Balance/Walk ONNX; walking command 0, height 0.74 (Balance runs throughout)
-  upper body  IdentityPolicy: the streamer's 50 Hz targets as they are; every wrapper goal is complete
+  upper body  IdentityPolicy: the streamer's 50 Hz targets as they are; every wrapper goal is complete;
+              the first goal is the measured pose (arms down after the reset), since the gear-WBC default arm
+              pose reaches table-top height (0.80 m)
   waist       robot model waist_location lower_body (28D: torso command 0) or lower_and_upper_body (31D: torso
               roll/pitch/yaw from FK of the commanded waist, RL moves waist + legs to follow)
   activation  RL output switched on through the lower-body policy (key "]"), never a toggle-only wrapper goal
@@ -118,9 +120,8 @@ class Controller:
         self.rm_vadr = np.array([m.jnt_dofadr[m.joint(n).id] for n in self.rm_names])
         self.upper_names = [self.rm_names[i] for i in self.rm.get_joint_group_indices("upper_body")]
         self.plant = Plant(scene, kp, kd)
-        self.ref = dict(zip(self.upper_names, np.asarray(self.rm.get_initial_upper_body_pose(), float)))
-        for n in REF_NAMES:
-            self.ref.setdefault(n, 0.0)
+        # start from the measured pose (arms down after the reset); the gear-WBC default arm pose reaches table-top height
+        self.ref = {n: float(scene.d.qpos[m.jnt_qposadr[m.joint(n).id]]) for n in set(self.upper_names) | set(REF_NAMES)}
         self.ranges = {n: m.jnt_range[m.joint(n).id].copy() for n in REF_NAMES}
         self.clipped, self.held, self.seq = np.zeros(len(REF_NAMES), bool), False, -1
         self.counts = {"messages": 0, "stale": 0, "nonfinite": 0, "seq_gap": 0, "clipped_values": 0}
