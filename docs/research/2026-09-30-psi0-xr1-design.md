@@ -310,12 +310,19 @@ branch), queue `/run-output/psi0_xr1/queue_gpu2.txt` run by `official_queue.sh`.
 | Run                            | Where             | State                                                     |
 | ------------------------------ | ----------------- | --------------------------------------------------------- |
 | HE xr1_joint28, xr1_sonic78    | H100 GPU 2        | done (step 30000); mid checkpoint and optimizer pruned    |
-| HE psi0_sonic78sonicstate      | H100 GPU 3        | running, started 10-02 02:25; a watcher writes its `.exit` |
-| HE psi0_joint28                | H100 GPU 0        | queued after HE MolmoAct2; FastWAM follows it on GPU 0     |
+| HE psi0_sonic78sonicstate      | H100 GPU 3        | `_matched640k` running, started 10-02 04:25 (~6.5 h)      |
+| HE psi0_joint28                | H100 GPU 0        | `_matched640k` queued after HE MolmoAct2; FastWAM after it |
 | Unitree xr1_joint28            | h100_174 GPU 4    | done (step 60000); pruned                                 |
 | Unitree xr1_sonic78sonicstate  | h100_174 GPU 4    | running, ~44% at 10-02 02:40                              |
-| Unitree psi0_sonic78sonicstate | h100_174 GPU 5    | running, ~29% at 10-02 02:40                              |
-| Unitree psi0_joint28           | h100_174 GPU 6    | running, started 10-02 02:55 (~72 h)                      |
+| Unitree psi0_sonic78sonicstate | h100_174 GPU 5    | `_matched640k` running, started 10-02 04:30 (~8.5 h)      |
+| Unitree psi0_joint28           | h100_174 GPU 6    | `_matched640k` running, started 10-02 04:30 (~8.5 h)      |
+
+**Psi0 at GR00T's sample budget (user decision 2026-10-02).** The VLAs are compared at equal training samples:
+GR00T official is batch 32 × 20K updates = 640K samples (0.38 epoch of HE). The Psi0 `*_matched640k` runs keep batch
+16 × accumulation 8 and every other setting, with `steps=40000` (steps count micro-batches: 40000 × 16 = 640K samples
+= 5K updates), `policy.scheduler_warmup_steps=1000` (same warmup:total ratio as 8000:320000; the cosine preset decays
+over `steps`) and `save_freq=40000`. The 320K-step `*_official_full` Psi0 runs were stopped before their first
+checkpoint; their logs are kept as `*.log.stopped-for-matched640k`.
 
 ## Open-loop results (2026-10-02)
 
