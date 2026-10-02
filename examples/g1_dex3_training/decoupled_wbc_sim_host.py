@@ -39,7 +39,7 @@ import yaml
 import zmq
 
 from sim_scene import BODY, HANDS, Scene
-from wbc_common import REF_NAMES, WAIST_NAMES, pack_joint_message, read_done, rpy_from_matrix, tilt_deg, unpack_joint_message
+from wbc_common import REF_NAMES, WAIST_NAMES, pack_joint_message, read_done, rpy_from_matrix, tilt_deg, unpack_joint_message, write_termination
 
 UPSTREAM = Path("/upstream/decoupled_wbc")
 WBC_YAML = UPSTREAM / "control/main/teleop/configs/g1_29dof_gear_wbc.yaml"
@@ -105,6 +105,7 @@ class Controller:
 
     def __init__(self, scene: Scene, waist_location: str):
         self.scene = scene
+        assert abs(scene.dt * DECIMATION - 0.02) < 1e-9, f"need physics 200 Hz / control 50 Hz, got dt {scene.dt} x {DECIMATION}"
         self.wbc, self.rm, kp, kd = make_wbc(waist_location)
         self.lower = self.wbc.lower_body_policy
         m = scene.m
@@ -204,25 +205,34 @@ def startup(scene: Scene, ctl: Controller, steps: dict, t: float) -> None:
 
 
 def run(a) -> None:
-    scene = Scene(a.out, os.environ.get("TABLE_GAP_CM"))
-    ctl = Controller(scene, a.waist_location)
-    ctx = zmq.Context()
-    sub = ctx.socket(zmq.SUB)
-    sub.setsockopt(zmq.SUBSCRIBE, b"joints")
-    sub.setsockopt(zmq.CONFLATE, 1)
-    sub.connect(f"tcp://localhost:{a.action_port}")
-    pub = ctx.socket(zmq.PUB)
-    pub.bind(f"tcp://*:{a.state_port}")
+    try:
+        scene = Scene(a.out, os.environ.get("TABLE_GAP_CM"))
+    except Exception:
+        write_termination(a.out, "error", "startup", traceback.format_exc(limit=4))
+        raise
     steps, n, t_done, episode_end = {}, 0, None, None
     reason, detail = "error", ""
-    scene.mark(f"decoupled WBC host started (waist_location {a.waist_location})")
+    ctl = None
     wall0 = time.monotonic()
     try:
+        ctl = Controller(scene, a.waist_location)
+        for f in MODEL_PATH.split(","):
+            scene.mark(f"onnx {f} sha256 {hashlib.sha256((POLICY_DIR / f).read_bytes()).hexdigest()}")
+        ctx = zmq.Context()
+        sub = ctx.socket(zmq.SUB)
+        sub.setsockopt(zmq.SUBSCRIBE, b"joints")
+        sub.setsockopt(zmq.CONFLATE, 1)
+        sub.connect(f"tcp://localhost:{a.action_port}")
+        pub = ctx.socket(zmq.PUB)
+        pub.bind(f"tcp://*:{a.state_port}")
+        scene.mark(f"decoupled WBC host started (waist_location {a.waist_location})")
+        wall0 = time.monotonic()
         while True:
             scene.step()
             n += 1
             t = scene.t
             if n % DECIMATION == 0:
+                ctl.held, ctl.clipped[:] = False, False  # a tick without a message is not held
                 try:
                     ctl.apply_message(unpack_joint_message(sub.recv(zmq.NOBLOCK)))
                 except zmq.Again:
@@ -256,6 +266,9 @@ def run(a) -> None:
                 if t_done is None and ctl.last_msg_wall is not None and time.time() - ctl.last_msg_wall > SILENCE_S:
                     reason, detail = "aborted", f"no joint message for {SILENCE_S:g} s and no GATE/done"
                     break
+                if "settled" in steps and ctl.last_msg_wall is None and t >= steps["settled"] + 60:
+                    reason, detail = "aborted", "no joint message within 60 s of settled"
+                    break
                 if t > 1800:
                     reason, detail = "timeout", "1800 s of sim time"
                     break
@@ -264,7 +277,11 @@ def run(a) -> None:
         detail = traceback.format_exc(limit=4)
         raise
     finally:
-        scene.close(reason, detail, counts=ctl.counts, waist_location=a.waist_location)
+        counts = ctl.counts if ctl else {}
+        try:
+            scene.close(reason, detail, counts=counts, waist_location=a.waist_location)
+        except Exception as e:
+            write_termination(a.out, reason, "close", detail + repr(e), counts=counts, waist_location=a.waist_location)
 
 
 def selfcheck(a) -> None:
