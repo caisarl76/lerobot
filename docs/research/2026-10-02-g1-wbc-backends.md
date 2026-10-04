@@ -15,10 +15,10 @@ scene, with one validity-gated scorer: **A** = SONIC (joints encoded to tokens o
 **C** = NVIDIA GR00T decoupled WBC (`NVlabs/GR00T-WholeBodyControl`, `decoupled_wbc` at commit `b042411fae`: lower-body RL
 policy for legs and waist, arm and hand targets straight to PD). Replay results (6 held-out Humanoid Everyday (HE)
 episodes x 3 repeats, all valid): online A reproduces the stored-token result (11 of 12 gate rows within 0.07 cm;
-the one miss is a table-contact event, tokens identical), C tracks the palm 3-4x worse (p95 9.6-11.0 cm vs 2.7-3.5 cm on
+the one miss is a table-contact event, tokens identical), C tracks the palm about 2.7-4x worse (p95 9.6-11.0 cm vs 2.7-3.5 cm on
 five episodes), touches the table more, and fails gates G1 and G2. With a synthetic 31D waist, C follows the commanded
 waist (gate passes), while A's waist path trips the arm-speed watchdog in 5 of 6 runs. The **closed-loop comparison
-(28D GR00T through A and C) is pending**; its runs are queued.
+(28D GR00T through A and C) is deferred**: the batch is prepared but not run, because the GPU host was given to another training queue.
 
 ## What was added
 
@@ -43,17 +43,17 @@ Launcher: `sonic_official_sim_eval.sh OUT RUN_NAME DATASET EPISODE GPU TABLE_GAP
 
 | Variable | Meaning |
 | --- | --- |
-| `BACKEND` | `sonic` (default) or `decoupled`; selects the host script, its mounts and `--dex3-right-order` (`swap` for A, `dataset` for C). |
+| `BACKEND` | `sonic` (default) or `decoupled`; selects the host script, its mounts and `--dex3-right-order` (`swap` for A, `dataset` for C); `BACKEND=decoupled` already adds `--backend decoupled --dex3-right-order dataset`, so do not pass them again. |
 | `REPLAY` | `1`: stream the episode's recorded actions, no policy server (`RUN_NAME` is `-`). |
 | `HOST_ARGS` | Extra host args, decoupled only, e.g. `--waist-location lower_body` (28D) or `lower_and_upper_body` (31D). |
-| `SIM_HOST` | SSH alias of the GPU host that runs the containers (default `h100`). |
+| `SIM_HOST` | the GPU host that runs the containers (the script's default H100 host). |
 | `LEROBOT_DIR` | lerobot code mounted for the policy server and streamer; default the official-recipe copy `lerobot-g1-official-20260929-ceb40b77`. |
 | `SONIC_DIR` | Stored-token dataset used for scoring. |
 | `CODE_DIR` | Script copy on the GPU host (default `$A/code`). |
 | `JOINT28_DIR` | `joint28` dataset used for scoring. |
 
 Streamer flags: `--replay`; `--action-space sonic78|joint28|joint31`; `--synthetic-waist` (31D only; yaw +-0.4 rad sine at 0.2 Hz, roll
-+-0.15 rad sine at 0.2 Hz, pitch 0 -> 0.3 -> 0 rad with 2 s ramps and 2 s holds, one axis at a time); `--backend decoupled`.
++-0.15 rad sine at 0.2 Hz, pitch 0 -> 0.3 -> 0 rad with a 2 s ramp up, one 2 s hold and a 2 s ramp down, one axis at a time); `--backend decoupled`.
 A joint runs also need `--encoder-model`, `--observation-config`, `--robot-xml` (`$ENC` below). One command per
 configuration (episode `$E`, repeat `$R`, `HE=../humanoid_everyday_g1_20260923/datasets`,
 `ENC="--encoder-model /sonic-model/model_encoder.onnx --observation-config /sonic-model/observation_config.yaml --robot-xml /run-output/environment/g1_29dof_with_hand.xml"`):
@@ -65,12 +65,12 @@ REPLAY=1 ./sonic_official_sim_eval.sh WBC_Astored_ep${E}_r$R - $HE/sonic78_nolim
 REPLAY=1 ./sonic_official_sim_eval.sh WBC_A28_ep${E}_r$R - $HE/joint28_g2 $E $GPU 30 --start planner --action-space joint28 $ENC
 # C28: 28D joints, decoupled WBC
 BACKEND=decoupled REPLAY=1 HOST_ARGS="--waist-location lower_body" ./sonic_official_sim_eval.sh WBC_C28_ep${E}_r$R - $HE/joint28_g2 $E $GPU 30 \
-  --action-space joint28 --backend decoupled --dex3-right-order dataset
+  --action-space joint28
 # A31syn: 31D with synthetic waist, SONIC
 REPLAY=1 ./sonic_official_sim_eval.sh WBC_A31syn_ep${E}_r$R - $HE/joint28_g2 $E $GPU 30 --start planner --action-space joint31 --synthetic-waist $ENC
 # C31syn: 31D with synthetic waist, decoupled WBC
 BACKEND=decoupled REPLAY=1 HOST_ARGS="--waist-location lower_and_upper_body" ./sonic_official_sim_eval.sh WBC_C31syn_ep${E}_r$R - $HE/joint28_g2 $E $GPU 30 \
-  --action-space joint31 --synthetic-waist --backend decoupled --dex3-right-order dataset
+  --action-space joint31 --synthetic-waist
 ```
 
 `joint28_g2` is `joint28` with re-encoded video; scoring reads `joint28` (`JOINT28_DIR`). Gates:
@@ -93,7 +93,7 @@ BACKEND=decoupled REPLAY=1 HOST_ARGS="--waist-location lower_and_upper_body" ./s
 - Joint message: one msgpack message per 50 Hz tick (`t_wall`, `seq`, `phase`, `frame`, `q_body` f32[29], `q_hand`
   f32[14], dataset hand order). Non-finite values: previous target held and counted; finite values clipped to the
   MuJoCo joint ranges and counted; a message older than 0.1 s on arrival is dropped and counted.
-- Startup: band hang, RL on, band released, 5 s settled with both flags True, then `GATE/deploy_ready` and
+- Startup: band hang, RL on at 1 s, band released at 3 s, Backspace reset onto the ground at 4 s, 9 s settled with both flags True, then `GATE/deploy_ready` and
   `GATE/settled`. Table parked away, moved in after `settled`. Streamer lead-in 2 s, hold 1 s, episode, return 2 s.
 - Safety in sim: no joint-step cap (arm speed is logged).
 
@@ -171,13 +171,12 @@ Gates (`wbc_compare.py`, spec thresholds):
 - **G2 FAIL (C better at tracking).** Palm p95 vs `joint_ref`: C 9.8-11.0 cm on all six, A 2.8-7.8 cm. Mean gain -6.56 cm;
   C better on 0 of 6. Wrist p95: C 15.8-18.8 deg vs A 6.8-21.4 deg.
 
-Read: A's online encoding reproduces the stored result to 0.03 cm in 11 of 12 rows. C tracks the palm 3-4x worse
-(p50 4.9-6.7 cm vs 1.5-1.9 cm) and has more table contact on five of six episodes.
+Read: A's online encoding reproduces the stored result within 0.00-0.07 cm (means over 3 repeats) in 11 of 12 rows. C tracks the palm 3-4x worse
+(p50 4.9-6.7 cm vs 1.5-2.0 cm for A28 and Astored) and has more table contact on five of six episodes.
 
 ## Results: synthetic 31D waist
 
-Episodes 3555 and 2006 (2006: "fold and pass coat", 507 frames, not one of the six; a fallback because the 28D bases
-are same-episode). Waist track as above. Means over valid repeats.
+Episodes 3555 and 2006 (2006: "fold and pass coat", 507 frames, not one of the six; a fallback pick because only 3555 of the six episodes is >= 16 s; the extra 2006 28D runs exist because the synthetic-waist gate needs a same-episode 28D base). Waist track as above. Means over valid repeats.
 
 | Config | Episode | valid | palm p50 | palm p95 | wrist p95 (deg) | max tilt (deg) | min feet | table records | arm jerk p95 | torso yaw p95 (rad) |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -191,7 +190,7 @@ are same-episode). Waist track as above. Means over valid repeats.
   reaches the policy (`rpy_cmd` error p95 <= 0.01 rad). Episode 2006 shows tilt about 11 deg and 174-214 table records, as in its 28D replay.
 - **syn_A FAIL.** 5 of 6 runs were aborted by the streamer's arm-speed watchdog (right wrist pitch, arm joint 12, 6.2-7.6
   rad/s against the limit of 6): SONIC whips the right wrist under the synthetic waist. The one valid run (3555 r1) has palm p95 4.0 cm
-  (28D base 3.4) and torso yaw p95 0.28 rad (about 16 deg); roll / pitch p95 0.03 / 0.05 rad.
+  (28D base 3.4) and torso yaw p95 0.28 rad (about 16 deg); roll / pitch p95 0.03 / 0.04 rad.
 
 ## Facts worth knowing
 
@@ -200,8 +199,8 @@ are same-episode). Waist track as above. Means over valid repeats.
   by `deploy_g1`) and the comparison uses upstream defaults, so the arms sag under PD alone. C therefore under-represents
   what the decoupled WBC can do with compensation.
 - **C stands lower.** Height command 0.74 (upstream): pelvis 0.747 m vs A 0.764 m (ep 1293 r1, final start pose); before the start-pose fix 0.745 vs 0.779 m.
-- **Replay is deterministic enough.** On the H100 host A28 r1/r3 match Astored to 0.03 cm in every row except the contact-chaos one.
-- **Replayed C runs are clean at the message level:** stale 0, non-finite 0, seq gaps 0-33 per run, clipped values in the hundreds (e.g. 336 on ep 1293 r1).
+- **Replay is deterministic enough.** On the H100 host A28 matches Astored within 0.00-0.07 cm (means over 3 repeats) in 11 of 12 G0 rows.
+- **C message counts:** stale 0 and non-finite 0 in every C run (27 runs); seq gaps 0-153 per run (most runs a few; 153 on C28 ep 3600 r2, 826 messages vs about 975, about 15% missing; 76 and 86 on two others); clipped values 87-1558 per run (1517-1558 on ep 3555).
 - **Batch-runner pitfall.** Reading `$?` after `$(date)` in the same `echo` logged "exit 0" for a failed launch (A28 ep 2006 r3,
   NVIDIA deploy exited while hanging). Validity is always taken from `stream_eval.json`, never from the runner log.
 - **Stopping a launcher locally does not stop its remote chain.** After `TaskStop` (no tty) the remote ssh chain survived and
@@ -209,12 +208,14 @@ are same-episode). Waist track as above. Means over valid repeats.
   the host.
 - Hand gains seen by the sim at run time (A): kp 1.5, kd 0.1 on all motors, after `Init Done` and while streaming.
 
-## Closed loop (pending)
+## Closed loop (deferred)
 
-Running on a second H100 host (GPU 7): 28D GR00T `groot_joint28_ho5_official_full` (official recipe, 20K steps x batch 32, bf16,
-HE `joint28` with exact quantiles; processor q01/q99 equal to the dataset stats on the smoke checkpoint), policy server
+Not run. The user gave the second H100 host's GPU 7 to another training queue after this session's 28D GR00T training.
+That training was started (smoke run passed, processor q01/q99 equal to the dataset stats): `groot_joint28_ho5_official_full`
+(official recipe, 20K steps x batch 32, bf16, HE `joint28` with exact quantiles); its final result could not be confirmed
+because the hosts were unreachable at write time. The closed-loop batch is prepared but not run: policy server
 `--noise-seed 0` for all configs (this branch's server has no `--noise-scale`, so this is not the robot-accepted
-noise-scale-0 setting). Configurations A28cl, C28cl and Anative (the 78D HE GR00T `*_official_full` through stored-token
+noise-scale-0 setting), configurations A28cl, C28cl and Anative (the 78D HE GR00T `*_official_full` through stored-token
 SONIC) x 6 episodes x 3 repeats, plus a re-run of A28 ep 2006 r3.
 
 **Results to be added.**
