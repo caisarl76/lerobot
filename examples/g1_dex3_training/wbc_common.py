@@ -9,6 +9,7 @@ joint_ref (31): arms 14 (motor 15..28) | Dex3 hands 14 (dataset order) | waist 3
 from __future__ import annotations
 
 import json
+import os
 import time
 from pathlib import Path
 
@@ -105,7 +106,10 @@ def unpack_joint_message(raw: bytes) -> dict:
     if not raw.startswith(JOINT_TOPIC):
         raise ValueError("not a joint message")
     msg = msgpack.unpackb(raw[len(JOINT_TOPIC) :], raw=False)
-    msg["q_body"], msg["q_hand"] = np.asarray(msg["q_body"], np.float64), np.asarray(msg["q_hand"], np.float64)
+    msg["q_body"], msg["q_hand"] = (
+        np.asarray(msg["q_body"], np.float64),
+        np.asarray(msg["q_hand"], np.float64),
+    )
     if msg["q_body"].shape != (29,) or msg["q_hand"].shape != (14,):
         raise ValueError("joint message must carry q_body[29] and q_hand[14]")
     return msg
@@ -113,7 +117,9 @@ def unpack_joint_message(raw: bytes) -> dict:
 
 def write_done(gate_dir: Path, episode_end: str) -> None:
     """GATE/done with how the streamer's episode ended ("completed" or the reason it stopped early)."""
-    (Path(gate_dir) / "done").write_text(json.dumps({"episode_end": episode_end}))
+    tmp = Path(gate_dir) / "done.tmp"
+    tmp.write_text(json.dumps({"episode_end": episode_end}))
+    os.replace(tmp, Path(gate_dir) / "done")  # atomic: a reader never sees a half-written file
 
 
 def read_done(gate_dir: Path) -> str | None:
@@ -186,5 +192,8 @@ def run_validity(termination, phase, frame, wall, sim_wall, n_frames: int, held_
     if w.min() < sim_wall[0] or w.max() > sim_wall[-1]:
         return False, "streamer episode ticks fall outside the sim recording"
     if held_fraction > MAX_HELD:
-        return False, f"targets held (stale or non-finite messages) on {held_fraction:.1%} of records (> {MAX_HELD:.0%})"
+        return (
+            False,
+            f"targets held (stale or non-finite messages) on {held_fraction:.1%} of records (> {MAX_HELD:.0%})",
+        )
     return True, "ok"

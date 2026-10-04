@@ -31,7 +31,9 @@ BODY = (
     + ["waist_yaw_joint", "waist_roll_joint", "waist_pitch_joint"]
     + [f"{s}_{j}_joint" for s in ("left", "right") for j in ("shoulder_pitch", "shoulder_roll", "shoulder_yaw", "elbow", "wrist_roll", "wrist_pitch", "wrist_yaw")]
 )  # fmt: skip
-HANDS = list(ACTION_NAMES[14:])  # dataset order: left thumb0-2, middle0-1, index0-1; right thumb0-2, index0-1, middle0-1
+HANDS = list(
+    ACTION_NAMES[14:]
+)  # dataset order: left thumb0-2, middle0-1, index0-1; right thumb0-2, index0-1, middle0-1
 FPS, W, H = 30, 640, 480
 REC_KEYS = ("wall", "t", "body_q", "hand_q", "pelvis", "palm", "wrist_R", "torso_R", "floor_contacts", "table_clear",
             "table_hits")  # fmt: skip
@@ -63,13 +65,16 @@ class Scene:
         self.config = config
         self.sim = BaseSimulator(config=config, onscreen=False, offscreen=False, env_name="default")
         self.env = self.sim.sim_env
-        m, d = self.m, self.d = self.env.mj_model, self.env.mj_data
+        m = self.m = self.env.mj_model
+        self.d = self.env.mj_data
         self.dt = config["SIMULATE_DT"]
         self.pelvis, self.torso = m.body("pelvis").id, m.body("torso_link").id
         self.floor = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_GEOM, "floor")
         self.qadr = np.array([m.jnt_qposadr[m.joint(n).id] for n in BODY])
         self.hadr = np.array([m.jnt_qposadr[m.joint(n).id] for n in HANDS])
-        self.palm_ids = [[m.body(f"{s}_hand_{f}_0_link").id for f in ("index", "middle")] for s in ("left", "right")]
+        self.palm_ids = [
+            [m.body(f"{s}_hand_{f}_0_link").id for f in ("index", "middle")] for s in ("left", "right")
+        ]
         self.wrist_ids = [m.body(f"{s}_wrist_yaw_link").id for s in ("left", "right")]
         self.table = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_GEOM, "table_top")
         self.arm_geoms = [
@@ -84,7 +89,9 @@ class Scene:
         self.rec = {k: [] for k in REC_KEYS}
         self.next_rec = 0.0
         self.fall = FallDetector()
-        self.writer = cv2.VideoWriter(str(self.out / "sim_raw.mp4"), cv2.VideoWriter_fourcc(*"mp4v"), FPS, (W, H))
+        self.writer = cv2.VideoWriter(
+            str(self.out / "sim_raw.mp4"), cv2.VideoWriter_fourcc(*"mp4v"), FPS, (W, H)
+        )
         threading.Thread(target=self._render_loop, daemon=True).start()
 
     def step(self) -> None:
@@ -107,7 +114,9 @@ class Scene:
             return np.nan, 0
         ft = np.zeros(6)
         clear = min(mujoco.mj_geomDistance(self.m, self.d, g, self.table, 0.5, ft) for g in self.arm_geoms)
-        hits = sum(1 for i in range(self.d.ncon) if self.table in (self.d.contact[i].geom1, self.d.contact[i].geom2))
+        hits = sum(
+            1 for i in range(self.d.ncon) if self.table in (self.d.contact[i].geom1, self.d.contact[i].geom2)
+        )
         return clear, hits
 
     def place_table(self) -> None:
@@ -182,7 +191,10 @@ class Scene:
             mujoco.mj_forward(m, snap)
             renderer.update_scene(snap, camera=cam)
             img = cv2.cvtColor(renderer.render(), cv2.COLOR_RGB2BGR)
-            for txt, y in ((f"t = {t:6.2f} s   {self.view['phase']}", 24), (f"pelvis z {snap.qpos[2]:.3f} m", 46)):
+            for txt, y in (
+                (f"t = {t:6.2f} s   {self.view['phase']}", 24),
+                (f"pelvis z {snap.qpos[2]:.3f} m", 46),
+            ):
                 cv2.putText(img, txt, (12, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 3, cv2.LINE_AA)
                 cv2.putText(img, txt, (12, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
             self.writer.write(img)

@@ -5,10 +5,11 @@ from pathlib import Path
 
 import numpy as np
 
-HERE = Path(__file__).parents[2] / "examples" / "g1_dex3_training"
-sys.path.insert(0, str(HERE))
+sys.path.insert(0, str(Path(__file__).parents[2] / "examples" / "g1_dex3_training"))
 from sonic_policy_streamer import measured_ref
 from sonic_targets import NOMINAL_BODY
+
+HERE = Path(__file__).parents[2] / "examples" / "g1_dex3_training"
 
 
 def cli(*args):
@@ -37,6 +38,7 @@ class StreamerCliTests(unittest.TestCase):
             (["--synthetic-waist", "--action-space", "joint28", "--replay", "--dataset-root", "d", "--episode", "0",
               "--backend", "decoupled"], "--synthetic-waist needs"),
             (["--dataset-root", "d", "--episode", "0"], "exactly one of"),
+            (["--backend", "decoupled", "--dex3-right-order", "swap", "--replay", "--dataset-root", "d", "--episode", "0"], "excludes --dex3-right-order"),
         ]  # fmt: skip
         for args, text in cases:
             r = cli(*args)

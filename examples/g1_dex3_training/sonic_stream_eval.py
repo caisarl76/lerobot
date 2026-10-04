@@ -46,6 +46,9 @@ def body_from(arms, waist):
 
 
 def score(run: Path, src: str, conv: str, ep: int) -> dict:
+    for rel in ("streamer.npz", "sim/sim_state.npz"):
+        if not (run / rel).exists():
+            return {"episode": ep, "valid": False, "reason": f"missing {rel}"}
     from sonic_roundtrip_audit import Robot, v3_episode, v3_meta
 
     s = np.load(run / "streamer.npz", allow_pickle=True)
@@ -60,7 +63,11 @@ def score(run: Path, src: str, conv: str, ep: int) -> dict:
     win = np.zeros(len(sim["wall"]), bool)
     if len(ep_all):
         win = (sim["wall"] >= s["wall"][ep_all[0]]) & (sim["wall"] <= s["wall"][ep_all[-1]])
-    held = float(np.mean(sim["held"][win])) if backend == "decoupled" and "held" in sim.files and win.any() else 0.0
+    held = (
+        float(np.mean(sim["held"][win]))
+        if backend == "decoupled" and "held" in sim.files and win.any()
+        else 0.0
+    )
     valid, reason = run_validity(term, s["phase"], s["frame"], s["wall"], sim["wall"], len(orig), held)
     head = {"episode": ep, "backend": backend, "action_space": action_space}
     if not valid:
@@ -84,14 +91,20 @@ def score(run: Path, src: str, conv: str, ep: int) -> dict:
         rot = quat_to_rot(sim["pelvis"][j, 3:7])
         reached = (sim["palm"][j] - sim["pelvis"][j, :3]) @ rot  # pelvis frame
         waist = jref[i, 28:31] if waist31 else nominal_waist
-        palm_orig.append(np.linalg.norm(reached - robot.fk_pelvis_frame(body_from(orig[k, :14], waist)), axis=1))
+        palm_orig.append(
+            np.linalg.norm(reached - robot.fk_pelvis_frame(body_from(orig[k, :14], waist)), axis=1)
+        )
         for h, wid in enumerate(wrist_ids):  # robot.kin is at the recorded-action pose now
             r_reached = rot.T @ sim["wrist_R"][j, h]
             r_int = robot.kin.xmat[wid].reshape(3, 3)
             orient_err.append(np.degrees(np.arccos(np.clip((np.trace(r_reached.T @ r_int) - 1) / 2, -1, 1))))
         if has_ref:
-            palm_ref.append(np.linalg.norm(reached - robot.fk_pelvis_frame(body_from(jref[i, :14], waist)), axis=1))
-            if waist31:  # torso orientation relative to the yaw-only pelvis frame, as upstream defines the command
+            palm_ref.append(
+                np.linalg.norm(reached - robot.fk_pelvis_frame(body_from(jref[i, :14], waist)), axis=1)
+            )
+            if (
+                waist31
+            ):  # torso orientation relative to the yaw-only pelvis frame, as upstream defines the command
                 cmd_rpy = rpy_from_matrix(robot.kin.xmat[torso_id].reshape(3, 3))
                 yaw = np.arctan2(rot[1, 0], rot[0, 0])
                 rz = np.array([[np.cos(yaw), -np.sin(yaw), 0], [np.sin(yaw), np.cos(yaw), 0], [0, 0, 1]])
@@ -102,10 +115,16 @@ def score(run: Path, src: str, conv: str, ep: int) -> dict:
         if applied is not None:
             ap = applied[j]
             ap_waist = ap[28:31] if waist31 else nominal_waist
-            palm_app.append(np.linalg.norm(reached - robot.fk_pelvis_frame(body_from(ap[:14], ap_waist)), axis=1))
+            palm_app.append(
+                np.linalg.norm(reached - robot.fk_pelvis_frame(body_from(ap[:14], ap_waist)), axis=1)
+            )
     palm_orig = np.array(palm_orig)
     if rpy_err and max(waist_cmd) > 0.05 and np.abs(sim["rpy_cmd"][win]).max() < 1e-3:
-        return {**head, "valid": False, "reason": "waist commanded but the lower-body policy's rpy command stayed 0"}
+        return {
+            **head,
+            "valid": False,
+            "reason": "waist commanded but the lower-body policy's rpy command stayed 0",
+        }
 
     q = sim["pelvis"][win, 3:7]
     tilt = np.degrees(np.arccos(np.clip(1 - 2 * (q[:, 1] ** 2 + q[:, 2] ** 2), -1, 1)))

@@ -41,6 +41,13 @@ class StreamEvalValidityTest(unittest.TestCase):
         self.assertEqual(out["reason"], "no termination.json")
         self.assertEqual(out["backend"], "decoupled")
 
+    def test_missing_streamer_npz_is_invalid_without_mujoco(self):
+        sys.modules.pop("sonic_roundtrip_audit", None)
+        with tempfile.TemporaryDirectory() as d:
+            out = sonic_stream_eval.score(Path(d), "src", "conv", 3)
+        self.assertEqual(out, {"episode": 3, "valid": False, "reason": "missing streamer.npz"})
+        self.assertNotIn("sonic_roundtrip_audit", sys.modules)
+
 
 if __name__ == "__main__":
     unittest.main()

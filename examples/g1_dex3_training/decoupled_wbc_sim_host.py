@@ -27,6 +27,7 @@ Usage (in jihun/sonic-vla-sim, cwd gear_sonic_deploy):
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import os
 import time
@@ -39,15 +40,26 @@ import mujoco
 import numpy as np
 import yaml
 import zmq
-
 from sim_scene import BODY, HANDS, Scene
-from wbc_common import REF_NAMES, WAIST_NAMES, pack_joint_message, read_done, rpy_from_matrix, tilt_deg, unpack_joint_message, write_termination
+from wbc_common import (
+    REF_NAMES,
+    WAIST_NAMES,
+    pack_joint_message,
+    read_done,
+    rpy_from_matrix,
+    tilt_deg,
+    unpack_joint_message,
+    write_termination,
+)
 
 UPSTREAM = Path("/upstream/decoupled_wbc")
 WBC_YAML = UPSTREAM / "control/main/teleop/configs/g1_29dof_gear_wbc.yaml"
 POLICY_DIR = UPSTREAM / "sim2mujoco/resources/robots/g1"
 MODEL_PATH = "policy/GR00T-WholeBodyControl-Balance.onnx,policy/GR00T-WholeBodyControl-Walk.onnx"
-HAND_KP, HAND_KD = 1.5, 0.1  # Dex3Hands defaults in A's deploy (dex3_hands.hpp:396-397), kept by setAllJointsCommand
+HAND_KP, HAND_KD = (
+    1.5,
+    0.1,
+)  # Dex3Hands defaults in A's deploy (dex3_hands.hpp:396-397), kept by setAllJointsCommand
 DECIMATION = 4  # 200 Hz physics -> 50 Hz control
 MAX_MSG_AGE_S, SILENCE_S = 0.1, 5.0
 FIRST_MSG_S = 600.0  # must exceed policy-server load (MolmoAct2 ~2 min) + streamer startup + first inference
@@ -55,10 +67,11 @@ GOAL_CONST = {"base_height_command": np.array([0.74]), "navigate_cmd": np.zeros(
 OBS_DIM = 86  # one frame of the lower-body observation (516 = 86 x 6)
 T_ACTIVATE, T_BAND, T_RESET, T_SETTLED = 1.0, 3.0, 4.0, 9.0
 # Arms during hang/settle: the SONIC planner stance backend A holds before its episode (mean of the pre-episode records
-# of WBC_A28_ep1293_r1 on h100_174, std <= 0.007 rad). The G1 zero arm pose holds the forearms forward at table-top
+# of WBC_A28_ep1293_r1 on the second H100 host, std <= 0.007 rad). The G1 zero arm pose holds the forearms forward at table-top
 # height (palms ~0.78 m); this pose keeps the palms at ~0.62 m, below an 80 cm table, as for backend A.
-START_ARMS = np.array([-0.046, 0.293, -0.628, 1.027, -0.162, -0.119, 0.099,
-                       -0.054, -0.267, 0.663, 1.128, -0.162, 0.251, -0.165])  # REF_NAMES[:14] order (motor 15..28)
+START_ARMS = np.array(
+    [-0.046, 0.293, -0.628, 1.027, -0.162, -0.119, 0.099, -0.054, -0.267, 0.663, 1.128, -0.162, 0.251, -0.165]
+)  # REF_NAMES[:14] order (motor 15..28)
 
 
 def make_wbc(waist_location: str):
@@ -73,8 +86,12 @@ def make_wbc(waist_location: str):
         robot_model=robot_model, config=str(UPSTREAM.parent / cfg["GEAR_WBC_CONFIG"]), model_path=MODEL_PATH
     )
     if (lower.config["num_obs"], lower.config["num_actions"]) != (516, 15):
-        raise RuntimeError(f"unexpected lower-body config {lower.config['num_obs']} obs / {lower.config['num_actions']}")
-    wbc = G1DecoupledWholeBodyPolicy(robot_model=robot_model, upper_body_policy=IdentityPolicy(), lower_body_policy=lower)
+        raise RuntimeError(
+            f"unexpected lower-body config {lower.config['num_obs']} obs / {lower.config['num_actions']}"
+        )
+    wbc = G1DecoupledWholeBodyPolicy(
+        robot_model=robot_model, upper_body_policy=IdentityPolicy(), lower_body_policy=lower
+    )
     return wbc, robot_model, np.asarray(cfg["MOTOR_KP"], float), np.asarray(cfg["MOTOR_KD"], float)
 
 
@@ -86,14 +103,24 @@ class Plant:
         names = lambda idx: [m.joint(int(j)).name for j in idx]  # noqa: E731 - bridge slots hold 1-based joint ids
         self.body_slots = names(env.body_joint_index)
         self.left_slots, self.right_slots = names(env.left_hand_index), names(env.right_hand_index)
-        if sorted(self.body_slots) != sorted(BODY) or sorted(self.left_slots + self.right_slots) != sorted(HANDS):
-            raise RuntimeError(f"bridge slots {self.body_slots} / {self.left_slots + self.right_slots} do not match the scene")
+        if sorted(self.body_slots) != sorted(BODY) or sorted(self.left_slots + self.right_slots) != sorted(
+            HANDS
+        ):
+            raise RuntimeError(
+                f"bridge slots {self.body_slots} / {self.left_slots + self.right_slots} do not match the scene"
+            )
 
         def cmd(n):
-            return SimpleNamespace(motor_cmd=[SimpleNamespace(q=0.0, dq=0.0, kp=0.0, kd=0.0, tau=0.0) for _ in range(n)])
+            return SimpleNamespace(
+                motor_cmd=[SimpleNamespace(q=0.0, dq=0.0, kp=0.0, kd=0.0, tau=0.0) for _ in range(n)]
+            )
 
         self.br = env.unitree_bridge
-        self.br.low_cmd, self.br.left_hand_cmd, self.br.right_hand_cmd = cmd(len(self.body_slots)), cmd(7), cmd(7)
+        self.br.low_cmd, self.br.left_hand_cmd, self.br.right_hand_cmd = (
+            cmd(len(self.body_slots)),
+            cmd(7),
+            cmd(7),
+        )
         for i, n in enumerate(self.body_slots):
             c = self.br.low_cmd.motor_cmd[i]
             c.kp, c.kd = kp[BODY.index(n)], kd[BODY.index(n)]
@@ -103,7 +130,10 @@ class Plant:
     def set(self, targets: dict) -> None:
         for i, n in enumerate(self.body_slots):
             self.br.low_cmd.motor_cmd[i].q = float(targets[n])
-        for slots, cmd in ((self.left_slots, self.br.left_hand_cmd), (self.right_slots, self.br.right_hand_cmd)):
+        for slots, cmd in (
+            (self.left_slots, self.br.left_hand_cmd),
+            (self.right_slots, self.br.right_hand_cmd),
+        ):
             for i, n in enumerate(slots):
                 cmd.motor_cmd[i].q = float(targets[n])
 
@@ -113,7 +143,9 @@ class Controller:
 
     def __init__(self, scene: Scene, waist_location: str):
         self.scene = scene
-        assert abs(scene.dt * DECIMATION - 0.02) < 1e-9, f"need physics 200 Hz / control 50 Hz, got dt {scene.dt} x {DECIMATION}"
+        assert abs(scene.dt * DECIMATION - 0.02) < 1e-9, (
+            f"need physics 200 Hz / control 50 Hz, got dt {scene.dt} x {DECIMATION}"
+        )
         self.wbc, self.rm, kp, kd = make_wbc(waist_location)
         self.lower = self.wbc.lower_body_policy
         m = scene.m
@@ -126,8 +158,14 @@ class Controller:
         self.upper_names = [self.rm_names[i] for i in self.rm.get_joint_group_indices("upper_body")]
         self.plant = Plant(scene, kp, kd)
         # start from the measured pose (arms down after the reset); the gear-WBC default arm pose reaches table-top height
-        self.ref = {n: float(scene.d.qpos[m.jnt_qposadr[m.joint(n).id]]) for n in set(self.upper_names) | set(REF_NAMES)}
-        self.ref.update(zip(REF_NAMES[:14], START_ARMS.tolist()))  # arms as A's planner stance; hands and waist stay measured
+        # (the arms are then set to START_ARMS; the hands and waist keep the measured pose)
+        self.ref = {
+            n: float(scene.d.qpos[m.jnt_qposadr[m.joint(n).id]])
+            for n in set(self.upper_names) | set(REF_NAMES)
+        }
+        self.ref.update(
+            zip(REF_NAMES[:14], START_ARMS.tolist(), strict=True)
+        )  # arms start at START_ARMS; hands, waist: measured
         self.ranges = {n: m.jnt_range[m.joint(n).id].copy() for n in REF_NAMES}
         self.clipped, self.held, self.seq = np.zeros(len(REF_NAMES), bool), False, -1
         self.counts = {"messages": 0, "stale": 0, "nonfinite": 0, "seq_gap": 0, "clipped_values": 0}
@@ -170,7 +208,7 @@ class Controller:
         self.wbc.set_observation(self.observation())
         self.wbc.set_goal(self.goal())  # always complete: IdentityPolicy returns exactly this goal
         q = self.wbc.get_action(time=t)["q"]
-        targets = dict(zip(self.rm_names, q))
+        targets = dict(zip(self.rm_names, q, strict=True))
         targets.update({n: self.ref[n] for n in HANDS})  # hands straight from the joint message
         with self.scene.lock:
             self.plant.set(targets)
@@ -188,8 +226,11 @@ class Controller:
 def state_message(scene: Scene) -> bytes:
     d = scene.d
     return b"g1_debug" + msgpack.packb(
-        {"body_q": d.qpos[scene.qadr].tolist(), "left_hand_q": d.qpos[scene.hadr[:7]].tolist(),
-         "right_hand_q": d.qpos[scene.hadr[7:]].tolist()}  # fmt: skip
+        {
+            "body_q": d.qpos[scene.qadr].tolist(),
+            "left_hand_q": d.qpos[scene.hadr[:7]].tolist(),
+            "right_hand_q": d.qpos[scene.hadr[7:]].tolist(),
+        }  # fmt: skip
     )
 
 
@@ -241,16 +282,16 @@ def run(a) -> None:
             t = scene.t
             if n % DECIMATION == 0:
                 ctl.held, ctl.clipped[:] = False, False  # a tick without a message is not held
-                try:
+                with contextlib.suppress(zmq.Again):
                     ctl.apply_message(unpack_joint_message(sub.recv(zmq.NOBLOCK)))
-                except zmq.Again:
-                    pass
                 ctl.step(t)
                 pub.send(state_message(scene))
                 startup(scene, ctl, steps, t)
                 if "settled" not in steps and t >= T_SETTLED:
                     if ctl.flags() != (True, True):
-                        raise RuntimeError(f"policy flags (use_policy_action, use_teleop_policy_cmd) = {ctl.flags()}")
+                        raise RuntimeError(
+                            f"policy flags (use_policy_action, use_teleop_policy_cmd) = {ctl.flags()}"
+                        )
                     steps["settled"] = t
                     scene.place_table()
                     scene.fall.armed = True
@@ -269,9 +310,17 @@ def run(a) -> None:
                     t_done, episode_end = t, read_done(a.gate)
                     scene.mark(f"streamer done: {episode_end}")
                 if t_done is not None and t >= t_done + 3:
-                    reason, detail = ("completed", "") if episode_end == "completed" else ("aborted", f"streamer: {episode_end}")
+                    reason, detail = (
+                        ("completed", "")
+                        if episode_end == "completed"
+                        else ("aborted", f"streamer: {episode_end}")
+                    )
                     break
-                if t_done is None and ctl.last_msg_wall is not None and time.time() - ctl.last_msg_wall > SILENCE_S:
+                if (
+                    t_done is None
+                    and ctl.last_msg_wall is not None
+                    and time.time() - ctl.last_msg_wall > SILENCE_S
+                ):
                     reason, detail = "aborted", f"no joint message for {SILENCE_S:g} s and no GATE/done"
                     break
                 if "settled" in steps and ctl.last_msg_wall is None and t >= steps["settled"] + FIRST_MSG_S:
@@ -289,7 +338,9 @@ def run(a) -> None:
         try:
             scene.close(reason, detail, counts=counts, waist_location=a.waist_location)
         except Exception as e:
-            write_termination(a.out, reason, "close", detail + repr(e), counts=counts, waist_location=a.waist_location)
+            write_termination(
+                a.out, reason, "close", detail + repr(e), counts=counts, waist_location=a.waist_location
+            )
 
 
 def selfcheck(a) -> None:
@@ -305,7 +356,12 @@ def selfcheck(a) -> None:
         print("lower_body", [ctl.rm_names[i] for i in ctl.rm.get_joint_group_indices("lower_body")])
         assert set(REF_NAMES[:14]) <= set(ctl.upper_names), "arms must be upper-body joints"
         assert (set(WAIST_NAMES) <= set(ctl.upper_names)) == (a.waist_location == "lower_and_upper_body")
-        d.qpos[3:7] = [np.cos(0.1), 0, np.sin(0.1), 0]  # 11.5 deg pitch: quaternion order must be MuJoCo's (w,x,y,z)
+        d.qpos[3:7] = [
+            np.cos(0.1),
+            0,
+            np.sin(0.1),
+            0,
+        ]  # 11.5 deg pitch: quaternion order must be MuJoCo's (w,x,y,z)
         mujoco.mj_forward(m, d)
         expect = d.xmat[scene.pelvis].reshape(3, 3).T @ np.array([0.0, 0.0, -1.0])
         got = np.asarray(get_gravity_orientation(d.qpos[3:7].copy()), float)
@@ -323,7 +379,10 @@ def selfcheck(a) -> None:
         assert np.allclose(msg["right_hand_q"], [vals[n] for n in HANDS[7:]])
     elif a.selfcheck == "command":
         ctl = Controller(scene, "lower_body")
-        ref = np.array([lo + (hi - lo) * (i + 1) / 32 for i, (lo, hi) in enumerate(ctl.ranges[n] for n in REF_NAMES)], np.float32)
+        ref = np.array(
+            [lo + (hi - lo) * (i + 1) / 32 for i, (lo, hi) in enumerate(ctl.ranges[n] for n in REF_NAMES)],
+            np.float32,
+        )
         assert len(set(np.round(ref[:28], 6))) == 28, "test values must be distinct"
         ctl.apply_message(unpack_joint_message(pack_joint_message(0, "selfcheck", -1, ref)))
         ctl.step(0.0)  # also proves a complete goal: get_action runs without KeyError (spec test 9)
@@ -331,7 +390,10 @@ def selfcheck(a) -> None:
         for i, n in enumerate(ctl.plant.body_slots):
             if n in REF_NAMES[:14]:
                 assert abs(br.low_cmd.motor_cmd[i].q - ref[REF_NAMES.index(n)]) < 1e-6, n
-        for slots, cmd in ((ctl.plant.left_slots, br.left_hand_cmd), (ctl.plant.right_slots, br.right_hand_cmd)):
+        for slots, cmd in (
+            (ctl.plant.left_slots, br.left_hand_cmd),
+            (ctl.plant.right_slots, br.right_hand_cmd),
+        ):
             for i, n in enumerate(slots):
                 assert abs(cmd.motor_cmd[i].q - ref[REF_NAMES.index(n)]) < 1e-6, n
         print("right-hand bridge slots:", ctl.plant.right_slots)

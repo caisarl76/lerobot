@@ -638,6 +638,8 @@ def main():
             p.error("--replay needs --images dataset")
     elif bool(a.policy_path) == bool(a.policy_server):
         p.error("give exactly one of --policy-path or --policy-server (or --replay)")
+    if a.backend == "decoupled" and a.dex3_right_order == "swap":
+        p.error("--backend decoupled excludes --dex3-right-order swap (C addresses joints by name)")
     if a.backend == "decoupled" and not joint_space:
         p.error("--backend decoupled needs --action-space joint28 or joint31")
     if a.backend == "decoupled" and (a.startup_tokens or a.max_token_step > 0):

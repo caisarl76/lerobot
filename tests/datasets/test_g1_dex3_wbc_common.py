@@ -1,3 +1,4 @@
+import importlib.util
 import json
 import sys
 import tempfile
@@ -27,7 +28,14 @@ from wbc_common import (
 
 
 def rot(roll, pitch, yaw):
-    cr, sr, cp, sp, cy, sy = np.cos(roll), np.sin(roll), np.cos(pitch), np.sin(pitch), np.cos(yaw), np.sin(yaw)
+    cr, sr, cp, sp, cy, sy = (
+        np.cos(roll),
+        np.sin(roll),
+        np.cos(pitch),
+        np.sin(pitch),
+        np.cos(yaw),
+        np.sin(yaw),
+    )
     rx = np.array([[1, 0, 0], [0, cr, -sr], [0, sr, cr]])
     ry = np.array([[cp, 0, sp], [0, 1, 0], [-sp, 0, cp]])
     rz = np.array([[cy, -sy, 0], [sy, cy, 0], [0, 0, 1]])
@@ -80,6 +88,7 @@ class WbcCommonTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             check_synthetic_duration(14.6)
 
+    @unittest.skipUnless(importlib.util.find_spec("msgpack"), "msgpack not installed")
     def test_joint_message_round_trip(self):
         ref = np.linspace(-1, 1, 31).astype(np.float32)
         msg = unpack_joint_message(pack_joint_message(7, "episode", 12, ref, t_wall=123.5))
@@ -102,6 +111,12 @@ class WbcCommonTests(unittest.TestCase):
             (gate / "done").write_text("")
             self.assertEqual(read_done(gate), "unknown")
 
+    def test_write_done_is_atomic(self):
+        with tempfile.TemporaryDirectory() as d:
+            write_done(Path(d), "completed")
+            self.assertFalse((Path(d) / "done.tmp").exists())
+            self.assertEqual(read_done(Path(d)), "completed")
+
     def test_fall_detector(self):
         f = FallDetector()
         tilted = [np.cos(np.radians(15)), np.sin(np.radians(15)), 0, 0]  # 30 deg tilt about x
@@ -123,7 +138,8 @@ class WbcCommonTests(unittest.TestCase):
         self.assertEqual(log_settings(json.dumps({"action_space": "sonic78"})), ("sonic", "sonic78"))
         self.assertEqual(log_settings(json.dumps({})), ("sonic", "sonic78"))
         self.assertEqual(
-            log_settings(json.dumps({"backend": "decoupled", "action_space": "joint31"})), ("decoupled", "joint31")
+            log_settings(json.dumps({"backend": "decoupled", "action_space": "joint31"})),
+            ("decoupled", "joint31"),
         )
 
     def test_run_validity(self):
@@ -134,7 +150,9 @@ class WbcCommonTests(unittest.TestCase):
         ok = {"reason": "completed"}
         self.assertEqual(run_validity(ok, phase, frame, wall, sim_wall, 100), (True, "ok"))
         self.assertFalse(run_validity(None, phase, frame, wall, sim_wall, 100)[0])
-        self.assertFalse(run_validity({"reason": "fell", "detail": "tilt"}, phase, frame, wall, sim_wall, 100)[0])
+        self.assertFalse(
+            run_validity({"reason": "fell", "detail": "tilt"}, phase, frame, wall, sim_wall, 100)[0]
+        )
         self.assertFalse(run_validity({"reason": "aborted"}, phase, frame, wall, sim_wall, 100)[0])
         self.assertFalse(run_validity(ok, phase, frame, wall, sim_wall, 110)[0])  # 100/110 < 98 %
         self.assertFalse(run_validity(ok, phase, frame, wall, sim_wall[:50], 100)[0])  # tail past the sim end

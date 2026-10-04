@@ -37,14 +37,23 @@ def augment(root: Path) -> dict:
         quantiles = np.quantile(values, QUANTILES, axis=0)
         for i, q in enumerate(QUANTILES):
             stats[key][f"q{round(q * 100):02d}"] = quantiles[i].tolist()
-        summary[key] = {"rows": total, "width": width, "q01_min": float(quantiles[0].min()), "q99_max": float(quantiles[-1].max())}
+        summary[key] = {
+            "rows": total,
+            "width": width,
+            "q01_min": float(quantiles[0].min()),
+            "q99_max": float(quantiles[-1].max()),
+        }
         print(f"computed exact {key} quantiles over {total} rows", flush=True)
     with tempfile.NamedTemporaryFile(mode="w", dir=stats_path.parent, delete=False) as stream:
         temporary = Path(stream.name)
         json.dump(stats, stream, indent=2, allow_nan=False)
         stream.write("\n")
     os.replace(temporary, stats_path)
-    audit = {"method": "exact numpy quantile over every parquet row; no video decoding", "quantiles": list(QUANTILES), "features": summary}
+    audit = {
+        "method": "exact numpy quantile over every parquet row; no video decoding",
+        "quantiles": list(QUANTILES),
+        "features": summary,
+    }
     (root / "meta/quantile-audit.json").write_text(json.dumps(audit, indent=2) + "\n")
     return audit
 

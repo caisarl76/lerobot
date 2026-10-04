@@ -6,12 +6,15 @@ Coverage: every gated episode needs REPEATS (3) runs on both sides (G0, G1, syn)
   G0  online A faithful: |A28 - Astored| <= max(0.5 cm, spread of Astored) on recorded-action palm p50, max(1.0, .) p95
   G1  equal balance: every repeat valid; mean max tilt <= reference + 2 deg; mean table.hit_records (contact records during the episode) <= reference's
   G2  C better: mean joint_ref palm p95 over the episodes >= 1.0 cm lower than A28, lower on >= 4 of 6 episodes
+      (other episode counts n: all n paired, lower on >= ceil(2n/3)); every pair needs REPEATS runs on both sides
+--episodes restricts G0/G1/G2/closed loop to those episodes (syn loops over its own episodes); G2 needs all of them.
   syn 31D synthetic waist: valid, joint_ref palm p95 <= the same backend's 28D replay + 2 cm
-Usage: python wbc_compare.py AUDIT_DIR [--out compare.json]
+Usage: python wbc_compare.py AUDIT_DIR [--out compare.json] [--episodes 1293,1300,1455,2207,3555,3600]
 """
 
 import argparse
 import json
+import math
 import re
 from collections import defaultdict
 from pathlib import Path
@@ -29,7 +32,14 @@ def load(root) -> dict:
         if not (m and d.is_dir()):
             continue
         f = d / "stream_eval.json"
-        runs[m["cfg"]][int(m["ep"])].append(json.loads(f.read_text()) if f.exists() else {"valid": False, "reason": "no stream_eval.json"})
+        if not f.exists():
+            res = {"valid": False, "reason": "no stream_eval.json"}
+        else:
+            try:
+                res = json.loads(f.read_text())
+            except ValueError:  # empty or truncated by a crash
+                res = {"valid": False, "reason": "unreadable stream_eval.json"}
+        runs[m["cfg"]][int(m["ep"])].append(res)
     return runs
 
 
@@ -50,6 +60,14 @@ def mean(x):
     return round(float(np.mean(x)), 2) if x else None
 
 
+def only(runs, episodes) -> dict:
+    """runs restricted to the gated episodes (None keeps all)."""
+    if episodes is None:
+        return runs
+    kept = {cfg: {e: v for e, v in eps.items() if e in episodes} for cfg, eps in runs.items()}
+    return {cfg: eps for cfg, eps in kept.items() if eps}
+
+
 def short(*sides):
     return any(len(s) < REPEATS for s in sides)
 
@@ -57,16 +75,31 @@ def short(*sides):
 def g0(runs) -> dict:
     rows = []
     for ep in sorted(set(runs.get("Astored", {})) | set(runs.get("A28", {}))):
-        S, A = runs.get("Astored", {}).get(ep, []), runs.get("A28", {}).get(ep, [])
+        s_runs, a_runs = runs.get("Astored", {}).get(ep, []), runs.get("A28", {}).get(ep, [])
         for q, floor in (("p50", 0.5), ("p95", 1.0)):
-            s, a = metric(S, "palm_err_vs_original_cm", q), metric(A, "palm_err_vs_original_cm", q)
-            if short(S, A):
-                rows.append({"episode": ep, "q": q, "pass": False, "why": f"fewer than {REPEATS} runs ({len(S)} Astored, {len(A)} A28)"})
+            s, a = metric(s_runs, "palm_err_vs_original_cm", q), metric(a_runs, "palm_err_vs_original_cm", q)
+            if short(s_runs, a_runs):
+                rows.append(
+                    {
+                        "episode": ep,
+                        "q": q,
+                        "pass": False,
+                        "why": f"fewer than {REPEATS} runs ({len(s_runs)} Astored, {len(a_runs)} A28)",
+                    }
+                )
             elif not s or not a:
                 rows.append({"episode": ep, "q": q, "pass": False, "why": "no valid runs"})
             else:
                 tol, diff = max(floor, max(s) - min(s)), abs(np.mean(a) - np.mean(s))
-                rows.append({"episode": ep, "q": q, "diff_cm": round(float(diff), 2), "tol_cm": round(float(tol), 2), "pass": bool(diff <= tol)})
+                rows.append(
+                    {
+                        "episode": ep,
+                        "q": q,
+                        "diff_cm": round(float(diff), 2),
+                        "tol_cm": round(float(tol), 2),
+                        "pass": bool(diff <= tol),
+                    }
+                )
     return {"pass": bool(rows) and all(x["pass"] for x in rows), "rows": rows}
 
 
@@ -89,19 +122,37 @@ def g1(runs, test="C28", ref="A28") -> dict:
     return {"pass": bool(rows) and all(x["pass"] for x in rows), "rows": rows}
 
 
-def g2(runs) -> dict:
+def g2(runs, episodes=None) -> dict:
     eps = sorted(set(runs.get("C28", {})) & set(runs.get("A28", {})))
+    want = len(episodes) if episodes is not None else 6
+    if episodes is not None:
+        eps = [e for e in eps if e in episodes]
     c = [metric(runs["C28"][e], "palm_err_vs_joint_ref_cm", "p95") for e in eps]
     a = [metric(runs["A28"][e], "palm_err_vs_joint_ref_cm", "p95") for e in eps]
-    pairs = [(e, float(np.mean(ci)), float(np.mean(ai))) for e, ci, ai in zip(eps, c, a, strict=True) if ci and ai]
-    if len(pairs) < 6:
-        return {"pass": False, "why": f"{len(pairs)} episodes with valid runs on both backends (need 6)", "rows": []}
+    pairs = [
+        (e, float(np.mean(ci)), float(np.mean(ai))) for e, ci, ai in zip(eps, c, a, strict=True) if ci and ai
+    ]
+    if len(pairs) != want:
+        return {
+            "pass": False,
+            "why": f"{len(pairs)} episodes with valid runs on both backends (need {want})",
+            "rows": [],
+        }
+    thin = [e for e in eps if short(runs["C28"][e], runs["A28"][e])]
+    if thin:
+        return {"pass": False, "why": f"fewer than {REPEATS} runs on a side for episodes {thin}", "rows": []}
     gain = float(np.mean([ai - ci for _, ci, ai in pairs]))
     better = int(sum(ci < ai for _, ci, ai in pairs))
+    need = 4 if want == 6 else math.ceil(2 * want / 3)
     rows = [{"episode": e, "c_p95": round(ci, 2), "a_p95": round(ai, 2),
              "c_wrist_deg_p95": mean(metric(runs["C28"][e], "wrist_orientation_err_deg", "p95")),
              "a_wrist_deg_p95": mean(metric(runs["A28"][e], "wrist_orientation_err_deg", "p95"))} for e, ci, ai in pairs]  # fmt: skip
-    return {"pass": bool(gain >= 1.0 and better >= 4), "gain_cm": round(gain, 2), "better": better, "rows": rows}
+    return {
+        "pass": bool(gain >= 1.0 and better >= need),
+        "gain_cm": round(gain, 2),
+        "better": better,
+        "rows": rows,
+    }
 
 
 def syn(runs, cfg="C31syn", base="C28") -> dict:
@@ -134,11 +185,15 @@ def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("root")
     p.add_argument("--out")
+    p.add_argument(
+        "--episodes", type=lambda s: [int(x) for x in s.split(",")], help="comma-separated gated episodes"
+    )
     a = p.parse_args()
-    runs = load(a.root)
+    all_runs = load(a.root)
+    runs = only(all_runs, a.episodes)
     out = {"counts": {cfg: {ep: len(v) for ep, v in eps.items()} for cfg, eps in runs.items()},
-           "G0": g0(runs), "G1": g1(runs, "C28", "A28"), "G2": g2(runs),
-           "syn_A": syn(runs, "A31syn", "A28"), "syn_C": syn(runs, "C31syn", "C28")}  # fmt: skip
+           "G0": g0(runs), "G1": g1(runs, "C28", "A28"), "G2": g2(runs, a.episodes),
+           "syn_A": syn(all_runs, "A31syn", "A28"), "syn_C": syn(all_runs, "C31syn", "C28")}  # fmt: skip
     if "C28cl" in runs:
         out["G1_closed"] = g1(runs, "C28cl", "A28cl")
     if any(c in runs for c in ("A28cl", "C28cl", "Anative")):

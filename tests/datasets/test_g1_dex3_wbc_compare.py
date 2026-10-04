@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parents[2] / "examples" / "g1_dex3_training"))
-from wbc_compare import g0, g1, g2, load, syn
+from wbc_compare import g0, g1, g2, load, only, syn
 
 
 def r(orig50=3.0, orig95=8.0, ref95=8.0, tilt=3.0, hits=0, valid=True, wrist=5.0):
@@ -76,6 +76,28 @@ class CompareTests(unittest.TestCase):
             (Path(d) / "WBC_A28_ep1_r2" / "stream_eval.json").write_text(json.dumps(r()))
             runs = load(d)
         self.assertEqual([x["valid"] for x in runs["A28"][1]], [False, True])
+
+    def test_load_counts_unreadable_json_as_invalid(self):
+        with tempfile.TemporaryDirectory() as d:
+            for i, text in ((1, ""), (2, "{trunc")):
+                (Path(d) / f"WBC_A28_ep1_r{i}").mkdir()
+                (Path(d) / f"WBC_A28_ep1_r{i}" / "stream_eval.json").write_text(text)
+            runs = load(d)
+        self.assertEqual([x["reason"] for x in runs["A28"][1]], ["unreadable stream_eval.json"] * 2)
+
+    def test_g2_episode_list_and_repeat_coverage(self):
+        a = {e: [r(ref95=10.0)] * 3 for e in range(8)}
+        c = {e: [r(ref95=8.0)] * 3 for e in range(8)}
+        eps = [0, 1, 2, 3, 4, 5]
+        self.assertTrue(g2(only({"A28": a, "C28": c}, eps), eps)["pass"])
+        c3 = {e: c[e] for e in (0, 1, 2)}  # n=3 needs ceil(2) = 2 better
+        self.assertTrue(g2(only({"A28": a, "C28": c3}, [0, 1, 2]), [0, 1, 2])["pass"])
+        self.assertFalse(g2(only({"A28": a, "C28": c3}, eps), eps)["pass"])  # episodes 3-5 missing
+        thin = {**c, 5: [r(ref95=8.0)] * 2}
+        out = g2(only({"A28": a, "C28": thin}, eps), eps)
+        self.assertFalse(out["pass"])
+        self.assertIn("fewer than 3 runs", out["why"])
+        self.assertEqual(sorted(only({"A28": a}, [1, 2])["A28"]), [1, 2])
 
 
 if __name__ == "__main__":

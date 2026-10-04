@@ -103,7 +103,7 @@ class SonicTargetTests(unittest.TestCase):
         inputs, _, report = build_encoder_inputs(a31, self.limits)
         body = inputs[0, 4:294].reshape(10, 29)
         for motor, val in ((12, 0.3), (13, -0.1), (14, 0.2)):
-            slot = int(np.flatnonzero(ISAAC_FROM_MOTOR == motor)[0])
+            slot = int(np.flatnonzero(motor == ISAAC_FROM_MOTOR)[0])
             np.testing.assert_allclose(body[:, slot], val, atol=1e-6)
         self.assertEqual(report["lower_body_assumption"], "fixed_nominal_standing_legs_waist_from_action")
 

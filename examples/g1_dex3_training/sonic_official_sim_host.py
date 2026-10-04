@@ -122,7 +122,9 @@ try:
             scene.mark(f"streamer done: {episode_end}")
             scene.view["phase"] = "streamer done"
         if t_done is not None and t >= t_done + 5:  # keep 5 s of the planner hand-back on record
-            reason, detail = ("completed", "") if episode_end == "completed" else ("aborted", f"streamer: {episode_end}")
+            reason, detail = (
+                ("completed", "") if episode_end == "completed" else ("aborted", f"streamer: {episode_end}")
+            )
             break
         if t_settled is not None:
             scene.record()

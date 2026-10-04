@@ -111,13 +111,19 @@ def build_encoder_inputs(
     """Return source-aligned inputs, filtered hands, and an auditable conversion report.
 
     By default apply the reference adapter's 1rad/s arm and 2rad/s hand slew limits at 50Hz;
-    None disables a limit (joint-limit clipping always applies).
+    None disables a limit. Joint-limit clipping always applies to the 28 arm/hand columns;
+    the 31D waist columns are passed through unclipped.
     Training adds no entry/settling interval and never borrows the next episode.
     Source rows (fps, default 30Hz) select nearest 50Hz reference frames (<=6.67ms error at 30Hz).
     """
     actions = np.asarray(actions, dtype=np.float64)
     limits = np.asarray(limits, dtype=np.float64)
-    if actions.ndim != 2 or actions.shape[1] not in (28, 31) or not len(actions) or not np.isfinite(actions).all():
+    if (
+        actions.ndim != 2
+        or actions.shape[1] not in (28, 31)
+        or not len(actions)
+        or not np.isfinite(actions).all()
+    ):
         raise ValueError("expected nonempty finite actions [N,28] or [N,31]")
     waist, actions = actions[:, 28:31], actions[:, :28]  # waist is [N,0] for 28D
     if limits.shape != (28, 2) or not np.isfinite(limits).all() or np.any(limits[:, 0] >= limits[:, 1]):
@@ -140,7 +146,9 @@ def build_encoder_inputs(
     body = np.tile(NOMINAL_BODY, (len(filtered), 1))
     body[:, 15:] = filtered[:, :14]
     if waist.shape[1]:  # 31D: commanded waist (yaw, roll, pitch) instead of the nominal one, no slew limit
-        body[:, 12:15] = np.column_stack([np.interp(dense_times, source_times, waist[:, i]) for i in range(3)])
+        body[:, 12:15] = np.column_stack(
+            [np.interp(dense_times, source_times, waist[:, i]) for i in range(3)]
+        )
     body = body[:, ISAAC_FROM_MOTOR]
     velocities = np.gradient(body, 0.02, axis=0) if len(body) > 1 else np.zeros_like(body)
     # Terminal reference is explicitly held, including zero reference velocity.
