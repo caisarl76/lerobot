@@ -345,7 +345,56 @@ comparable with the token columns (different action space and std).
 - XR-1 78D at temp:0 sits between GR00T and Pi0.5 on tokens and is the second most accurate on hands. Like the others,
   temp:0 trades the hands' motion inside a chunk (step 0.011 vs the recording's 0.063) for smoothness and accuracy.
 - With random noise XR-1's seams (0.115) are smaller than GR00T random's (0.140) but still above ACT.
-- Unitree XR-1 28D is not evaluated yet: its weights are on h100_174, whose usable GPUs are training.
+### All runs (2026-10-04)
+
+Same script and replan; HE on the six HE held-out episodes (H100 GPU 7), Unitree on six held-out Unitree episodes
+(216, 1302, 1994, 2155, 2526, 2612: `random.Random(0).sample` of `heldout_sonic78_nolimit_5pct.json`, all in the
+runs' `exclude_episodes`; h100_174 GPU 5 and H100 GPU 7). Psi0 = `*_matched640k`. Unitree GR00T and ACT
+(`*_official_full`) are the Unitree baselines on the same episodes; the std differs per dataset, so compare within a
+block only.
+
+**78D, HE**
+
+| Model / mode         | Tokens: seam | Tokens: disagree | Tokens: err | Hands: seam | Hands: err |
+| -------------------- | ------------ | ---------------- | ----------- | ----------- | ---------- |
+| GR00T temp:0         | 0.091        | 0.097            | 0.131       | 0.128       | 0.233      |
+| Pi0.5 temp:0         | **0.077**    | **0.078**        | **0.119**   | 0.105       | **0.213**  |
+| XR-1 temp:0          | 0.081        | 0.086            | 0.122       | 0.133       | 0.219      |
+| Psi0 temp:0          | 0.082        | 0.093            | 0.142       | **0.103**   | 0.234      |
+| Psi0 random          | 0.172        | 0.197            | 0.171       | 0.277       | 0.276      |
+
+**78D, Unitree**
+
+| Model / mode         | Tokens: seam | Tokens: disagree | Tokens: err | Hands: seam | Hands: err |
+| -------------------- | ------------ | ---------------- | ----------- | ----------- | ---------- |
+| ACT                  | 0.106        | 0.116            | 0.180       | 0.083       | 0.166      |
+| GR00T temp:0         | 0.104        | 0.105            | 0.190       | 0.083       | 0.163      |
+| XR-1 temp:0          | 0.099        | 0.097            | **0.172**   | 0.085       | 0.158      |
+| XR-1 random          | 0.139        | 0.138            | 0.184       | 0.126       | 0.170      |
+| Psi0 temp:0          | **0.091**    | **0.094**        | 0.181       | **0.068**   | **0.122**  |
+| Psi0 random          | 0.183        | 0.200            | 0.209       | 0.134       | 0.145      |
+
+**28D (arms 0:14, hands 14:28)**
+
+| Data / model / mode  | Arms: seam | Arms: disagree | Arms: err | Hands: seam | Hands: err |
+| -------------------- | ---------- | -------------- | --------- | ----------- | ---------- |
+| HE XR-1 temp:0       | **0.060**  | **0.066**      | **0.073** | 0.124       | **0.209**  |
+| HE XR-1 random       | 0.081      | 0.087          | 0.082     | 0.198       | 0.239      |
+| HE Psi0 temp:0       | 0.073      | 0.076          | 0.101     | **0.094**   | 0.228      |
+| HE Psi0 random       | 0.172      | 0.196          | 0.147     | 0.262       | 0.285      |
+| Unitree XR-1 temp:0  | **0.082**  | 0.090          | **0.076** | 0.078       | 0.143      |
+| Unitree XR-1 random  | 0.095      | 0.108          | 0.082     | 0.116       | 0.154      |
+| Unitree Psi0 temp:0  | 0.085      | **0.087**      | 0.109     | **0.070**   | **0.123**  |
+| Unitree Psi0 random  | 0.136      | 0.162          | 0.132     | 0.129       | 0.145      |
+
+- **temp:0 is required for Psi0.** With random noise Psi0 has the largest seams of any model (0.17–0.18 on tokens and
+  arms, about 2× its temp:0); at temp:0 it is as smooth as the best.
+- **Psi0 is best on hands, XR-1 on arms and tokens.** At temp:0 Psi0 has the smallest hand seams in every block and
+  the most accurate Unitree hands (0.122 vs 0.158–0.166); XR-1 is the most accurate on arms (HE 0.073, Unitree 0.076,
+  vs Psi0 0.101/0.109) and on Unitree tokens.
+- On Unitree both new VLAs at temp:0 match or beat the GR00T and ACT baselines; on HE, Pi0.5 temp:0 is still the most
+  accurate on tokens, with XR-1 close.
+- The usual temp:0 cost holds: almost no hand motion inside a chunk (step ~0.006–0.012).
 
 ## Open questions for the user
 
