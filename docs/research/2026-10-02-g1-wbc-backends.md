@@ -18,7 +18,7 @@ episodes x 3 repeats, all valid): online A reproduces the stored-token result (1
 the one miss is a table-contact event, tokens identical), C tracks the palm about 2.7-4x worse (p95 9.6-11.0 cm vs 2.7-3.5 cm on
 five episodes), touches the table more, and fails gates G1 and G2. With a synthetic 31D waist, C follows the commanded
 waist (gate passes), while A's waist path trips the arm-speed watchdog in 5 of 6 runs. The **closed-loop comparison
-(28D GR00T through A and C) is deferred**: the batch is prepared but not run, because the GPU host was given to another training queue.
+(28D GR00T through A and C) is deferred**: the batch is prepared but not run, because GPU 7 was given to another training queue.
 
 ## What was added
 
@@ -60,21 +60,33 @@ configuration (episode `$E`, repeat `$R`, `HE=../humanoid_everyday_g1_20260923/d
 
 ```bash
 # Astored: stored tokens through SONIC
-REPLAY=1 ./sonic_official_sim_eval.sh WBC_Astored_ep${E}_r$R - $HE/sonic78_nolimit_g2 $E $GPU 30 --start planner --action-space sonic78
+JOINT28_DIR=/run-output/humanoid_everyday_g1_20260923/datasets/joint28 REPLAY=1 ./sonic_official_sim_eval.sh WBC_Astored_ep${E}_r$R - $HE/sonic78_nolimit_g2 $E $GPU 30 --start planner --action-space sonic78
 # A28: 28D joints encoded online, SONIC
-REPLAY=1 ./sonic_official_sim_eval.sh WBC_A28_ep${E}_r$R - $HE/joint28_g2 $E $GPU 30 --start planner --action-space joint28 $ENC
+JOINT28_DIR=/run-output/humanoid_everyday_g1_20260923/datasets/joint28 REPLAY=1 ./sonic_official_sim_eval.sh WBC_A28_ep${E}_r$R - $HE/joint28_g2 $E $GPU 30 --start planner --action-space joint28 $ENC
 # C28: 28D joints, decoupled WBC
-BACKEND=decoupled REPLAY=1 HOST_ARGS="--waist-location lower_body" ./sonic_official_sim_eval.sh WBC_C28_ep${E}_r$R - $HE/joint28_g2 $E $GPU 30 \
+JOINT28_DIR=/run-output/humanoid_everyday_g1_20260923/datasets/joint28 BACKEND=decoupled REPLAY=1 HOST_ARGS="--waist-location lower_body" ./sonic_official_sim_eval.sh WBC_C28_ep${E}_r$R - $HE/joint28_g2 $E $GPU 30 \
   --action-space joint28
 # A31syn: 31D with synthetic waist, SONIC
-REPLAY=1 ./sonic_official_sim_eval.sh WBC_A31syn_ep${E}_r$R - $HE/joint28_g2 $E $GPU 30 --start planner --action-space joint31 --synthetic-waist $ENC
+JOINT28_DIR=/run-output/humanoid_everyday_g1_20260923/datasets/joint28 REPLAY=1 ./sonic_official_sim_eval.sh WBC_A31syn_ep${E}_r$R - $HE/joint28_g2 $E $GPU 30 --start planner --action-space joint31 --synthetic-waist $ENC
 # C31syn: 31D with synthetic waist, decoupled WBC
-BACKEND=decoupled REPLAY=1 HOST_ARGS="--waist-location lower_and_upper_body" ./sonic_official_sim_eval.sh WBC_C31syn_ep${E}_r$R - $HE/joint28_g2 $E $GPU 30 \
+JOINT28_DIR=/run-output/humanoid_everyday_g1_20260923/datasets/joint28 BACKEND=decoupled REPLAY=1 HOST_ARGS="--waist-location lower_and_upper_body" ./sonic_official_sim_eval.sh WBC_C31syn_ep${E}_r$R - $HE/joint28_g2 $E $GPU 30 \
   --action-space joint31 --synthetic-waist
 ```
 
-`joint28_g2` is `joint28` with re-encoded video; scoring reads `joint28` (`JOINT28_DIR`). Gates:
-`wbc_compare.py $A --out $A/wbc_compare_step1.json`.
+`joint28_g2` is `joint28` with re-encoded video; scoring reads `joint28` (`JOINT28_DIR`; the launcher defaults to the Unitree
+`joint28` dataset, so the HE runs set it as above). Gates:
+`wbc_compare.py $A --episodes 1293,1300,1455,2207,3555,3600 --out $A/wbc_compare_step1.json`.
+
+### GPU-host prerequisites for backend C
+
+- `$A/upstream_b042411fae/decoupled_wbc`: only `decoupled_wbc/` from the pinned commit; both ONNX files fetched from the LFS
+  media URLs (SHA-256 Balance `f645da599d4ca3d29ed273c8f4712620bb680d34977469ca3aeabe5bb9631c18`, Walk
+  `7c82255b6905ffcc4468fa7f8ddcf7b70db168cf1042107ccab887cb6a8e5407`); the 65 URDF meshes replaced by gear_sonic's identical G1
+  meshes, with sha256 checked against the LFS oids.
+- `$A/pylib_ort310`: onnxruntime 1.20.1 and gymnasium 1.0.0, installed with `pip --target` inside the sim image, with numpy
+  removed so the image's 1.26.4 is used.
+- For policy runs: the GR00T base `nvidia/GR00T-N1.7-3B` and `nvidia/Cosmos-Reason2-2B` in the HF cache.
+- The official-recipe lerobot code (`LEROBOT_DIR`).
 
 ### Backend C contract
 
@@ -111,7 +123,7 @@ reset). Stand max tilt: 0.57 deg (first host), 0.45 deg (measured start pose), 1
 | --- | --- | --- |
 | Physics 500 Hz (`SIMULATE_DT` 0.002) | 200 Hz, control 50 Hz (`DECIMATION` 4; host asserts `scene.dt * DECIMATION == 0.02`) | A's scene runs at 200 Hz (`scene.dt` 0.005), and upstream's `sim_frequency` is 200 too; both backends share the scene. |
 | RL activation through `lower_body_policy.set_goal({"toggle_policy_action": True})` | key `]` on the lower-body policy (`handle_keyboard_button`), RL activated at 1 s while hung, before the band release at 3 s | Upstream's own practice; releasing with RL off drops the robot with limp legs. Never a toggle-only wrapper goal. |
-| C starts at the gear-WBC default arm pose, later the measured pose | C settles in A's planner-stance arm pose `START_ARMS` (mean of the pre-episode records of an A run; std <= 0.007 rad across A runs) | The gear-WBC default arm pose and the G1 zero arm pose both put the palms at table-top height (z 0.75-0.80 m, table top 0.80 m) when the table moves in; the first C runs touched the table from sim t = 9.00 s, 22 s before the episode. A's stance has the palms near 0.62 m, and both backends now start with identical arms. Deviates from spec activation step 1 (measured pose) by design. |
+| C starts at the measured pose | C settles in A's planner-stance arm pose `START_ARMS` (mean of the pre-episode records of an A run; std <= 0.007 rad across A runs) | History: C first started at the gear-WBC default arm pose, then at the measured pose, then at `START_ARMS`. The gear-WBC default arm pose and the G1 zero arm pose both put the palms at table-top height (z 0.75-0.80 m, table top 0.80 m) when the table moves in; the first C runs touched the table from sim t = 9.00 s, 22 s before the episode. A's stance has the palms near 0.62 m, and both backends now start with identical arms. Deviates from spec activation step 1 (measured pose) by design (hands and waist do start at the measured pose). |
 | Termination reasons `completed`, `fell`, `timeout`, `error` | adds `aborted` | Streamer reports an unfinished episode, no joint message for 5 s without `GATE/done`, or no first message within `FIRST_MSG_S`. |
 | Abort without a first message after 60 s (first ruling) | 600 s | The policy server can take about 2 min to load (MolmoAct2) before the streamer starts. |
 | Launcher `LEROBOT_DIR` mounted a stale lerobot copy | default = official-recipe code (`lerobot-g1-official-20260929-ceb40b77`) | Official checkpoints need it (older code fails with an unexpected `color_jitter_params` argument); only official-recipe models remain. The launcher also stops when the policy server dies instead of waiting forever. |
@@ -171,7 +183,7 @@ Gates (`wbc_compare.py`, spec thresholds):
 - **G2 FAIL (C better at tracking).** Palm p95 vs `joint_ref`: C 9.8-11.0 cm on all six, A 2.8-7.8 cm. Mean gain -6.56 cm;
   C better on 0 of 6. Wrist p95: C 15.8-18.8 deg vs A 6.8-21.4 deg.
 
-Read: A's online encoding reproduces the stored result within 0.00-0.07 cm (means over 3 repeats) in 11 of 12 rows. C tracks the palm 3-4x worse
+Read: A's online encoding reproduces the stored result within 0.00-0.07 cm (means over 3 repeats) in 11 of 12 rows. C tracks the palm about 2.5-4.5x worse at p50
 (p50 4.9-6.7 cm vs 1.5-2.0 cm for A28 and Astored) and has more table contact on five of six episodes.
 
 ## Results: synthetic 31D waist
@@ -211,9 +223,10 @@ Episodes 3555 and 2006 (2006: "fold and pass coat", 507 frames, not one of the s
 ## Closed loop (deferred)
 
 Not run. The user gave the second H100 host's GPU 7 to another training queue after this session's 28D GR00T training.
-That training was started (smoke run passed, processor q01/q99 equal to the dataset stats): `groot_joint28_ho5_official_full`
-(official recipe, 20K steps x batch 32, bf16, HE `joint28` with exact quantiles); its final result could not be confirmed
-because the hosts were unreachable at write time. The closed-loop batch is prepared but not run: policy server
+That training finished (smoke run passed, processor q01/q99 equal to the dataset stats): `groot_joint28_ho5_official_full`
+(official recipe, 20K steps x batch 32, bf16, HE `joint28` with exact quantiles). Exit 0, 20000/20000 steps in 3:13:04
+(1.73 step/s), "End of training" 2026-10-02 15:31 UTC; checkpoints 005000, 010000, 015000, 020000 and last under
+`/run-output/humanoid_everyday_g1_20260923/runs/groot_joint28_ho5_official_full`. The closed-loop batch is prepared but not run: policy server
 `--noise-seed 0` for all configs (this branch's server has no `--noise-scale`, so this is not the robot-accepted
 noise-scale-0 setting), configurations A28cl, C28cl and Anative (the 78D HE GR00T `*_official_full` through stored-token
 SONIC) x 6 episodes x 3 repeats, plus a re-run of A28 ep 2006 r3.
