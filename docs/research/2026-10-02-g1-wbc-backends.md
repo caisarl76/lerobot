@@ -218,17 +218,44 @@ the palms sit lower relative to the table. C28g removes both:
   (`RobotModel.compute_gravity_compensation_torques(q, "arms")` at the measured pose, fixed base, as upstream's
   `sync_env`) into the bridge's feed-forward `tau`; legs, waist and hands get 0. The `command` self-check asserts this.
 - `--height-cmd H`: the lower-body RL's base height command. H is picked with the `stand` self-check (it prints the
-  mean pelvis height), so the pelvis matches A's (~0.764 m).
+  mean pelvis height), so the pelvis matches A's (~0.764 m). Stand (30 s, gravity compensation on): command 0.74 ->
+  pelvis 0.746 m, 0.76 -> 0.755, 0.78 -> 0.761, **0.79 -> 0.764 (max tilt 2.1 deg, used)**, 0.80 -> 0.766, 0.82 fails
+  the 3 deg tilt check. Without compensation, 0.74 -> 0.747 m.
 
 Run: `BACKEND=decoupled REPLAY=1 HOST_ARGS="--gravity-comp arms --height-cmd H"` with run names `WBC_C28g_ep<E>_r<R>`
 over the same 6 episodes x 3 repeats, then
 `wbc_compare.py AUDIT --episodes 1293,1300,1455,2207,3555,3600 --test C28g` (G1/G2 against the existing A28 runs).
 `termination.json` records `gravity_comp` and `height_cmd`.
 
-**Results to be added.**
+**Results (2026-10-05, 18 runs, all valid; A28 and C28 are the step-1 runs).** Palm error vs `joint_ref` p50 / p95 (cm),
+mean over 3 repeats, and table hit records:
+
+| Episode | A28 | C28 | C28g |
+| --- | --- | --- | --- |
+| 1293 | 1.60 / 2.77, 0 | 5.80 / 10.47, 68 | 2.10 / 4.50, 2 |
+| 1300 | 1.73 / 2.77, 0 | 5.50 / 11.00, 80 | 2.00 / 4.70, 13 |
+| 1455 | 1.83 / 7.77, 199 | 6.00 / 10.67, 335 | 2.47 / 5.60, 189 |
+| 2207 | 1.50 / 3.17, 24 | 6.70 / 10.67, 0 | 3.00 / 5.70, 0 |
+| 3555 | 1.70 / 3.40, 0 | 6.70 / 10.20, 8 | 2.73 / 7.33, 36 |
+| 3600 | 2.00 / 3.57, 6 | 4.90 / 9.80, 396 | 2.20 / 5.37, 120 |
+
+- Gravity compensation plus the matched height cut C's palm error by about 2-2.5x (p50 4.9-6.7 -> 2.0-3.0 cm, p95
+  9.8-11.0 -> 4.5-7.3 cm). Most of C28's error was PD sag, as suspected.
+- C28g is still behind A: p95 worse on 5 of 6 episodes (better only on 1455, where A hits the table). **G2 FAIL**
+  (gain -1.63 cm, better on 1 of 6). **G1 FAIL** on table contact (C28g hits more than A on 1293, 1300, 3555, 3600;
+  tilt is lower than A's on every episode).
+- Wrist orientation p95 (deg) is within 1.3 deg of A's (slightly worse) on 4 episodes and better on 1455 and 3600 (11.1 vs 21.4, 11.0 vs 17.0).
+- The remaining gap is at p50 too (~0.5-1.5 cm), so it is not only contact events; plausible causes are the arm PD
+  (kp 20-100, no velocity feed-forward) lagging the 50 Hz targets, against SONIC's learned tracking. Not tested.
+- Ran on the main H100 host (A28/C28 ran on the second one); the same host's SONIC regression below matched the
+  pre-refactor numbers exactly, so the hosts are comparable.
+
+SONIC regression on the restructured streamer (`stream_backends.py`), same host and batch: episode 1293, HE GR00T
+official, seed 0: palm p50 / p95 3.9 / 10.0 cm (pre-refactor 3.9 / 10.0), `termination.json` completed.
 
 ## Next steps
 
-1. Controlled C results (above); if C28g passes G2, the closed loop uses C28g in place of C28.
+1. C28g did not pass G2; the closed loop still runs C28g next to A (it is the better C). Arm velocity feed-forward or
+   higher arm gains would test the PD-lag explanation.
 2. Closed-loop results (A28cl vs C28cl vs Anative); G1 applies, palm error reported both ways.
 3. Real-robot C needs a joint-step cap first (none in sim).
