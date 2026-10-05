@@ -5,8 +5,9 @@ Validity first (wbc_common.run_validity, same rule for both backends): runs that
 episode or (backend C) held their targets on > 2% of records are reported as {"valid": false} and exit 2.
 Then, during the "episode" phase: stability; palm error in the pelvis frame against FK of the recorded action
 ("original"), of the streamer's 50 Hz joint_ref (controller error; joint runs only) and, for backend C, of the applied
-target after clipping/hold (all with the nominal waist); wrist orientation; table contacts; arm speed / jerk and palm
-jerk; for token runs the tokens/hands vs the dataset's stored ones. A-native runs (token policies, stored tokens) have no joint_ref.
+target after clipping/hold; wrist orientation; table contacts; arm speed / jerk and palm jerk; for 31D runs the torso
+orientation reached vs commanded and (C) the lower-body policy's rpy command vs FK of the commanded waist; for token
+runs the tokens/hands vs the dataset's stored ones. A-native runs (token policies, stored tokens) have no joint_ref.
 Usage: python sonic_stream_eval.py RUN_DIR JOINT28_ROOT SONIC_ROOT EPISODE
 """
 
@@ -19,7 +20,7 @@ import numpy as np
 sys.path.insert(0, "/code")
 from robot_run_smoothness import windowed_diff
 from sonic_targets import NOMINAL_BODY
-from wbc_common import log_settings, run_validity
+from wbc_common import log_settings, rpy_from_matrix, run_validity
 
 
 def quat_to_rot(q):
@@ -73,6 +74,7 @@ def score(run: Path, src: str, conv: str, ep: int) -> dict:
         return {**head, "valid": False, "reason": reason}
 
     robot = Robot()
+    torso_id = robot.m.body("torso_link").id
     wrist_ids = [robot.m.body(n).id for n in ("left_wrist_yaw_link", "right_wrist_yaw_link")]
     sim_idx = np.clip(np.searchsorted(sim["wall"], s["wall"][ep_all]), 0, len(sim["wall"]) - 1)
     frames = s["frame"][ep_all]
@@ -80,14 +82,15 @@ def score(run: Path, src: str, conv: str, ep: int) -> dict:
     ep_idx, sim_idx, frames = ep_all[first], sim_idx[first], frames[first]
     jref = s["joint_ref"][ep_idx] if "joint_ref" in s.files else None
     has_ref = jref is not None and np.isfinite(jref).all()
+    waist31 = action_space == "joint31" and has_ref
     applied = sim["applied_ref"] if "applied_ref" in sim.files else None
     nominal_waist = NOMINAL_BODY[12:15]
 
-    palm_orig, palm_ref, palm_app, orient_err = [], [], [], []
+    palm_orig, palm_ref, palm_app, orient_err, torso_err, rpy_err, waist_cmd = [], [], [], [], [], [], []
     for i, (k, j) in enumerate(zip(frames, sim_idx, strict=True)):
         rot = quat_to_rot(sim["pelvis"][j, 3:7])
         reached = (sim["palm"][j] - sim["pelvis"][j, :3]) @ rot  # pelvis frame
-        waist = nominal_waist
+        waist = jref[i, 28:31] if waist31 else nominal_waist
         palm_orig.append(
             np.linalg.norm(reached - robot.fk_pelvis_frame(body_from(orig[k, :14], waist)), axis=1)
         )
@@ -99,12 +102,29 @@ def score(run: Path, src: str, conv: str, ep: int) -> dict:
             palm_ref.append(
                 np.linalg.norm(reached - robot.fk_pelvis_frame(body_from(jref[i, :14], waist)), axis=1)
             )
+            if (
+                waist31
+            ):  # torso orientation relative to the yaw-only pelvis frame, as upstream defines the command
+                cmd_rpy = rpy_from_matrix(robot.kin.xmat[torso_id].reshape(3, 3))
+                yaw = np.arctan2(rot[1, 0], rot[0, 0])
+                rz = np.array([[np.cos(yaw), -np.sin(yaw), 0], [np.sin(yaw), np.cos(yaw), 0], [0, 0, 1]])
+                torso_err.append(np.abs(rpy_from_matrix(rz.T @ sim["torso_R"][j]) - cmd_rpy))
+                waist_cmd.append(np.abs(jref[i, 28:31]).max())
+                if "rpy_cmd" in sim.files:
+                    rpy_err.append(np.abs(sim["rpy_cmd"][j] - cmd_rpy))
         if applied is not None:
             ap = applied[j]
+            ap_waist = ap[28:31] if waist31 else nominal_waist
             palm_app.append(
-                np.linalg.norm(reached - robot.fk_pelvis_frame(body_from(ap[:14], nominal_waist)), axis=1)
+                np.linalg.norm(reached - robot.fk_pelvis_frame(body_from(ap[:14], ap_waist)), axis=1)
             )
     palm_orig = np.array(palm_orig)
+    if rpy_err and max(waist_cmd) > 0.05 and np.abs(sim["rpy_cmd"][win]).max() < 1e-3:
+        return {
+            **head,
+            "valid": False,
+            "reason": "waist commanded but the lower-body policy's rpy command stayed 0",
+        }
 
     q = sim["pelvis"][win, 3:7]
     tilt = np.degrees(np.arccos(np.clip(1 - 2 * (q[:, 1] ** 2 + q[:, 2] ** 2), -1, 1)))
@@ -126,6 +146,8 @@ def score(run: Path, src: str, conv: str, ep: int) -> dict:
         "smoothness": {"arm_speed_p95": round(float(np.percentile(np.abs(np.diff(arm, axis=0)).max(1) / 0.02, 95)), 3),
                        "arm_jerk_p95": round(float(np.percentile(jerk, 95)), 1),
                        "palm_jerk_p95": round(float(np.percentile(palm_jerk, 95)), 1)},
+        "torso_err_rad": {a: stats(np.array(torso_err)[:, n]) for n, a in enumerate(("roll", "pitch", "yaw"))} if torso_err else None,
+        "rpy_cmd_err_rad": stats(rpy_err) if rpy_err else None,
         "c_counts": term.get("counts") if backend == "decoupled" else None,
         "gate_5cm_p95": "PASS" if np.percentile(palm_orig, 95) <= 0.05 else "FAIL",
     }  # fmt: skip
