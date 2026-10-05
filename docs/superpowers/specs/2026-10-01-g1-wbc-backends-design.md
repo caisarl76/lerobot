@@ -2,9 +2,8 @@
 
 Date: 2026-10-01. Revision 3 (review rounds 1 and 2 addressed). Status: approved.
 
-> Implemented in parts: this PR builds the 28D path (evaluation step 1 and the step 3 tooling). The 31D waist
-> parts below (`--action-space joint31`, `--synthetic-waist`, waist location `lower_and_upper_body`, the `syn` gates)
-> are implemented in the follow-up 31D PR.
+> Implemented in two PRs: the 28D path (evaluation step 1 and the step 3 tooling), then the 31D waist parts
+> (`--action-space joint31`, `--synthetic-waist`, waist location `lower_and_upper_body`, the `syn` gates).
 
 ## Goal
 
