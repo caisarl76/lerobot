@@ -1,3 +1,5 @@
+# Frozen copy of examples/g1_dex3_training/sonic_policy_streamer.py at 164fda2a (before stream_backends.py):
+# the golden reference of test_g1_dex3_stream_backends.py. Do not edit.
 """Stream a LeRobot SONIC-token policy (78D = token 64 + Dex3 hands 14, 30 Hz) to NVIDIA's g1_deploy_onnx_ref.
 --action-space joint28 instead takes a 28D arm + Dex3 hand joint policy and encodes each chunk to tokens here
 (sonic_targets.joint_chunk_to_sonic, the official encoder on CPU, speed limits off as in sonic78_nolimit).
@@ -23,8 +25,7 @@ while this process keeps all real-time work, so a VPN hiccup only delays a chunk
 
 --backend decoupled sends 50 Hz joint targets (wbc_common.pack_joint_message) to decoupled_wbc_sim_host.py instead of
 tokens; --replay streams recorded actions; every joint run logs a 50 Hz joint_ref (the target after resampling,
-blending and lead-in), computed alongside A's unchanged token path. Each backend's startup, per-tick send and
-shutdown live in stream_backends.py; this file keeps the CLI, the policy / replay input, inference and the watchdogs.
+blending and lead-in), computed alongside A's unchanged token path.
 """
 
 from __future__ import annotations
@@ -32,6 +33,7 @@ from __future__ import annotations
 import argparse
 import json
 import queue
+import struct
 import threading
 import time
 from pathlib import Path
@@ -56,35 +58,75 @@ if TYPE_CHECKING or _zmq_available:
     import zmq
 
 try:
-    from .sonic_targets import SonicEncoder, joint_chunk_to_sonic, load_joint_limits
-    from .stream_backends import (
-        RIGHT_ORDER,
-        RIGHT_SWAP,
-        TICK,
-        DecoupledBackend,
-        SonicBackend,
-        load_startup,
-        measured_ref as measured_ref,  # re-exported for the tests
-        observation_state,
-        ticks,
+    from .sonic_targets import NOMINAL_BODY, SonicEncoder, joint_chunk_to_sonic, load_joint_limits
+    from .sonic_token_stream import ChunkResampler
+    from .wbc_common import (
+        check_replay_width,
+        pack_joint_message,
+        replay_chunk,
+        to_joint_ref,
+        write_done,
     )
-    from .wbc_common import check_replay_width, replay_chunk, to_joint_ref, write_done
 except ImportError:
-    from sonic_targets import SonicEncoder, joint_chunk_to_sonic, load_joint_limits
-    from stream_backends import (
-        RIGHT_ORDER,
-        RIGHT_SWAP,
-        TICK,
-        DecoupledBackend,
-        SonicBackend,
-        load_startup,
-        measured_ref as measured_ref,  # re-exported for the tests
-        observation_state,
-        ticks,
+    from sonic_targets import NOMINAL_BODY, SonicEncoder, joint_chunk_to_sonic, load_joint_limits
+    from sonic_token_stream import ChunkResampler
+    from wbc_common import (
+        check_replay_width,
+        pack_joint_message,
+        replay_chunk,
+        to_joint_ref,
+        write_done,
     )
-    from wbc_common import check_replay_width, replay_chunk, to_joint_ref, write_done
 
+HEADER_SIZE = 1280  # gear_sonic zmq_planner_sender / zmq_packed_message_subscriber.hpp in our deploy image
 TOKEN_BOUND = 1.25  # run_vla_inference rejects chunks whose token magnitude exceeds this
+# gear_sonic/utils/inference/initial_poses.py
+LATENT_INITIAL_MOTION_TOKEN = np.array(
+    [-0.0625, 0.0, -0.0625, -0.125, -0.1875, -0.0625, 0.1875, 0.25, 0.1875, -0.125, 0.0625, -0.0625, -0.25, -0.25,
+     -0.3125, -0.0625, 0.0, -0.0625, -0.125, -0.1875, 0.0, -0.25, 0.0, -0.25, -0.0625, 0.0625, 0.125, -0.125,
+     0.25, 0.1875, 0.25, -0.125, 0.125, 0.1875, -0.0625, 0.0, -0.1875, -0.1875, 0.25, 0.0, 0.0, -0.125,
+     0.0625, 0.0, -0.0625, -0.0625, 0.1875, -0.0625, 0.0, 0.0625, 0.125, 0.0625, 0.125, 0.0625, 0.125, 0.0,
+     0.125, 0.1875, 0.0, 0.0, 0.0625, 0.0625, 0.1875, 0.0625],
+    dtype=np.float32,
+)  # fmt: skip
+TICK = 0.02
+
+
+# ---------------------------------------------------------------- deploy wire format
+def _message(topic: str, fields: list[dict], payload: bytes, version: int) -> bytes:
+    header = json.dumps({"v": version, "endian": "le", "count": 1, "fields": fields}, separators=(",", ":"))
+    if len(header) > HEADER_SIZE:
+        raise ValueError("header too large")
+    return topic.encode() + header.encode().ljust(HEADER_SIZE, b"\x00") + payload
+
+
+def command_message(start: bool, planner: bool) -> bytes:
+    fields = [{"name": n, "dtype": "u8", "shape": [1]} for n in ("start", "stop", "planner")]
+    return _message("command", fields, struct.pack("BBB", start, not start, planner), version=1)
+
+
+def pose_message(token: np.ndarray, hands: np.ndarray, frame_index: int) -> bytes:
+    arrays = {
+        "token_state": np.asarray(token, "<f4").reshape(1, 64),
+        "frame_index": np.array([frame_index], "<i8"),
+        "left_hand_joints": np.asarray(hands[:7], "<f4").reshape(1, 7),
+        "right_hand_joints": np.asarray(hands[7:], "<f4")[RIGHT_ORDER].reshape(1, 7),
+    }
+    fields = [
+        {"name": k, "dtype": "i64" if v.dtype.kind == "i" else "f32", "shape": list(v.shape)}
+        for k, v in arrays.items()
+    ]
+    return _message(
+        "pose", fields, b"".join(np.ascontiguousarray(v).tobytes() for v in arrays.values()), version=4
+    )
+
+
+# Dataset (Unitree teleop) right-hand order is thumb 0-2, index 0-1, middle 0-1. NVIDIA's MuJoCo bridge maps Dex3
+# slots in the XML's order, thumb, middle, index, like the left hand. --dex3-right-order swap converts both ways.
+RIGHT_SWAP = np.array(
+    [0, 1, 2, 5, 6, 3, 4]
+)  # an involution: the same permutation converts in both directions
+RIGHT_ORDER = np.arange(7)
 
 
 # Arm joint range (motor order 15..28, rad) of observation.state over all Unitree + Humanoid Everyday joint28
@@ -111,6 +153,21 @@ ARM_HI = np.array(
     [1.473, 1.637, 1.676, 1.526, 1.97, 1.618, 1.625, 1.586, 0.284, 1.579, 1.419, 1.599, 1.634, 1.616]
 )
 ARM_SPEED_TICKS = 3  # measured arm speed over 3 ticks (60 ms): robust to one late or repeated state message
+
+
+def observation_state(msg: dict) -> np.ndarray:
+    """28D joint28 state: arms (motor indices 15..28) + left Dex3 7 + right Dex3 7, as in the datasets."""
+    body = np.asarray(msg["body_q"], np.float32)
+    if body.shape != (29,):
+        raise ValueError(f"expected 29 body joints, got {body.shape}")
+    right = np.asarray(msg["right_hand_q"], np.float32)[RIGHT_ORDER]
+    return np.concatenate([body[15:29], msg["left_hand_q"], right]).astype(np.float32)
+
+
+def measured_ref(msg: dict) -> np.ndarray:
+    """31D joint_ref of the measured pose (arms, hands) with the nominal waist (backend C's lower_body waist
+    location ignores it)."""
+    return np.r_[observation_state(msg), NOMINAL_BODY[12:15]].astype(np.float32)
 
 
 class StateSubscriber:
@@ -398,6 +455,21 @@ class InferenceWorker:
         return self.slot is not None and not self.slot["done"].is_set()
 
 
+GATE_PROMPTS = {
+    "deploy_ready": "when the deploy has printed 'Init Done', press Enter to start control in PLANNER mode",
+    "settled": "move the robot into position at the table (planner mode), then press Enter to start the episode",
+}
+
+
+def gate(name: str, gate_dir: Path | None) -> None:
+    if gate_dir is None:
+        input(f"[streamer] {GATE_PROMPTS.get(name, name)}: ")
+        return
+    print(f"[streamer] waiting for {gate_dir / name}", flush=True)
+    while not (gate_dir / name).exists():
+        time.sleep(0.05)
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--policy-path", help="local policy checkpoint (this machine has the GPU)")
@@ -577,7 +649,13 @@ def main():
             p.error(
                 "--startup-tokens needs --handoff-blend-s > 0 (it blends from the planner token into the path)"
             )
-        startup = load_startup(a.startup_tokens)
+        z = np.load(a.startup_tokens)
+        startup = {
+            k: z[k].astype(np.float32) for k in ("tokens", "hands", "rev_tokens", "rev_hands") if k in z
+        }
+        startup["fps"] = float(json.loads(str(z["meta"]))["fps"])
+    rest_token = LATENT_INITIAL_MOTION_TOKEN if startup is None else startup["tokens"][-1]
+    rest_hands = np.zeros(14, np.float32) if startup is None else startup["hands"][-1]
     require_package("pyzmq", extra="pyzmq-dep", import_name="zmq")
     if a.dex3_right_order == "swap":
         RIGHT_ORDER[:] = RIGHT_SWAP
@@ -620,15 +698,28 @@ def main():
         flush=True,
     )
 
+    dec = a.backend == "decoupled"
+    jres = ChunkResampler(images.fps) if a.action_space != "sonic78" else None  # 50 Hz joint_ref
+
+    def wait_state():
+        deadline = time.monotonic() + 10  # the deploy / C host publishes g1_debug once control runs
+        while state.latest() is None:
+            if time.monotonic() > deadline:
+                raise RuntimeError("no g1_debug robot state within 10 s")
+            time.sleep(0.05)
+
     def chunk_t0_of(k):
         """Replay chunk rows are dataset frames k, k+1, ...: their time base is frame k's time."""
         return k / images.fps
 
+    zero_h = np.zeros(14, np.float32)
+    frame = [0]
     history = []  # (t_ep, robot state) of recent episode ticks, for policies with n_obs_steps > 1
     log = {
         k: [] for k in ("wall", "t_ep", "phase", "frame", "token", "hands", "chunk_t0", "state", "joint_ref")
     }
-    no_ref = np.full(31, np.nan, np.float32)
+    no_token, no_ref = np.full(64, np.nan, np.float32), np.full(31, np.nan, np.float32)
+    last_sent, slewed = [None], [0]
 
     def record(token, hands, phase, t_ep, k, chunk_t0, joint_ref):
         msg = state.latest()  # the ZMQ socket is only touched from this (main) thread
@@ -648,6 +739,25 @@ def main():
         if msg and t_ep >= 0:
             history.append((t_ep, log["state"][-1]))
             del history[:-200]
+
+    def send(token, hands, phase, t_ep=-1.0, k=-1, chunk_t0=np.nan, joint_ref=None):
+        token = np.asarray(token, np.float32)
+        if a.max_token_step > 0 and last_sent[0] is not None:  # slew limit on every phase
+            step = token - last_sent[0]
+            if np.abs(step).max() > a.max_token_step:
+                token = last_sent[0] + np.clip(step, -a.max_token_step, a.max_token_step)
+                slewed[0] += 1
+        last_sent[0] = token
+        pub.send(pose_message(token, hands, frame[0]))
+        frame[0] += 1
+        record(token, hands, phase, t_ep, k, chunk_t0, joint_ref)
+
+    def send_joint(ref, phase, t_ep=-1.0, k=-1, chunk_t0=np.nan):
+        """--backend decoupled: one joint message (wbc_common.pack_joint_message) per tick."""
+        ref = np.asarray(ref, np.float32)
+        pub.send(pack_joint_message(frame[0], phase, k, ref))
+        frame[0] += 1
+        record(no_token, ref[14:28], phase, t_ep, k, chunk_t0, ref)
 
     def arm_watchdog() -> str | None:
         """Why the episode must end, from the measured arm state of recent ticks; None while it is fine."""
@@ -676,6 +786,12 @@ def main():
             out.append(earlier[-1] if earlier else now)
         return out
 
+    def ticks(n):
+        start = time.monotonic()
+        for i in range(n):
+            yield i
+            time.sleep(max(0.0, start + (i + 1) * TICK - time.monotonic()))
+
     def infer(t_ep, robot_hist):
         obs = [images.frame(max(t_ep - i / images.fps, 0.0)) for i in reversed(range(policy.n_obs))]
         k, task = obs[-1][0], a.task or obs[-1][3]
@@ -695,28 +811,101 @@ def main():
                     f"policy chunk is {joints.shape[1]}D, --action-space {a.action_space} needs 28D"
                 )
             # backend sonic: the 30 Hz joint chunk -> tokens + hands, exactly as before (A's baseline path)
-            chunk = None if joint28 is None else joint_chunk_to_sonic(joints, *joint28, fps=images.fps)
+            chunk = (
+                None if a.backend == "decoupled" else joint_chunk_to_sonic(joints, *joint28, fps=images.fps)
+            )
             joints = to_joint_ref(joints)
         if chunk is not None and (not np.isfinite(chunk).all() or np.abs(chunk[:, :64]).max() > TOKEN_BOUND):
             raise ValueError(f"rejected chunk at t={t_ep:.2f}s (nonfinite or |token| > {TOKEN_BOUND})")
         return k, chunk, joints
 
-    if a.backend == "decoupled":
-        backend = DecoupledBackend(a, pub, state, record, images.fps)
+    if dec:
+        gate("deploy_ready", a.gate_dir)
+        gate("settled", a.gate_dir)
+        wait_state()
+        rest_ref = measured_ref(state.latest())
+        slot = worker.submit(infer, 0.0, robot_states(0.0))
+        for _ in ticks(10**9):
+            if slot["done"].is_set():
+                break
+            send_joint(rest_ref, "wait first chunk")
+        if "error" in slot:
+            raise RuntimeError(slot["error"])
+        _, _, first_j = slot["result"]
+        jres.set_chunk(first_j, t0=0.0)
+        for i in ticks(100):  # 2 s lead-in in joint space from the measured pose
+            w = (i + 1) / 100
+            send_joint((1 - w) * rest_ref + w * first_j[0], "leadin")
+        for _ in ticks(50):  # 1 s hold
+            send_joint(first_j[0], "hold")
     else:
-        backend = SonicBackend(a, pub, state, record, images.fps, startup)
-    backend.start()
-    # First chunk: keep the 50 Hz stream on the rest pose (which the robot already holds) while it is computed,
-    # instead of pausing the deploy's input (0.16 s on H100 locally, ~0.28 s from the robot PC over Wi-Fi).
-    slot = worker.submit(infer, 0.0, robot_states(0.0))
-    for _ in ticks(10**9):
-        if slot["done"].is_set():
-            break
-        backend.wait_tick()
-    if "error" in slot:
-        raise RuntimeError(slot["error"])
-    _, first, first_j = slot["result"]
-    backend.begin(first, first_j)
+        gate("deploy_ready", a.gate_dir)
+        time.sleep(0.5)  # let the deploy's SUB connect to our PUB before the first command
+        pub.send(command_message(start=True, planner=True))
+        print("[streamer] command: start control, PLANNER mode", flush=True)
+        gate("settled", a.gate_dir)
+        wait_state()
+        planner = None
+        if (
+            a.handoff_blend_s > 0
+        ):  # gradual: start POSE mode from the planner's current token (g1_debug token_state)
+            planner = np.asarray(state.latest().get("token_state", []), np.float32)
+            if planner.shape != (64,):
+                raise RuntimeError("no 64D token_state from the deploy for the gradual handoff")
+            for _ in ticks(50):
+                send(planner, zero_h, "planner token")
+            pub.send(command_message(start=True, planner=False))
+            n = int(a.handoff_blend_s * 50)
+            # table startup: switch into the table-safe arm path instead of NVIDIA's standing token, whose hands rise
+            # to ~0.8 m, 0.3 m forward (into an 80 cm table)
+            target = LATENT_INITIAL_MOTION_TOKEN if startup is None else startup["tokens"][0]
+            if a.start == "planner":  # rest on the planner stance itself: no standing token, no table path
+                rest_token, n = planner.copy(), 0
+            for i in ticks(n):
+                w = (i + 1) / n
+                send((1 - w) * planner + w * target, zero_h, "handoff blend")
+            if startup is not None:
+                toks, hands = startup["tokens"], startup["hands"]
+                for i in ticks(
+                    int((len(toks) - 1) / startup["fps"] * 50)
+                ):  # 30 Hz path, look-ahead interp to 50 Hz
+                    x = i * TICK * startup["fps"]
+                    j, f = int(x), x - int(x)
+                    send(
+                        toks[j] + f * (toks[j + 1] - toks[j]),
+                        hands[j] + f * (hands[j + 1] - hands[j]),
+                        "table startup",
+                    )
+        else:
+            for _ in ticks(50):  # latent initial token, then POSE mode
+                send(LATENT_INITIAL_MOTION_TOKEN, zero_h, "initial")
+            pub.send(command_message(start=True, planner=False))
+        print("[streamer] command: POSE mode (streamed tokens)", flush=True)
+        resampler = ChunkResampler(images.fps)
+        # First chunk: keep the 50 Hz stream on the rest pose (which the robot already holds) while it is computed,
+        # instead of pausing the deploy's input (0.16 s on H100 locally, ~0.28 s from the robot PC over Wi-Fi).
+        slot = worker.submit(infer, 0.0, robot_states(0.0))
+        for _ in ticks(10**9):
+            if slot["done"].is_set():
+                break
+            send(rest_token, rest_hands, "wait first chunk")
+        if "error" in slot:
+            raise RuntimeError(slot["error"])
+        _, first, first_j = slot["result"]
+        resampler.set_chunk(first, t0=0.0)
+        if jres is not None:
+            jres.set_chunk(first_j, t0=0.0)
+        for i in ticks(
+            50
+        ):  # 1 s ease-in from the rest pose (standing token or table startup end) to the first chunk
+            w = (i + 1) / 50
+            send(
+                (1 - w) * rest_token + w * first[0, :64],
+                (1 - w) * rest_hands + w * first[0, 64:],
+                "blend in",
+                0.0,
+                0,
+            )
 
     latencies, slot, slot_t = [], None, 0.0
     next_replan, last_chunk_t, chunk_t0 = a.replan_s, 0.0, 0.0
@@ -729,7 +918,10 @@ def main():
             else:
                 k_c, chunk, joints = slot["result"]
                 t0 = chunk_t0_of(k_c) if replay is not None else slot_t
-                backend.set_chunk(chunk, joints, t0, a.chunk_blend_s, t_ep)
+                if chunk is not None:
+                    resampler.set_chunk(chunk, t0=t0, blend_s=a.chunk_blend_s, now=t_ep)
+                if joints is not None:
+                    jres.set_chunk(joints, t0=t0, blend_s=a.chunk_blend_s, now=t_ep)
                 last_chunk_t, chunk_t0 = t_ep, t0
                 latencies.append(slot["latency"])
             slot = None
@@ -751,13 +943,69 @@ def main():
             slot, slot_t = worker.submit(infer, t_ep, robot_states(t_ep)), t_ep
             next_replan = t_ep + a.replan_s
         k = min(int(t_ep * images.fps), images.n - 1)
-        backend.episode_tick(t_ep, k, chunk_t0)
+        if dec:
+            send_joint(jres.token_at(t_ep), "episode", t_ep, k, chunk_t0)
+        else:
+            out = resampler.token_at(t_ep)
+            send(
+                out[:64],
+                out[64:],
+                "episode",
+                t_ep,
+                k,
+                chunk_t0,
+                joint_ref=None if jres is None else jres.token_at(t_ep),
+            )
     if latencies:
         print(
             f"[streamer] chunk inference s: median {np.median(latencies):.2f}, max {max(latencies):.2f}, n {len(latencies)}",
             flush=True,
         )
-    backend.finish()
+    if dec:
+        last = log["joint_ref"][-1]
+        for i in ticks(100):  # 2 s back to the measured start pose
+            w = (i + 1) / 100
+            send_joint((1 - w) * last + w * rest_ref, "return")
+    else:
+        print(f"[streamer] token slew limit active on {slewed[0]} ticks so far", flush=True)
+        last_token, last_hands = log["token"][-1], log["hands"][-1]
+        for i in ticks(
+            50
+        ):  # 1 s blend back to the rest pose, 2 s hold, stop (at the table: hands stay above it)
+            w = (i + 1) / 50
+            send((1 - w) * last_token + w * rest_token, (1 - w) * last_hands + w * rest_hands, "blend out")
+        if (
+            startup is not None and "rev_tokens" in startup
+        ):  # at the table: back to the stance on the path, reversed
+            for _ in ticks(25):
+                send(rest_token, rest_hands, "hold rest")
+            toks, hands = startup["rev_tokens"], startup["rev_hands"]
+            for i in ticks(int((len(toks) - 1) / startup["fps"] * 50)):
+                x = i * TICK * startup["fps"]
+                j, f = int(x), x - int(x)
+                send(
+                    toks[j] + f * (toks[j + 1] - toks[j]),
+                    hands[j] + f * (hands[j + 1] - hands[j]),
+                    "table shutdown",
+                )
+            for _ in ticks(50):
+                send(toks[-1], hands[-1], "hold stance")
+        else:
+            for _ in ticks(100):
+                send(rest_token, rest_hands, "hold rest")
+        if a.end == "planner" and planner is not None:
+            # hand back to the planner the way we took over: blend to the planner token recorded at the start, then
+            # switch to planner mode and leave the deploy running (the operator stops it)
+            held, held_h = log["token"][-1], log["hands"][-1]
+            n = int(a.handoff_blend_s * 50)
+            for i in ticks(n):
+                w = (i + 1) / n
+                send((1 - w) * held + w * planner, (1 - w) * held_h, "handback blend")
+            pub.send(command_message(start=True, planner=True))
+            print("[streamer] command: PLANNER mode (deploy left running)", flush=True)
+        else:
+            pub.send(command_message(start=False, planner=False))
+            print("[streamer] command: stop", flush=True)
     if a.log:
         np.savez_compressed(
             a.log,
