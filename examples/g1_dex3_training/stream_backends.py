@@ -26,11 +26,11 @@ import numpy as np
 try:
     from .sonic_targets import NOMINAL_BODY
     from .sonic_token_stream import ChunkResampler
-    from .wbc_common import pack_joint_message
+    from .wbc_common import WAIST, pack_joint_message
 except ImportError:
     from sonic_targets import NOMINAL_BODY
     from sonic_token_stream import ChunkResampler
-    from wbc_common import pack_joint_message
+    from wbc_common import WAIST, pack_joint_message
 
 HEADER_SIZE = 1280  # gear_sonic zmq_planner_sender / zmq_packed_message_subscriber.hpp in our deploy image
 # gear_sonic/utils/inference/initial_poses.py
@@ -91,10 +91,13 @@ def observation_state(msg: dict) -> np.ndarray:
     return np.concatenate([body[15:29], msg["left_hand_q"], right]).astype(np.float32)
 
 
-def measured_ref(msg: dict) -> np.ndarray:
-    """31D joint_ref of the measured pose (arms, hands) with the nominal waist (backend C's lower_body waist
-    location ignores it)."""
-    return np.r_[observation_state(msg), NOMINAL_BODY[12:15]].astype(np.float32)
+def measured_ref(msg: dict, action_space: str) -> np.ndarray:
+    """31D joint_ref of the measured pose (arms, hands, waist); 28D runs get the nominal waist (backend C's
+    lower_body waist location ignores it)."""
+    ref = np.r_[observation_state(msg), np.asarray(msg["body_q"], np.float32)[12:15]].astype(np.float32)
+    if action_space != "joint31":
+        ref[WAIST] = NOMINAL_BODY[12:15]
+    return ref
 
 
 def ticks(n):
@@ -286,7 +289,8 @@ class DecoupledBackend:
     no_token = np.full(64, np.nan, np.float32)
 
     def __init__(self, a, pub, state, record, fps: float):
-        self.gate_dir, self.pub, self.state, self.record = a.gate_dir, pub, state, record
+        self.gate_dir, self.action_space = a.gate_dir, a.action_space
+        self.pub, self.state, self.record = pub, state, record
         self.jres = ChunkResampler(fps)
         self.frame, self.rest_ref, self.last = 0, None, None
 
@@ -302,7 +306,7 @@ class DecoupledBackend:
         gate("deploy_ready", self.gate_dir)
         gate("settled", self.gate_dir)
         wait_state(self.state)
-        self.rest_ref = measured_ref(self.state.latest())
+        self.rest_ref = measured_ref(self.state.latest(), self.action_space)
 
     def wait_tick(self):
         self.send(self.rest_ref, "wait first chunk")

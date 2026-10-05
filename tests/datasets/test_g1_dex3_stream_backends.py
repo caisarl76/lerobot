@@ -98,7 +98,9 @@ class DecoupledBackendTests(unittest.TestCase):
         pub, rec, state = FakePub(), Recorder(), FakeState()
         first, second = ramp(40, 31, 0.5), ramp(40, 31, -0.5)
         with backend_env() as gate_dir:
-            b = DecoupledBackend(SimpleNamespace(gate_dir=gate_dir), pub, state, rec, 30)
+            b = DecoupledBackend(
+                SimpleNamespace(gate_dir=gate_dir, action_space="joint28"), pub, state, rec, 30
+            )
             b.start()
             for _ in range(3):
                 b.wait_tick()
@@ -120,7 +122,7 @@ class DecoupledBackendTests(unittest.TestCase):
         def ref(m):
             return np.r_[m["q_body"][15:29], m["q_hand"]]
 
-        rest = measured_ref(state.latest())[:28]
+        rest = measured_ref(state.latest(), "joint28")[:28]
         np.testing.assert_allclose(ref(msgs[0]), rest, atol=1e-6)  # wait: the measured pose
         np.testing.assert_allclose(
             ref(msgs[3]), 0.99 * rest + 0.01 * first[0, :28], atol=1e-6
