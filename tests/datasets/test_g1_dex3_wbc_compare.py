@@ -35,6 +35,8 @@ class CompareTests(unittest.TestCase):
         self.assertFalse(g2({"A28": a, "C28": c})["pass"])  # mean gain 0.83 < 1.0
         c = {e: [r(ref95=8.0 if e < 4 else 10.2)] * 3 for e in range(6)}
         self.assertTrue(g2({"A28": a, "C28": c})["pass"])  # gain 1.27, 4/6 better
+        self.assertTrue(g2({"A28": a, "C28g": c}, test="C28g")["pass"])  # controlled C gated by name
+        self.assertFalse(g2({"A28": a, "C28g": c})["pass"])  # default C28 absent
 
     def test_g1_missing_repeats_or_episodes_fail(self):
         a = {1: [r()] * 3, 2: [r()] * 3}

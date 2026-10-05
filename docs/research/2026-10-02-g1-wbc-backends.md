@@ -208,9 +208,27 @@ SONIC) x 6 episodes x 3 repeats, plus a re-run of A28 ep 2006 r3.
 
 **Results to be added.**
 
+## Controlled C (C28g)
+
+C as shipped mixes two things into its palm error: PD sag of the arms under gravity (upstream ships
+`enable_gravity_compensation` off) and a lower stance (pelvis about 0.747 m at height command 0.74, A about 0.764 m), so
+the palms sit lower relative to the table. C28g removes both:
+
+- `--gravity-comp arms`: each 50 Hz step writes upstream's arm gravity torques
+  (`RobotModel.compute_gravity_compensation_torques(q, "arms")` at the measured pose, fixed base, as upstream's
+  `sync_env`) into the bridge's feed-forward `tau`; legs, waist and hands get 0. The `command` self-check asserts this.
+- `--height-cmd H`: the lower-body RL's base height command. H is picked with the `stand` self-check (it prints the
+  mean pelvis height), so the pelvis matches A's (~0.764 m).
+
+Run: `BACKEND=decoupled REPLAY=1 HOST_ARGS="--gravity-comp arms --height-cmd H"` with run names `WBC_C28g_ep<E>_r<R>`
+over the same 6 episodes x 3 repeats, then
+`wbc_compare.py AUDIT --episodes 1293,1300,1455,2207,3555,3600 --test C28g` (G1/G2 against the existing A28 runs).
+`termination.json` records `gravity_comp` and `height_cmd`.
+
+**Results to be added.**
+
 ## Next steps
 
-1. Closed-loop results (A28cl vs C28cl vs Anative); G1 applies, palm error reported both ways.
-2. C with arm gravity compensation (upstream `enable_gravity_compensation`) to separate PD sag from the controller.
+1. Controlled C results (above); if C28g passes G2, the closed loop uses C28g in place of C28.
+2. Closed-loop results (A28cl vs C28cl vs Anative); G1 applies, palm error reported both ways.
 3. Real-robot C needs a joint-step cap first (none in sim).
-4. Height command matched to A's stance for table tasks (C stands lower).
