@@ -23,7 +23,7 @@ five episodes), touches the table more, and fails gates G1 and G2. The **closed-
 
 ## What was added
 
-Repository (`examples/g1_dex3_training/`, branch `feat/g1-wbc-decoupled`):
+Repository (`examples/g1_dex3_training/`; `sim_scene.py` and the A host changes come from the preceding scene PR):
 
 | File | What it does |
 | --- | --- |
@@ -32,7 +32,8 @@ Repository (`examples/g1_dex3_training/`, branch `feat/g1-wbc-decoupled`):
 | `sonic_official_sim_host.py` | Backend A host, now on `sim_scene.py`; behaviour unchanged (regression PASS), adds termination record and fall detection. |
 | `decoupled_wbc_sim_host.py` | Backend C host: upstream `decoupled_wbc` lower-body policy at 50 Hz control, PD for arms and hands, state back in the deploy's ZMQ format; also the host self-checks. |
 | `sonic_policy_streamer.py` | `--replay`, `--action-space joint28`, `--backend decoupled`, 50 Hz `joint_ref` log. |
-| `sonic_stream_eval.py` | Backend-aware scorer; validity first (`termination.json` completed, >= 98% of frames covered); palm error vs the recorded action and vs `joint_ref` (and vs the applied target for C). |
+| `stream_backends.py` | `SonicBackend` and `DecoupledBackend` with the same calls (`start`, `wait_tick`, `begin`, `set_chunk`, `episode_tick`, `finish`); the streamer's loop is backend-agnostic. |
+| `sonic_stream_eval.py` | Backend-aware scorer; validity first (`termination.json` completed, >= 98% of frames covered); palm error vs the recorded action and vs `joint_ref` (and vs the applied target for C). `leg_dev_max_rad` now covers the 12 leg joints only (it used to include the waist), so it does not compare with older `stream_eval.json` files. |
 | `wbc_compare.py` | Gates G0/G1/G2 and the closed-loop table over the run directories `WBC_<cfg>_ep<E>_r<R>`. |
 | `sonic_official_sim_eval.sh` | One launcher for both backends (below). |
 

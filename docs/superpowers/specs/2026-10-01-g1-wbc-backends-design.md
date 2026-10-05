@@ -1,6 +1,10 @@
 # G1 whole-body control backends for 28D / 31D joint policies (design)
 
-Date: 2026-10-01. Revision 3 (review rounds 1 and 2 addressed). Status: awaiting written-spec review.
+Date: 2026-10-01. Revision 3 (review rounds 1 and 2 addressed). Status: approved.
+
+> Implemented in parts: this PR builds the 28D path (evaluation step 1 and the step 3 tooling). The 31D waist
+> parts below (`--action-space joint31`, `--synthetic-waist`, waist location `lower_and_upper_body`, the `syn` gates)
+> are implemented in the follow-up 31D PR.
 
 ## Goal
 

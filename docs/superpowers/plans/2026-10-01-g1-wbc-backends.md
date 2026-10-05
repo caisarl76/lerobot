@@ -23,7 +23,8 @@ detection and the streamer's `GATE/done` episode end come from the preceding PR)
 | File | Responsibility |
 | --- | --- |
 | `wbc_common.py` | numpy-only helpers: `joint_ref` layout (`REF_NAMES`, `WAIST`), `to_joint_ref`, `replay_chunk`, `check_replay_width`, joint message pack/unpack, `log_settings`, `run_validity`, done/termination files, `FallDetector`. |
-| `sonic_policy_streamer.py` | `--replay` / `--replay-horizon`, `--backend sonic\|decoupled`, the 50 Hz `joint_ref` log for every joint run, the decoupled startup / episode / return, refusal of `--backend decoupled` with `--dex3-right-order swap` or token-only options. |
+| `sonic_policy_streamer.py` | `--replay` / `--replay-horizon`, `--backend sonic\|decoupled`, the 50 Hz `joint_ref` log for every joint run, refusal of `--backend decoupled` with `--dex3-right-order swap` or token-only options. |
+| `stream_backends.py` | The two backends behind one call sequence (`start`, `wait_tick`, `begin`, `set_chunk`, `episode_tick`, `finish`): `SonicBackend` (token startup, 50 Hz token interpolation, table path, handback) and `DecoupledBackend` (joint messages, settle wait, return to the start pose). `main()` picks one with a single if/else; replay and inference are two input paths into the same loop. |
 | `decoupled_wbc_sim_host.py` | Backend C host in the shared scene: upstream policy, PD targets by joint name, message hold/clip/drop counters, `termination.json`, self-checks. |
 | `sonic_official_sim_eval.sh` | One launcher for both backends: `BACKEND`, `REPLAY`, `HOST_ARGS`, `SIM_HOST`, `LEROBOT_DIR`, `SONIC_DIR`. |
 | `sonic_stream_eval.py` | Validity-gated, backend-aware scorer. |
@@ -31,7 +32,7 @@ detection and the streamer's `GATE/done` episode end come from the preceding PR)
 | `wbc_compare.py` | Gates G0/G1/G2 and the closed-loop table over `WBC_<cfg>_ep<E>_r<R>` run dirs. |
 
 Local tests (`tests/datasets/`): `test_g1_dex3_wbc_common.py`, `test_g1_dex3_streamer_cli.py`,
-`test_g1_dex3_stream_eval.py`, `test_g1_dex3_wbc_compare.py`; `test_g1_dex3_sonic_targets.py` and
+`test_g1_dex3_stream_eval.py`, `test_g1_dex3_wbc_compare.py`, `test_g1_dex3_stream_backends.py`; `test_g1_dex3_sonic_targets.py` and
 `test_g1_dex3_sonic_token_stream.py` guard A's unchanged encoder and resampler. MuJoCo/upstream behaviour is checked
 by the host self-checks in the sim container.
 
