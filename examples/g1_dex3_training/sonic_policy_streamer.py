@@ -53,9 +53,11 @@ if TYPE_CHECKING or _zmq_available:
 try:
     from .sonic_targets import SonicEncoder, joint_chunk_to_sonic, load_joint_limits
     from .sonic_token_stream import ChunkResampler
+    from .wbc_common import write_done
 except ImportError:
     from sonic_targets import SonicEncoder, joint_chunk_to_sonic, load_joint_limits
     from sonic_token_stream import ChunkResampler
+    from wbc_common import write_done
 
 HEADER_SIZE = 1280  # gear_sonic zmq_planner_sender / zmq_packed_message_subscriber.hpp in our deploy image
 TOKEN_BOUND = 1.25  # run_vla_inference rejects chunks whose token magnitude exceeds this
@@ -777,6 +779,7 @@ def main():
 
     latencies, slot, slot_t = [], None, 0.0
     next_replan, last_chunk_t, chunk_t0 = a.replan_s, 0.0, 0.0
+    episode_end = "completed"
     for i in ticks(int(duration / TICK)):
         t_ep = i * TICK
         if slot is not None and slot["done"].is_set():
@@ -788,15 +791,18 @@ def main():
                 latencies.append(slot["latency"])
             slot = None
         if t_ep - last_chunk_t > a.max_chunk_age_s:
-            print(f"[streamer] no valid chunk for {a.max_chunk_age_s:g} s: ending episode", flush=True)
+            episode_end = f"no valid chunk for {a.max_chunk_age_s:g} s"
+            print(f"[streamer] {episode_end}: ending episode", flush=True)
             break
         state.latest()
         if state.age() > a.max_state_age_s:  # never plan or stream on frozen joints
-            print(f"[streamer] robot state {state.age():.2f} s old: ending episode", flush=True)
+            episode_end = f"robot state {state.age():.2f} s old"
+            print(f"[streamer] {episode_end}: ending episode", flush=True)
             break
         reason = arm_watchdog()
         if reason:
-            print(f"[streamer] watchdog: {reason}: ending episode", flush=True)
+            episode_end = f"watchdog: {reason}"
+            print(f"[streamer] {episode_end}: ending episode", flush=True)
             break
         if t_ep >= next_replan and not worker.busy:
             slot, slot_t = worker.submit(infer, t_ep, robot_states(t_ep)), t_ep
@@ -850,10 +856,11 @@ def main():
             a.log,
             **{k: np.asarray(v) for k, v in log.items()},
             episode=-1 if a.episode is None else a.episode,
+            episode_end=episode_end,
             args=json.dumps(vars(a), default=str),  # the exact settings of this run
         )
     if a.gate_dir:
-        (a.gate_dir / "done").touch()
+        write_done(a.gate_dir, episode_end)
 
 
 if __name__ == "__main__":
