@@ -13,15 +13,33 @@ from wbc_common import (
     REF_NAMES,
     FallDetector,
     check_replay_width,
+    check_synthetic_duration,
     log_settings,
     pack_joint_message,
     read_done,
     replay_chunk,
+    rpy_from_matrix,
     run_validity,
+    synthetic_waist,
     to_joint_ref,
     unpack_joint_message,
     write_done,
 )
+
+
+def rot(roll, pitch, yaw):
+    cr, sr, cp, sp, cy, sy = (
+        np.cos(roll),
+        np.sin(roll),
+        np.cos(pitch),
+        np.sin(pitch),
+        np.cos(yaw),
+        np.sin(yaw),
+    )
+    rx = np.array([[1, 0, 0], [0, cr, -sr], [0, sr, cr]])
+    ry = np.array([[cp, 0, sp], [0, 1, 0], [-sp, 0, cp]])
+    rz = np.array([[cy, -sy, 0], [sy, cy, 0], [0, 0, 1]])
+    return rz @ ry @ rx
 
 
 class WbcCommonTests(unittest.TestCase):
@@ -45,13 +63,30 @@ class WbcCommonTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             replay_chunk(acts, 10, 5)
 
+    def test_synthetic_waist_track(self):
+        t = np.arange(0, 20, 0.02)
+        w = synthetic_waist(t)
+        self.assertEqual(w.shape, (len(t), 3))
+        for tt in (0.0, 5.0, 10.0, 16.0, 19.0):
+            np.testing.assert_allclose(synthetic_waist([tt])[0], 0, atol=1e-9)
+        self.assertAlmostEqual(synthetic_waist([1.25])[0, 0], 0.4, places=6)
+        self.assertAlmostEqual(synthetic_waist([6.25])[0, 1], 0.15, places=6)
+        self.assertAlmostEqual(synthetic_waist([11.0])[0, 2], 0.15, places=6)
+        self.assertAlmostEqual(synthetic_waist([13.0])[0, 2], 0.3, places=6)
+        self.assertLess(np.abs(np.diff(w, axis=0)).max(), 0.02)  # smooth at 50 Hz (no jumps)
+        self.assertTrue(np.all((np.abs(w) > 1e-9).sum(1) <= 1))  # one axis at a time
+
     def test_startup_checks(self):
-        check_replay_width(28, "joint28")
-        check_replay_width(78, "sonic78")
+        check_replay_width(28, "joint28", False)
+        check_replay_width(28, "joint31", True)
+        check_replay_width(78, "sonic78", False)
         with self.assertRaises(ValueError):
-            check_replay_width(78, "joint28")
+            check_replay_width(78, "joint28", False)
         with self.assertRaises(ValueError):
-            check_replay_width(28, "sonic78")
+            check_replay_width(28, "joint31", False)
+        check_synthetic_duration(16.0)
+        with self.assertRaises(ValueError):
+            check_synthetic_duration(14.6)
 
     @unittest.skipUnless(importlib.util.find_spec("msgpack"), "msgpack not installed")
     def test_joint_message_round_trip(self):
@@ -96,12 +131,15 @@ class WbcCommonTests(unittest.TestCase):
         g.update(0.0, [1, 0, 0, 0], 0.7, 0)
         self.assertIsNotNone(g.update(0.25, [1, 0, 0, 0], 0.7, 0))  # both feet off the floor
 
+    def test_rpy_from_matrix(self):
+        np.testing.assert_allclose(rpy_from_matrix(rot(0.1, -0.2, 0.3)), [0.1, -0.2, 0.3], atol=1e-9)
+
     def test_log_settings_defaults_for_old_logs(self):
         self.assertEqual(log_settings(json.dumps({"action_space": "sonic78"})), ("sonic", "sonic78"))
         self.assertEqual(log_settings(json.dumps({})), ("sonic", "sonic78"))
         self.assertEqual(
-            log_settings(json.dumps({"backend": "decoupled", "action_space": "joint28"})),
-            ("decoupled", "joint28"),
+            log_settings(json.dumps({"backend": "decoupled", "action_space": "joint31"})),
+            ("decoupled", "joint31"),
         )
 
     def test_run_validity(self):

@@ -600,7 +600,7 @@ def main():
     replay = None
     if a.replay:
         replay = images.actions()
-        check_replay_width(replay.shape[1], a.action_space)
+        check_replay_width(replay.shape[1], a.action_space, False)
     worker = InferenceWorker()
     _, warm_imgs, warm_state, warm_task = images.frame(0.0)
     warm_state = np.zeros(28, np.float32) if warm_state is None else warm_state
