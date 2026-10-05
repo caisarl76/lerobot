@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parents[2] / "examples" / "g1_dex3_training"))
-from wbc_compare import g0, g1, g2, load, only
+from wbc_compare import g0, g1, g2, load, only, syn
 
 
 def r(orig50=3.0, orig95=8.0, ref95=8.0, tilt=3.0, hits=0, valid=True, wrist=5.0):
@@ -36,6 +36,12 @@ class CompareTests(unittest.TestCase):
         c = {e: [r(ref95=8.0 if e < 4 else 10.2)] * 3 for e in range(6)}
         self.assertTrue(g2({"A28": a, "C28": c})["pass"])  # gain 1.27, 4/6 better
 
+    def test_syn_within_two_cm_of_28d(self):
+        runs = {"C28": {1: [r(ref95=8.0)] * 3}, "C31syn": {1: [r(ref95=9.5)] * 3}}
+        self.assertTrue(syn(runs, "C31syn", "C28")["pass"])
+        runs["C31syn"] = {1: [r(ref95=10.5)] * 3}
+        self.assertFalse(syn(runs, "C31syn", "C28")["pass"])
+
     def test_g1_missing_repeats_or_episodes_fail(self):
         a = {1: [r()] * 3, 2: [r()] * 3}
         self.assertFalse(g1({"A28": a, "C28": {1: [r()], 2: []}}, "C28", "A28")["pass"])
@@ -53,6 +59,15 @@ class CompareTests(unittest.TestCase):
         self.assertFalse(out["pass"])  # gain 3.75 but only 3/6 better
         self.assertEqual(out["better"], 3)
         self.assertEqual(out["rows"][0]["c_wrist_deg_p95"], 5.0)
+
+    def test_syn_missing_fail_and_torso(self):
+        base = {1: [r()] * 3}
+        self.assertFalse(syn({"C28": base, "C31syn": {1: [r()] * 2}}, "C31syn", "C28")["pass"])
+        self.assertFalse(syn({"C28": base, "C31syn": {1: [r()] * 3, 2: [r()] * 3}}, "C31syn", "C28")["pass"])
+        t = r()
+        t["torso_err_rad"] = {"roll": {"p95": 0.1}}
+        row = syn({"C28": base, "C31syn": {1: [t] * 3}}, "C31syn", "C28")["rows"][0]
+        self.assertEqual((row["torso_roll_rad_p95"], row["torso_yaw_rad_p95"]), (0.1, None))
 
     def test_load_counts_dir_without_json_as_invalid(self):
         with tempfile.TemporaryDirectory() as d:
@@ -102,14 +117,18 @@ class CompareTests(unittest.TestCase):
         out = g0({"Astored": {1: [r(), r(valid=False), r(valid=False)]}, "A28": {1: [r()] * 3}}, [1])
         self.assertFalse(out["pass"])
         self.assertIn("Astored: 1 valid of 3", out["rows"][0]["why"])
+        out = syn({"C28": {1: bad}, "C31syn": {1: [r()] * 3}}, "C31syn", "C28")
+        self.assertFalse(out["pass"])
+        self.assertIn("C28: 1 valid of 3", out["rows"][0]["why"])
 
     def test_happy_path_with_requested_episodes(self):
         eps = [1, 2, 3, 4, 5, 6]
         mk = lambda v: {e: [r(ref95=v)] * 3 for e in eps}  # noqa: E731
-        runs = {"Astored": mk(8.0), "A28": mk(10.0), "C28": mk(8.0)}
+        runs = {"Astored": mk(8.0), "A28": mk(10.0), "C28": mk(8.0), "C31syn": mk(8.0)}
         self.assertTrue(g0(runs, eps)["pass"])
         self.assertTrue(g1(runs, "C28", "A28", eps)["pass"])
         self.assertTrue(g2(runs, eps)["pass"])
+        self.assertTrue(syn(runs, "C31syn", "C28")["pass"])
 
 
 if __name__ == "__main__":
