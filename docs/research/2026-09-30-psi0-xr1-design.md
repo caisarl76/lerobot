@@ -478,3 +478,42 @@ partial); wrist p95 GR00T 53°, XR-1 76°, Psi0 42°.
   had only the tokenizer files, so `model.safetensors` was copied from the H100 cache (sha256 checked).
 - Neither model loads with the main checkout's `lerobot` until this branch is merged; run the server with the main
   venv and `PYTHONPATH=<this worktree>/src:<this worktree>/examples/g1_dex3_training`.
+
+### Follow-up: XR-1 state feedback, Psi0 chunk blend (2026-10-06)
+
+Same settings. **XR-1 with the recorded state** (`--state-source dataset`: the policy sees the dataset's state, the
+robot still executes) against the closed-loop runs above:
+
+| XR-1, ep | Palm p50 / p95 (cm), robot state | Palm p50 / p95 (cm), recorded state | Hands p95 vs stored (rad) | Arm jerk p95 |
+| -------- | -------------------------------- | ----------------------------------- | ------------------------- | ------------ |
+| 1208     | 8.5 / 53.4                       | **1.7 / 7.3**                       | 1.31 → 0.32               | 245 → 572    |
+| 1219     | 9.0 / 53.9                       | **1.9 / 6.0** (watchdog at 7.7 s)   | 1.42 → 0.20               | 308 → 330    |
+| 1293     | 4.8 / 29.3                       | **2.1 / 4.9**                       | 1.28 → 0.22               | 300 → 792    |
+| 1300     | 6.1 / 29.7                       | **2.5 / 4.5**                       | 1.40 → 0.21               | 518 → 445    |
+
+- **XR-1's drift comes from its state input.** Fed the recorded state it is the most accurate model in sim (palm p95
+  4.5–7.3 cm, better than GR00T's 10–26 and Psi0's 6–23 on the same episodes); fed the robot's measured state it
+  drifts by 30–54 cm. Its hand outputs are deltas on the hand state (`relative_action_state_indices` 64:78 → state
+  14:28), but the SONIC tokens are absolute and drift too, so the whole policy leans on the state: small tracking
+  differences between the sim robot and the recording are fed back and compound.
+- The right-hand order is converted for both the command and the state (`RIGHT_ORDER`), so it is not an ordering bug.
+- The recorded state cannot be used on the robot. Options: train XR-1 with state noise or dropout (Psi0 trains
+  with `state_noise_std`), drop the state from the token half, or make only the hands relative to the *commanded*
+  hand target instead of the measured one.
+
+**Psi0 with `--chunk-blend-s 0.3`** (cross-fade between chunks) and two repeats of episode 1300 without it:
+
+| Psi0, ep        | Palm p50 / p95 (cm) | Token seam / step | Arm jerk p95 | Notes                                   |
+| --------------- | ------------------- | ----------------- | ------------ | --------------------------------------- |
+| 1300 (first)    | 3.3 / 10.2          | 0.121 / 0.011     | 3122         | watchdog at 2.9 s, 9.8° tilt            |
+| 1300 r2         | 2.1 / 6.9           | 0.065 / 0.009     | 308          | full run                                |
+| 1300 r3         | 2.1 / 6.7           | 0.064 / 0.009     | 748          | full run                                |
+| 1300 blend 0.3  | 2.2 / 8.9           | 0.008 / 0.009     | 747          | full run                                |
+| 91 blend 0.3    | 9.2 / 32.6          | 0.008 / 0.009     | 231 (813)    |                                         |
+| 1293 blend 0.3  | 2.4 / 6.4           | 0.008 / 0.009     | 894 (969)    |                                         |
+| 1219 blend 0.3  | 3.0 / 19.4          | 0.005 / 0.007     | 195 (788)    |                                         |
+
+- The episode-1300 watchdog stop happened in 1 of 3 runs without blending: intermittent, not systematic.
+- Blending removes the chunk seams (token seam 0.06–0.12 → 0.005–0.008), cuts jerk on 91 and 1219 by ~3–4×, and
+  keeps accuracy (palm p95 within ±5 cm). First Psi0 robot runs: noise 0, `--chunk-blend-s 0.3`, slew 0.05, the
+  default joint-speed watchdog.
