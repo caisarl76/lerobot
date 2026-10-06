@@ -517,3 +517,23 @@ robot still executes) against the closed-loop runs above:
 - Blending removes the chunk seams (token seam 0.06–0.12 → 0.005–0.008), cuts jerk on 91 and 1219 by ~3–4×, and
   keeps accuracy (palm p95 within ±5 cm). First Psi0 robot runs: noise 0, `--chunk-blend-s 0.3`, slew 0.05, the
   default joint-speed watchdog.
+
+## Real robot (2026-10-06)
+
+Workstation GPU 1 server (`g1_groot_real_run.sh server` with `MODEL=.../he_psi0_sonic78sonicstate_ho5_matched640k
+BACKBONE_DTYPE= NOISE_SCALE=0`), PC2 streamer `--max-token-step 0.05 --chunk-blend-s 0.3`, planner start/end, 30 s,
+head camera 640×480 `egocentric`, "close a laptop g1". GR00T runs 20–21 (noise 0, slew 0.1, no blend) for reference,
+from `robot_run_smoothness.py`:
+
+| Run   | Model / settings                    | Token seam / step | Hands seam / step | Arm speed p95 | Arm jerk p95 | 1–2 Hz | Result (user)                                                    |
+| ----- | ----------------------------------- | ----------------- | ----------------- | ------------- | ------------ | ------ | ---------------------------------------------------------------- |
+| run20 | GR00T, noise 0, slew 0.1            | 0.107 / 0.005     | 0.045 / 0.002     | 0.99          | 514          | 7.4 %  | acceptable zero-shot (touched the laptop)                        |
+| run21 | GR00T, noise 0, slew 0.1            | 0.074 / 0.005     | 0.037 / 0.002     | 0.70          | 315          | 7.1 %  | acceptable zero-shot                                             |
+| run22 | Psi0, noise 0, blend 0.3, slew 0.05 | 0.003 / 0.003     | 0.004 / 0.005     | 0.50          | 194          | 9.6 %  | reached, touched the lower part of the laptop, not the lid; did not close it; smooth |
+
+- Full 30 s, no watchdog stop, slew limit never active, 73 chunks at 0.29 s.
+- The smoothest robot run so far: no seams, jerk 194 vs GR00T's 315–514. The arm also moved slower (speed p95 0.50
+  vs 0.70–0.99), so part of the smoothness may be less motion.
+- PC2 deploy: `g1_groot_real_run.sh deploy` crashed at "Creating G1Deploy object" (`corrupted size vs. prev_size`);
+  it ran after `conda deactivate` and `LD_PRELOAD` of the SDK's `libddsc.so` / `libddscxx.so` (see the deploy note in
+  the first-runs doc's procedure).
