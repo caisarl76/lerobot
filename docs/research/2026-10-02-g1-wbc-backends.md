@@ -268,16 +268,17 @@ through stored-token SONIC. Three rounds that differ only in how chunk switches 
 - round 1 (`*cl`): server `--noise-seed 0`, chunks switch at once (`--chunk-blend-s 0`, the evaluated setting so far);
 - round 2 (`*clb`): as round 1 plus streamer `--chunk-blend-s 0.3`;
 - round 3 (`*cln`): server `--noise-scale 0` (the GR00T setting accepted on the robot, runs 20-21; ported to this branch's
-  server), no blend.
+  server), no blend;
+- round 4 (`*clnb`): noise scale 0 and the 0.3 s blend together.
 
 Valid runs (of 18) and, over valid runs, palm error p50 / p95 (cm) vs the streamer's `joint_ref` (the policy's own
 targets; not defined for Anative) and table hit records:
 
-| Config | Round 1 (no smoothing) | Round 2 (blend 0.3 s) | Round 3 (noise scale 0) |
-| --- | --- | --- | --- |
-| A28cl | 8 valid; 1.75 / 3.30; 19 | **16**; 1.57 / 3.17; 24 | 11; 1.63 / 3.09; 20 |
-| C28cl | 12; 2.57 / 7.83; 130 | **18**; 2.32 / 7.03; 136 | 14; 2.29 / 8.70; 224 |
-| Anative | 17; -; 21 | **18**; -; 34 | 18; -; 37 |
+| Config | Round 1 (no smoothing) | Round 2 (blend 0.3 s) | Round 3 (noise scale 0) | Round 4 (noise 0 + blend) |
+| --- | --- | --- | --- | --- |
+| A28cl | 8 valid; 1.75 / 3.30; 19 | 16; 1.57 / 3.17; 24 | 11; 1.63 / 3.09; 20 | **17**; 1.60 / 3.22; 26 |
+| C28cl | 12; 2.57 / 7.83; 130 | **18**; 2.32 / 7.03; 136 | 14; 2.29 / 8.70; 224 | **18**; 2.24 / 7.89; 196 |
+| Anative | 17; -; 21 | **18**; -; 34 | 18; -; 37 | **18**; -; 37 |
 
 - Every invalid run is the streamer's arm-speed watchdog (> 6 rad/s, mostly the left elbow). The cause is the 28D
   GR00T's chunk-to-chunk jumps: in the first C smoke run the elbow target went 0.36 -> -0.29 rad at the second chunk
@@ -286,6 +287,9 @@ targets; not defined for Anative) and table hit records:
 - Noise scale 0 only helps partly (A 11, C 14). Its trips are deterministic per episode (A: none valid on 1300 and
   2207; C: none on 1293), so the jumps are in the policy's mean prediction for a changed observation, not only sampling
   noise.
+- Noise scale 0 plus the blend is the most reliable setting: 53 of 54 runs valid (the one trip is A on 2207, joint 0
+  at just over 6 rad/s). Tracking matches the blend-only round. Palm error vs the recorded demo is lowest with noise 0
+  (A p50 4.5 cm, Anative 4.1 cm in round 4).
 - When runs complete, A tracks the policy's targets better (p95 ~3.1-3.3 cm vs C 7.0-8.7 cm) and C touches the table
   5-10x more, as in replay. G1 (C vs A) fails in every round.
 - Palm error vs the recorded demo (closed loop: how far the policy's motion drifts from the demo, not a tracking
@@ -293,8 +297,8 @@ targets; not defined for Anative) and table hit records:
 
 ## Next steps
 
-1. Closed loop with noise scale 0 plus the 0.3 s blend (the two smoothers together) as the candidate default for 28D
-   joint policies.
+1. Use noise scale 0 plus `--chunk-blend-s 0.3` as the default for 28D joint policies in sim; check the blend on the
+   robot next to the existing `--max-token-step` limit.
 2. C did not pass G2 in replay or G1 in closed loop. Arm velocity feed-forward or higher arm gains would test the
    remaining PD-lag explanation.
 3. Real-robot C needs a joint-step cap first (none in sim).
