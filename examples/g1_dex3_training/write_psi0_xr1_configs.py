@@ -94,6 +94,8 @@ def psi0_policy(space: str, dataset: str) -> dict:
         "state_null_token": True,
         "state_drop_prob": 0.1,
         "state_noise_std": 0.05,
+        "state_temporal_jitter": 10,
+        "state_temporal_jitter_prob": 0.5,
         "dropout": 0.0,
         "state_feature_dropout": 0.0,
         "rtc": False,
