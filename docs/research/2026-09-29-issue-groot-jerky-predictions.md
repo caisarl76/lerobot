@@ -194,6 +194,41 @@ Code on this branch:
 - `b01a01db`: VLA-JEPA `optimizer_module_lrs`.
 - `ceb40b77`: `AdamWConfig.foreach`.
 
+### Full matrix: seven policies × HE and Unitree (queued 2026-09-29)
+
+User decision: retrain every VLA/WAM policy plus ACT and Diffusion Policy on both HE
+(`humanoid_everyday_g1_20260923/`, 1 camera) and Unitree (`/run-output/`, 2 cameras, 2.59M frames).
+
+Batch × updates follow each official recipe. The Pi0.5 recipe is the fallback where none exists, but every policy
+had one.
+
+Queues:
+
+- Runner: `examples/g1_dex3_training/official_queue.sh`.
+- Queue files: `/run-output/queue_official/gpu{0,6}.txt`, one `<root>/<config>` per line, re-read after each job,
+  so lines can be appended.
+- Each smoke job gates its full job.
+- Logs and `.exit` files: `<root>/logs/`.
+
+| Policy    | Official recipe used                                                                                                                    | Per-update batch (micro × accum) | Updates | GPU |
+| --------- | --------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------- | ------- | --- |
+| GR00T     | NVIDIA SONIC guide                                                                                                                      | HE 32 × 1, Unitree 16 × 2        | 20K     | 6   |
+| ACT       | tonyzhaozh/act (batch 8)                                                                                                                | 8 × 1                            | 200K    | 6   |
+| Diffusion | Chi et al. image recipe: batch 64, AdamW, EMA (power 0.75), ResNet18 from scratch + GroupNorm, 240×320 crop 0.9                         | 64 × 1                           | 200K    | 6   |
+| Pi0.5     | openpi (see above)                                                                                                                      | HE 8 × 4, Unitree 4 × 8          | 30K     | 0   |
+| VLA-JEPA  | official per-module LRs (see above)                                                                                                     | 8 × 4                            | 30K     | 0   |
+| MolmoAct2 | paper Table 16 real-world fine-tune: full fine-tune, official image augmentation (no blur)                                              | 8 × 2 = 16                       | 50K     | 0   |
+| FastWAM   | paper real-robot 30K steps at per-GPU batch 16; FastWAM trainer optimizer (AdamW 0.9/0.95, wd 0.01, clip 1, 5 % warmup, cosine to 1e-6) | 8 × 2 = 16                       | 30K     | 0   |
+
+Notes:
+
+- Diffusion keeps LeRobot's horizon 64 / 32 actions for the streamer (official 16 / 8 at 10 Hz).
+- MolmoAct2's recipe was chosen by the user over the README's 64 × 50K. FastWAM's recipe was chosen over the LIBERO
+  128 × 20K.
+- The large models need GPU 0: FastWAM and full-fine-tune MolmoAct2 hold ≥ 48 GB before activations.
+  - GPU 6 has ~45 GB free next to other users. Its queue should finish around 2026-09-30 noon.
+  - GPU 0's queue runs about 8–9 more days by rough estimate (MolmoAct2 and FastWAM not yet measured).
+
 ## Mitigations in place (not a fix)
 
 Options, off by default: `--noise-seed` (server), `--chunk-blend-s`, `--replan-s`, `--max-token-step` (streamer). In

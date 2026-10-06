@@ -221,12 +221,13 @@ class ChunkPolicy:
         from lerobot.policies.factory import get_policy_class, make_pre_post_processors
 
         cfg = PreTrainedConfig.from_pretrained(path)
-        # With a backbone cast, load on the CPU first: the float32 model may not fit the GPU before the cast.
-        cfg.device = "cpu" if backbone_dtype else device
+        # Load on the CPU first: a float32 checkpoint may not fit a 12 GB GPU before the backbone cast or
+        # before a bf16 config (Pi0.5 `dtype`, VLA-JEPA `torch_dtype`) converts it.
+        cfg.device = "cpu"
         policy = get_policy_class(cfg.type).from_pretrained(path, config=cfg)
         if backbone_dtype:
             cast_groot_backbone(policy, getattr(torch, backbone_dtype))
-            cfg.device = device
+        cfg.device = device
         self.policy = policy.to(device).eval()
         if noise_scale is not None and cfg.type == "pi05":
             sample_noise = policy.model.sample_noise
@@ -246,14 +247,21 @@ class ChunkPolicy:
         self.shapes = {k: tuple(cfg.input_features[k].shape) for k in self.image_keys}  # (C, H, W)
         self.n_obs = int(getattr(cfg, "n_obs_steps", 1) or 1)  # diffusion conditions on 2 frames
 
-    def chunk(self, states: list[np.ndarray], images: list[dict], task: str) -> np.ndarray:
-        """states/images: the last n_obs observations, oldest first (1/fps apart); task: instruction text."""
+    def chunk(self, states: list[np.ndarray], images: list[dict], task: str, **rtc) -> np.ndarray:
+        """states/images: the last n_obs observations, oldest first (1/fps apart); task: instruction text.
+
+        rtc: optional predict_action_chunk kwargs (prev_chunk_left_over in the model's normalized space,
+        inference_delay, execution_horizon). The normalized chunk is kept in self.last_raw for the next call.
+        """
         import torch
 
         if self.noise_seed is not None:
             # same sampling noise for every chunk: a flow-matching policy (GR00T) then gives consistent chunks
             # for similar observations instead of a fresh random sample at every replan
             torch.manual_seed(self.noise_seed)
+        # Pi0.5's guided RTC differentiates through the sampler, which inference_mode forbids; GR00T's RTC
+        # inpaints without gradients and needs inference_mode's lower memory to fit a 12 GB GPU
+        guided = rtc and self.policy.config.type == "pi05"
         randn = torch.randn
         if self.noise_scale is not None and self.policy.config.type != "pi05":
             # GR00T and Diffusion draw their initial noise with torch.randn; scale it for this call only
@@ -262,12 +270,12 @@ class ChunkPolicy:
 
             torch.randn = scaled_randn
         try:
-            with torch.inference_mode():
-                return self._chunk(states, images, task)
+            with torch.no_grad() if guided else torch.inference_mode():
+                return self._chunk(states, images, task, **rtc)
         finally:
             torch.randn = randn
 
-    def _chunk(self, states, images, task):
+    def _chunk(self, states, images, task, **rtc):
         import torch
 
         from lerobot.policies.utils import prepare_observation_for_inference
@@ -284,7 +292,8 @@ class ChunkPolicy:
                 if isinstance(val, torch.Tensor):
                     batch[key] = torch.cat([f[key].unsqueeze(1) for f in frames], dim=1)
         batch["task"] = [task]
-        actions = self.policy.predict_action_chunk(self.pre(batch))
+        actions = self.policy.predict_action_chunk(self.pre(batch), **rtc)
+        self.last_raw = actions  # normalized [1, T, 78], the RTC prefix source for the next chunk
         return self.post(actions).squeeze(0).float().cpu().numpy()  # [T, 78]
 
 

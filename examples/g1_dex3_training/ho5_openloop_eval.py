@@ -1,7 +1,8 @@
 """Open-loop eval of a ho5 policy (any of the 7 types, Unitree or HE): held-out episodes vs an equal-size training sample.
 
 Feeds recorded observations (with the policy's own trained observation window) every STRIDE frames, predicts one chunk,
-and compares it to the recorded 78D action chunk (64 SONIC tokens + 14 Dex3 hand joints) at several horizons.
+and compares it to the recorded action chunk at several horizons: 78D (64 SONIC tokens + 14 Dex3 hand joints) or
+28D (14 arm + 14 Dex3 hand joints).
 Errors are raw and divided by the per-dim dataset std. Baseline: repeating the previous recorded action.
 Usage: python ho5_openloop_eval.py RUN_DIR OUT_JSON [STRIDE] [BATCH]
 """
@@ -82,6 +83,14 @@ def action_std(stats):
     return torch.tensor(np.asarray(stats["action"]["std"]), dtype=torch.float32).clamp_min(1e-6)
 
 
+def action_parts(width):
+    if width == 78:
+        return (("tokens", slice(0, 64)), ("hands", slice(64, 78)))
+    if width == 28:
+        return (("arms", slice(0, 14)), ("hands", slice(14, 28)))
+    raise ValueError(f"unexpected action width {width}")
+
+
 if COMBINED:
     # Score each source separately, normalized by that source's own action std so the numbers compare with the
     # single-dataset ho5 runs (the combined std mixes both sources).
@@ -134,7 +143,7 @@ def evaluate(episodes, std):
     lengths = [meta.episodes[e]["length"] for e in episodes]
     offsets = np.cumsum([0, *lengths])
     assert offsets[-1] == len(ds)
-    idx = [int(o) + f for o, n in zip(offsets, lengths, strict=True) for f in range(0, n, STRIDE)]
+    idx = [int(o) + f for o, n in zip(offsets[:-1], lengths, strict=True) for f in range(0, n, STRIDE)]
     dl = torch.utils.data.DataLoader(torch.utils.data.Subset(ds, idx), batch_size=BATCH, num_workers=8)
     acc, raw, per_ep = defaultdict(list), defaultdict(list), defaultdict(list)
     for b in dl:
@@ -156,7 +165,7 @@ def evaluate(episodes, std):
             err = (p - gt).abs()
             for h in (h for h in HORIZONS if h < H):
                 ok = ~pad[:, h]
-                for part, sl in (("tokens", slice(0, 64)), ("hands", slice(64, 78))):
+                for part, sl in action_parts(gt.shape[-1]):
                     acc[name, part, h].append((err[ok, h, sl] / std[sl]).mean(1))
                     raw[name, part, h].append(err[ok, h, sl].mean(1))
             if name == "model":
@@ -206,7 +215,7 @@ for split_name in SPLITS:
     r = result[split_name]
     print(split_name, r["episodes"], "eps", r["samples"], "samples")
     for name in ("model", "hold_prev"):
-        for part in ("tokens", "hands"):
+        for part in [p for p, _ in action_parts(cfg.output_features["action"].shape[0])]:
             print(
                 f"  {name:9s} {part:6s}",
                 "  ".join(f"{h}: {v['norm']['mean']:.3f}" for h, v in r[name][part].items()),
