@@ -1,7 +1,8 @@
 """Open-loop smoothness of predicted chunks on held-out episodes (no robot, no closed loop).
 
 Every 12 frames (0.4 s replan at 30 Hz) predict a chunk from the recorded observation, then measure, in units of the
-per-dimension action std (tokens 0:64, hands 64:78; dimensions with zero std in the dataset are skipped):
+per-dimension action std (78D: tokens 0:64, hands 64:78; 28D: arms 0:14, hands 14:28; dimensions with zero std in the
+dataset are skipped):
   overlap  - disagreement between consecutive chunks over their shared future frames
   seam     - jump at each seam of the chunks spliced as executed (first 12 frames of each), vs the recorded step
   step     - frame-to-frame step inside the spliced sequence away from seams, and the recording's step
@@ -51,7 +52,8 @@ with open(f"{root}/meta/stats.json") as f:
 # divided by a clipped std, any tiny prediction offset (e.g. state-relative XR-1 hands) would dominate the means.
 live = std > 1e-6
 std = std.clip(1e-6)
-parts = {"tokens": np.flatnonzero(live[:64]), "hands": 64 + np.flatnonzero(live[64:])}
+split = {"tokens": (0, 64), "hands": (64, 78)} if len(std) == 78 else {"arms": (0, 14), "hands": (14, 28)}
+parts = {p: a + np.flatnonzero(live[a:b]) for p, (a, b) in split.items()}
 acc = {p: {k: [] for k in ("overlap", "seam", "step", "gt_step", "curv", "gt_curv", "err")} for p in parts}
 for ep in episodes:
     ds = LeRobotDataset("local/x", root=root, episodes=[ep], video_backend="torchcodec")
