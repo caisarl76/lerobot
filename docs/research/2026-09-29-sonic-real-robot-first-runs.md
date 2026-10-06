@@ -101,14 +101,15 @@ g1" episodes 1293, 1300) kept all feet down, tilt 2.4–3.7°.
 
 ## Real-robot runs
 
-| Runs  | Model                  | Task / setup                                         | Result                                                                                                         |
-| ----- | ---------------------- | ---------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
-| 01–03 | combined GR00T (1 cam) | apple; 1280×720 stretched; table path; slew 0.05     | Full cycle; chunks 0.20 s; left hand caught a table leg in the startup; no contact, fingers flexed in the air. |
-| 05–07 | HE ACT                 | "push duck g1" (yellow tube); 640×480; planner start | Smooth (arm ≤ 1.33 rad/s, slew 0–6 ticks); right hand approached, no contact.                                  |
-| 08    | HE GR00T               | push duck, 90 s                                      | Stopped by the state-age check (0.22 s) after ~80 s; `.npz` not saved (written only at the end).               |
-| 09–10 | HE GR00T               | push duck (run10 with slew 0.1)                      | Back-and-forth arm motion; every chunk switch at the slew cap; run10 arm peak 5.09 rad/s.                      |
-| 11–14 | HE ACT                 | "close a laptop g1"                                  | Right palm 14–33 cm forward against 39–44 cm in training: does not reach the laptop (camera gap, no language). |
-| 15–16 | HE GR00T               | "close a laptop g1"                                  | Right palm 41–43 cm forward, as in training; touched the laptop; palm jerk p95 101–133 m/s³ (ACT 16–26).       |
+| Runs  | Model                            | Task / setup                                         | Result                                                                                                         |
+| ----- | -------------------------------- | ---------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| 01–03 | combined GR00T (1 cam)           | apple; 1280×720 stretched; table path; slew 0.05     | Full cycle; chunks 0.20 s; left hand caught a table leg in the startup; no contact, fingers flexed in the air. |
+| 05–07 | HE ACT                           | "push duck g1" (yellow tube); 640×480; planner start | Smooth (arm ≤ 1.33 rad/s, slew 0–6 ticks); right hand approached, no contact.                                  |
+| 08    | HE GR00T                         | push duck, 90 s                                      | Stopped by the state-age check (0.22 s) after ~80 s; `.npz` not saved (written only at the end).               |
+| 09–10 | HE GR00T                         | push duck (run10 with slew 0.1)                      | Back-and-forth arm motion; every chunk switch at the slew cap; run10 arm peak 5.09 rad/s.                      |
+| 11–14 | HE ACT                           | "close a laptop g1"                                  | Right palm 14–33 cm forward against 39–44 cm in training: does not reach the laptop (camera gap, no language). |
+| 15–16 | HE GR00T                         | "close a laptop g1"                                  | Right palm 41–43 cm forward, as in training; touched the laptop; palm jerk p95 101–133 m/s³ (ACT 16–26).       |
+| 20–21 | HE GR00T official, noise scale 0 | "close a laptop g1"; slew 0.1; 2026-10-02            | Zero-shot result acceptable (user). **Reference GR00T inference setting**: `g1_groot_real_run.sh`.             |
 
 ## GR00T smoothness
 
@@ -141,11 +142,28 @@ open-loop predictions are already jerky. See the open issue
 - The VPN to H100 stalls intermittently (SSH up to 15 s); copying a 12.6 GB checkpoint took 0.5–2 h.
 - `sonic_official_sim_eval.sh` relaunches forever after a sim-host crash and hangs if the streamer dies early.
 - The streamer writes its `.npz` only at the end of the cycle; an interrupted run (run08) leaves only the text log.
-- VLA-JEPA: see the 2026-09-29 note.
+- VLA-JEPA: its first fix (batch 8 + MEAN_STD, see the VLA-JEPA note) was superseded; it is part of the
+  official-recipe retraining below.
+
+## Status after this note (2026-09-29, later)
+
+- All G1 SONIC runs trained before the fix were **deleted on the H100** (wrong recipes). Every policy is being
+  retrained with its official recipe (7 policies × HE and Unitree, `*_official_full`); schedule and recipes are in
+  the retraining section of [`2026-09-29-issue-groot-jerky-predictions.md`](./2026-09-29-issue-groot-jerky-predictions.md).
+  The results in this note (open loop, sim, real runs 01–17) are for the old models; the only remaining copies of
+  those models are local to the evaluation workstation.
+- The old-model sim runs, the dataset replay (`review_nolimit_20260929/`), `eval_ho5/bf16check/` (with
+  `openloop_smooth.py`) and the streamer copy `code_safety/` are kept on the H100 as baselines and tools for
+  judging the retrains.
+- The smoothing sims finished (seed + blend smoothest, table above); the robot test of seed + blend with the old HE
+  GR00T was not run, as the model is superseded.
 
 ## Next steps
 
-1. Finish the smoothing sims; test the best setting on the robot with HE GR00T ("close a laptop g1").
+1. Judge each official-recipe retrain in order: open loop (`openloop_smooth.py`, against the smoothness numbers in
+   the issue note), then sim (planner start for HE, table 25 cm), then the robot. Only then decide whether
+   `--noise-seed` / `--chunk-blend-s` are still needed.
 2. Close the camera gap for the Unitree tasks: record teleop demonstrations with the D435i and fine-tune.
-3. Detect a stuck arm during startup/shutdown (measured vs planned path); save the streamer log on abnormal exit.
-4. Pi0.5 and MolmoAct2 on the 3060 (memory), after the GR00T smoothing result.
+3. Detect a stuck arm during startup/shutdown (measured vs planned path); save the streamer log on abnormal exit;
+   stop `sonic_official_sim_eval.sh` from relaunching after a sim-host crash.
+4. Memory check on the 3060 for the retrained Pi0.5 (9.4 GB before) and MolmoAct2 (12.7 GB, does not fit as is).

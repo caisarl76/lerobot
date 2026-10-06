@@ -118,6 +118,31 @@ class AdamWConfig(OptimizerConfig):
         return torch.optim.AdamW(params, **kwargs)
 
 
+@OptimizerConfig.register_subclass("adamw_sr")
+@dataclass
+class AdamWSRConfig(OptimizerConfig):
+    """AdamW for bf16 weights: float32 update math and stochastic rounding (see `lerobot.optim.adamw_sr`)."""
+
+    lr: float = 1e-3
+    betas: tuple[float, float] = (0.9, 0.999)
+    eps: float = 1e-8
+    weight_decay: float = 1e-2
+    grad_clip_norm: float = 10.0
+    state_dtype: str = "float32"  # "float32" or "bfloat16" moments
+
+    def build(self, params: OptimizerParams) -> torch.optim.Optimizer:
+        from lerobot.optim.adamw_sr import AdamWStochasticRounding  # noqa: PLC0415
+
+        return AdamWStochasticRounding(
+            params,  # type: ignore[arg-type]
+            lr=self.lr,
+            betas=self.betas,
+            eps=self.eps,
+            weight_decay=self.weight_decay,
+            state_dtype={"float32": torch.float32, "bfloat16": torch.bfloat16}[self.state_dtype],
+        )
+
+
 @OptimizerConfig.register_subclass("sgd")
 @dataclass
 class SGDConfig(OptimizerConfig):

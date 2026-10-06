@@ -16,15 +16,47 @@
 
 import logging
 from collections import deque
+from pathlib import Path
+from typing import Any
 
 import numpy as np
 import torch
+from huggingface_hub import snapshot_download
 from torch import nn
 
 from lerobot.configs import FeatureType, PolicyFeature, PreTrainedConfig
 from lerobot.lerobot_types import PolicyAction, RobotAction, RobotObservation
 from lerobot.utils.constants import ACTION, OBS_STR
 from lerobot.utils.feature_utils import build_dataset_frame
+
+# `PreTrainedPolicy.from_pretrained` options that select which Hub checkpoint (and revision) is read
+HUB_LOAD_KWARGS = (
+    "force_download",
+    "resume_download",
+    "proxies",
+    "token",
+    "cache_dir",
+    "local_files_only",
+    "revision",
+)
+
+
+def hub_load_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
+    """The Hub options in a `from_pretrained` call's kwargs, to load the config from the same checkpoint."""
+    return {k: kwargs[k] for k in HUB_LOAD_KWARGS if k in kwargs}
+
+
+def checkpoint_subdir(pretrained_name_or_path: str | Path, subdir: str, **hub_kwargs: Any) -> Path | None:
+    """`subdir` of a checkpoint as a local directory: a local checkpoint's own, or that folder of a Hub repo
+    (downloaded with the same revision and options as the weights). None if the checkpoint has no such folder."""
+    path = Path(pretrained_name_or_path)
+    if not path.is_dir():
+        hub_kwargs.pop("resume_download", None)  # deprecated, snapshot_download ignores it
+        path = Path(
+            snapshot_download(str(pretrained_name_or_path), allow_patterns=[f"{subdir}/*"], **hub_kwargs)
+        )
+    path = path / subdir
+    return path if path.is_dir() else None
 
 
 def populate_queues(
