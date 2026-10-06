@@ -295,16 +295,18 @@ through stored-token SONIC. Three rounds that differ only in how chunk switches 
 - round 2 (`*clb`): as round 1 plus streamer `--chunk-blend-s 0.3`;
 - round 3 (`*cln`): server `--noise-scale 0` (the GR00T setting accepted on the robot, runs 20-21; ported to this branch's
   server), no blend;
-- round 4 (`*clnb`): noise scale 0 and the 0.3 s blend together.
+- round 4 (`*clnb`): noise scale 0 and the 0.3 s blend together;
+- round 5 (`*clnr`): noise scale 0 and closed-loop RTC (streamer `--rtc`: each chunk is generated from the unplayed
+  tail of the last one, with the last inference latency's rows frozen; added 2026-10-06).
 
 Valid runs (of 18) and, over valid runs, palm error p50 / p95 (cm) vs the streamer's `joint_ref` (the policy's own
 targets; not defined for Anative) and table hit records:
 
-| Config | Round 1 (no smoothing) | Round 2 (blend 0.3 s) | Round 3 (noise scale 0) | Round 4 (noise 0 + blend) |
-| --- | --- | --- | --- | --- |
-| A28cl | 8 valid; 1.75 / 3.30; 19 | 16; 1.57 / 3.17; 24 | 11; 1.63 / 3.09; 20 | **17**; 1.60 / 3.22; 26 |
-| C28cl | 12; 2.57 / 7.83; 130 | **18**; 2.32 / 7.03; 136 | 14; 2.29 / 8.70; 224 | **18**; 2.24 / 7.89; 196 |
-| Anative | 17; -; 21 | **18**; -; 34 | 18; -; 37 | **18**; -; 37 |
+| Config | Round 1 (no smoothing) | Round 2 (blend 0.3 s) | Round 3 (noise scale 0) | Round 4 (noise 0 + blend) | Round 5 (noise 0 + RTC) |
+| --- | --- | --- | --- | --- | --- |
+| A28cl | 8 valid; 1.75 / 3.30; 19 | 16; 1.57 / 3.17; 24 | 11; 1.63 / 3.09; 20 | **17**; 1.60 / 3.22; 26 | **18**; 2.21 / 3.97; 1 |
+| C28cl | 12; 2.57 / 7.83; 130 | **18**; 2.32 / 7.03; 136 | 14; 2.29 / 8.70; 224 | **18**; 2.24 / 7.89; 196 | **18**; 2.29 / 8.98; 179 |
+| Anative | 17; -; 21 | **18**; -; 34 | 18; -; 37 | **18**; -; 37 | 17; -; 1 |
 
 - Every invalid run is the streamer's arm-speed watchdog (> 6 rad/s, mostly the left elbow). The cause is the 28D
   GR00T's chunk-to-chunk jumps: in the first C smoke run the elbow target went 0.36 -> -0.29 rad at the second chunk
@@ -316,6 +318,13 @@ targets; not defined for Anative) and table hit records:
 - Noise scale 0 plus the blend is the most reliable setting: 53 of 54 runs valid (the one trip is A on 2207, joint 0
   at just over 6 rad/s). Tracking matches the blend-only round. Palm error vs the recorded demo is lowest with noise 0
   (A p50 4.5 cm, Anative 4.1 cm in round 4).
+- RTC (round 5) removes every trip for the 28D policy (A and C 18/18) but keeps following its own plan: palm vs the
+  recorded demo p50 6.4 cm (A) and 8.0 cm (C), against 4.5 / 4.9 cm in round 4, and the 78D token GR00T drifts badly
+  (p50 19.7 cm, p95 49.7 cm, tilt 5.2 deg). Noise 0 + blend stays the default; RTC is not for the token model.
+- Why the trips happen (streamer 50 Hz arm targets): across a chunk switch the target moves 0.08 rad (p50) /
+  0.45-0.52 rad (p95) over 0.3 s in every round, as much as the recorded demos move (0.12 / 0.50 rad). Switching at once
+  executes that change in one tick (commanded arm speed peaks ~19-22 rad/s, watchdog 6 rad/s); blend and RTC spread it
+  (3-4 and 5-8 rad/s). See `docs/research/2026-09-29-issue-groot-jerky-predictions.md`.
 - When runs complete, A tracks the policy's targets better (p95 ~3.1-3.3 cm vs C 7.0-8.7 cm) and C touches the table
   5-10x more, as in replay. G1 (C vs A) fails in every round.
 - Palm error vs the recorded demo (closed loop: how far the policy's motion drifts from the demo, not a tracking

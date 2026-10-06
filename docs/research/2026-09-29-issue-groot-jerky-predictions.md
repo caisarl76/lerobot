@@ -235,6 +235,28 @@ Options, off by default: `--noise-seed` (server), `--chunk-blend-s`, `--replan-s
 sim (HE GR00T, planner start, held-out episodes 1293 / 1300), seed + blend 0.3 s cut palm jerk p95 from 126 / 166 to
 44 / 43 m/s³ and the 1–2 Hz share from 2.9 / 3.3 % to 1.6 / 1.0 %, at +1–1.5 cm median palm error.
 
+## Closed-loop finding: the chunk switch, not the plan change (2026-10-06)
+
+Five closed-loop rounds of the 28D HE GR00T (`groot_joint28_ho5_official_full`) through SONIC and the decoupled WBC,
+6 held-out episodes x 3 repeats each (details: `docs/research/2026-10-02-g1-wbc-backends.md`, "Closed loop: results"),
+measured from the streamer's 50 Hz arm targets:
+
+- Across a chunk switch the arm target moves 0.08 rad (p50) / 0.45-0.52 rad (p95) over the next 0.3 s, in every
+  round. The recorded HE demos move just as much: 0.12 / 0.50 rad over 0.3 s (p99 0.68), more than 0.3 rad in 17 % of
+  windows. **The plan changes between chunks are normal-sized motion, not abnormal jumps.**
+- The jerk comes from executing that change in one tick. With chunks switched at once the commanded arm speed peaks
+  at ~19-22 rad/s (median over runs), which trips the 6 rad/s watchdog in 6-10 of 18 runs. A 0.3 s blend brings it to
+  3-4 rad/s, closed-loop RTC (`--rtc`) to 5-8 rad/s; both remove almost all trips.
+- Noise scale 0 alone does not remove trips (its jumps repeat on the same episodes) but halves the motion inside a
+  chunk away from switches (p95 0.36 -> 0.23 rad per 0.3 s).
+- RTC keeps following its own plan: valid runs 18/18 (28D through SONIC and C) but the motion moves further from the
+  demo (SONIC palm p50 6.4 vs 4.5 cm with noise 0 + blend), and the 78D token GR00T drifts badly (palm vs demo p50
+  19.7 cm vs 4.1 cm), as RTC already did open loop. Do not use RTC with the token model.
+
+So for inference the fix is a smooth switch (noise scale 0 + `--chunk-blend-s 0.3`: 53 of 54 runs valid, closest to
+the demo). A training-side fix would have to make consecutive chunks agree on their overlap, which the official
+recipe does not target.
+
 ## Next steps
 
 - [x] Compare the training pipeline with Isaac-GR00T (section above); processor fallback fixed on this branch.
