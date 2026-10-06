@@ -69,3 +69,25 @@ def test_bf16_updates_below_half_ulp_are_not_lost(state_dtype):
     assert torch.equal(plain.detach(), start.to(torch.bfloat16))  # every update rounded away
     expected = 0.02 - 20 * 2e-5
     assert ours.detach().float().mean().item() == pytest.approx(expected, abs=2e-5)
+
+
+def test_float32_moments_keep_updating_after_checkpoint_resume(tmp_path):
+    """torch casts loaded moments to the bf16 parameter dtype; they must come back as float32 and keep moving."""
+    from lerobot.optim.optimizers import load_optimizer_state, save_optimizer_state
+
+    torch.manual_seed(0)
+    param = torch.nn.Parameter(torch.randn(64).to(torch.bfloat16))
+    opt = AdamWStochasticRounding([param], lr=1e-3)
+    for _ in range(3):
+        param.grad = torch.randn_like(param)
+        opt.step()
+    save_optimizer_state(opt, tmp_path)
+
+    resumed = load_optimizer_state(AdamWStochasticRounding([param], lr=1e-3), tmp_path)
+    state = resumed.state[param]
+    assert state["exp_avg"].dtype == state["exp_avg_sq"].dtype == torch.float32
+    torch.testing.assert_close(state["exp_avg"], opt.state[param]["exp_avg"].to(torch.bfloat16).float())
+    before = state["exp_avg"].clone()
+    param.grad = torch.randn_like(param)
+    resumed.step()
+    assert not torch.equal(resumed.state[param]["exp_avg"], before)

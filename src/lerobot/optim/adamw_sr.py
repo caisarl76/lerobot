@@ -64,6 +64,15 @@ class AdamWStochasticRounding(torch.optim.Optimizer):
         super().__init__(params, defaults)
         self.state_dtype = state_dtype
 
+    def load_state_dict(self, state_dict: dict[str, Any]) -> None:
+        # torch casts loaded floating-point state to the parameter dtype; with bf16 parameters and float32
+        # moments, step() would then update float32 copies and never store them back (frozen moments)
+        super().load_state_dict(state_dict)
+        for state in self.state.values():
+            for key in ("exp_avg", "exp_avg_sq"):
+                if key in state:
+                    state[key] = state[key].to(self.state_dtype)
+
     @torch.no_grad()
     def step(self, closure: Callable[[], float] | None = None) -> float | None:  # type: ignore[override]
         loss = None

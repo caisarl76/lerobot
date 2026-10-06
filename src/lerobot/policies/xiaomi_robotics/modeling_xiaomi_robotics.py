@@ -38,6 +38,7 @@ from torch import Tensor, nn
 from torch.distributions import Beta
 
 from lerobot.policies.pretrained import PreTrainedPolicy
+from lerobot.policies.utils import checkpoint_subdir, hub_load_kwargs
 from lerobot.utils.constants import ACTION, OBS_STATE
 from lerobot.utils.import_utils import _transformers_available, require_package
 
@@ -806,11 +807,12 @@ class XiaomiRoboticsPolicy(PreTrainedPolicy):
     def from_pretrained(
         cls, pretrained_name_or_path, *, config: XiaomiRoboticsConfig | None = None, **kwargs
     ):
+        hub = hub_load_kwargs(kwargs)
         if config is None:
-            config = XiaomiRoboticsConfig.from_pretrained(pretrained_name_or_path)
+            config = XiaomiRoboticsConfig.from_pretrained(pretrained_name_or_path, **hub)
         config.load_base_weights = False
-        processor_dir = Path(pretrained_name_or_path) / VLM_PROCESSOR_DIRNAME
-        if processor_dir.is_dir():
+        processor_dir = checkpoint_subdir(pretrained_name_or_path, VLM_PROCESSOR_DIRNAME, **hub)
+        if processor_dir is not None:
             config.processor_path = str(processor_dir)
         return super().from_pretrained(pretrained_name_or_path, config=config, **kwargs)
 
