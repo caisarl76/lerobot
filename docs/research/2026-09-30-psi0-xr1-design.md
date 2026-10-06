@@ -161,7 +161,7 @@ and decay by the accumulation factor (pitfall in the retraining handover).
 | Header             | 6 blocks, last-layer VLM context, state as context token, dropout 0.1, state-feature dropout 0.2                                                                  | 12 blocks, one VLM layer per block (3…28), qk RMSNorm, CLIP-L pooled task embedding, state as action token 0 with learned null token (drop 0.1) | same                                                                                      |
 | RTC                | training-time RTC, delay 0–7                                                                                                                                      | off (test-time RTC)                                                                                                                             | same                                                                                      |
 | Images             | 240×320, ColorJitter(0.2, 0.8–1.2, 0.8–1.2, 0.05)                                                                                                                 | 270×480, same jitter + view crop 85–100 %                                                                                                       | same                                                                                      |
-| State augmentation | none                                                                                                                                                              | noise N(0, 0.05) on the normalized state; ±10-frame temporal jitter (p 0.5)                                                                     | noise yes; **temporal jitter not implemented** (needs a 21-frame state window per sample) |
+| State augmentation | none                                                                                                                                                              | noise N(0, 0.05) on the normalized state; ±10-frame temporal jitter (p 0.5)                                                                     | noise yes; temporal jitter since 2026-10-06 (`state_temporal_jitter`, `*_jitter640k` runs) |
 | Normalization      | bounds (min/max), state normalized                                                                                                                                | bounds                                                                                                                                          | bounds; **Unitree state q01/q99** (corrupt frames)                                        |
 | Chunk padding      | not masked                                                                                                                                                        | not masked                                                                                                                                      | same (`mask_padded_actions=false`)                                                        |
 
@@ -568,3 +568,23 @@ After each run: copy the `.npz`/`.log` back, run `robot_run_smoothness.py
 (reach, which part of the laptop, closed or not, smoothness) to the table above. XR-1 is not a robot candidate (its
 closed-loop drift, see the sim follow-up); do not run it on the robot until it is retrained without the state
 dependence.
+
+## Psi0 with state temporal jitter (2026-10-06)
+
+The released SONIC v1.1 recipe (`finetune-real-sonic-psi0-2.8B-sonic1.1-robust.sh`, also [the release
+note](https://github.com/physical-superintelligence-lab/Psi0/blob/main/examples/psi0_for_sonic.md)) is the one our
+Psi0 already follows, from the same `postpre.sonic1.1.unifolm.2609181726.40k` checkpoint (the 36-D AMO checkpoint
+was used only by the dropped `*_smoke_amo36`). The one piece we had not implemented was the ±10-frame state temporal
+jitter (p 0.5): pair the image with a state up to 10 frames earlier or later, so the policy leans on vision when the
+two disagree (latency, pose drift).
+
+- `Psi0Config.state_temporal_jitter` / `state_temporal_jitter_prob`: with J > 0 the dataset returns a −J..+J state
+  window (`state_observation_delta_indices`; images stay at the current frame) and training picks a random
+  in-episode frame (`observation.state_is_pad` false) with that probability, else the centre. Inference uses the
+  centre. Checked on HE: a (21, 28) window, the ten frames before an episode start flagged as padding, both kept
+  through the preprocessor.
+- Runs (user decision: 640K-sample budget, 78D only): `psi0_sonic78sonicstate_ho5_jitter640k_{smoke,full}`, HE on
+  H100 GPU 0 (container `jihun-lerobot-psi0-jitter-gpu0-20261006`), Unitree on h100_174 GPU 4
+  (`jihun-lerobot-psi0-jitter-174-gpu4-20261006`). Configs are the `*_matched640k` ones plus
+  `state_temporal_jitter: 10, state_temporal_jitter_prob: 0.5`; code `/mnt/data01/jhkim/code/lerobot-g1-psi0-jitter`
+  (branch `feat/g1-psi0-state-jitter`, f4ff099b).
