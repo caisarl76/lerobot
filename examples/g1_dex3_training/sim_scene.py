@@ -98,6 +98,9 @@ class Scene:
         with self.lock:
             self.env.sim_step()
             self.t += self.dt
+        # gear_sonic's own check_fall inside sim_step: pelvis < 0.2 m, and the robot is already reset upright
+        if getattr(self.env, "fall", False):
+            self.fall.latch(f"pelvis below 0.2 m at t {self.t:.3f} s (simulator reset the robot)")
 
     def mark(self, event: str) -> None:
         print(f"[{self.t:8.3f}] {event}", flush=True)

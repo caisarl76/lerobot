@@ -281,7 +281,9 @@ def run(a) -> None:
             n += 1
             t = scene.t
             if n % DECIMATION == 0:
-                ctl.held, ctl.clipped[:] = False, False  # a tick without a message is not held
+                # held stays set until a valid message replaces the rejected target (apply_message sets it either
+                # way); clipped describes this tick's message only
+                ctl.clipped[:] = False
                 with contextlib.suppress(zmq.Again):
                     ctl.apply_message(unpack_joint_message(sub.recv(zmq.NOBLOCK)))
                 ctl.step(t)
