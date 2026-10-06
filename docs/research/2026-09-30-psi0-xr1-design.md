@@ -535,5 +535,10 @@ from `robot_run_smoothness.py`:
 - The smoothest robot run so far: no seams, jerk 194 vs GR00T's 315–514. The arm also moved slower (speed p95 0.50
   vs 0.70–0.99), so part of the smoothness may be less motion.
 - PC2 deploy: `g1_groot_real_run.sh deploy` crashed at "Creating G1Deploy object" (`corrupted size vs. prev_size`);
-  it ran after `conda deactivate` and `LD_PRELOAD` of the SDK's `libddsc.so` / `libddscxx.so` (see the deploy note in
-  the first-runs doc's procedure).
+  it ran from a PC2 shell after `conda deactivate`, with the SDK's own DDS libraries preloaded:
+  ```bash
+  cd ~/GR00T-WholeBodyControl/gear_sonic_deploy && conda deactivate && source scripts/setup_env.sh
+  export LD_PRELOAD="$(pwd)/thirdparty/unitree_sdk2/thirdparty/lib/aarch64/libddsc.so:$(pwd)/thirdparty/unitree_sdk2/thirdparty/lib/aarch64/libddscxx.so"
+  bash deploy.sh --cp policy/sonic_v1_1/model --obs-config policy/sonic_v1_1/observation_config.yaml \
+    --input-type zmq_manager --zmq-host localhost real
+  ```
