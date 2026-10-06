@@ -257,6 +257,24 @@ So for inference the fix is a smooth switch (noise scale 0 + `--chunk-blend-s 0.
 the demo). A training-side fix would have to make consecutive chunks agree on their overlap, which the official
 recipe does not target.
 
+### Robot check (pending, needs the G1)
+
+Add the 0.3 s blend to the robot-accepted setting (runs 20-21: HE GR00T `*_official_full`, noise scale 0,
+`--replan-s 0.4 --max-token-step 0.1`, planner start/end). The streamer copy on the robot PC already has
+`--chunk-blend-s` (it is the self-contained pre-WBC streamer; nothing to sync), and `g1_groot_real_run.sh stream`
+passes extra arguments through:
+
+```bash
+g1_groot_real_run.sh server     # workstation GPU 1, NOISE_SCALE defaults to 0
+g1_groot_real_run.sh deploy     # PC2, wait for "Init Done"
+g1_groot_real_run.sh camera     # PC2, D435i 640x480 "egocentric"
+g1_groot_real_run.sh stream run22_he_groot_official_laptop_t0_blend03 "close a laptop g1" --chunk-blend-s 0.3
+```
+
+Compare with runs 20-21 (same task, no blend): copy the logs from `~/g1_sonic_eval/runs/` and run
+`robot_run_smoothness.py <HE dataset root> run20*.npz run21*.npz run22*.npz` (seam / step, arm speed p95, arm jerk p95,
+1-2 Hz share), plus whether the task still succeeds.
+
 ## Next steps
 
 - [x] Compare the training pipeline with Isaac-GR00T (section above); processor fallback fixed on this branch.
