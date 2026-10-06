@@ -1,0 +1,54 @@
+#!/bin/bash
+# Real-robot run of the HE GR00T (official recipe) with its best open-loop inference setting, noise scale 0
+# (zero-noise flow sampling: err 0.149 -> 0.131, seam 0.140 -> 0.091; 2026-10-01, see
+# docs/research/2026-09-30-official-retraining-handover.md). RTC stays off (GR00T RTC drifts, err ~0.50).
+# Run from the workstation, each step in its own terminal, in this order; the PC2 steps go over `ssh -t pc2_222`.
+#
+#   g1_groot_real_run.sh server                  # workstation GPU 1, port 5560, waits for "ready on port"
+#   g1_groot_real_run.sh deploy                  # PC2: NVIDIA SONIC deploy; wait for "Init Done"
+#   g1_groot_real_run.sh camera                  # PC2: D435i head camera, 640x480, stream "egocentric"
+#   g1_groot_real_run.sh stream RUN [TASK] [extra streamer args...]
+#                                                # PC2: streamer; Enter at "Init Done", Enter once in position
+#   g1_groot_real_run.sh stop                    # stop the workstation server
+#
+# e.g. g1_groot_real_run.sh stream run20_he_groot_official_laptop_t0 "close a laptop g1"
+# Env: MODEL (checkpoint dir), GPU, PORT, NOISE_SCALE (empty = unscaled sampling), CAM_FPS (default 30).
+set -e
+MODEL=${MODEL:-/mnt/data/jihun/g1_models/he_groot_sonic78sonicstate_ho5_official_full}
+GPU=${GPU:-1}; PORT=${PORT:-5560}; NOISE_SCALE=${NOISE_SCALE-0}
+CAM_FPS=${CAM_FPS:-30}  # camera publish rate; capture is 30 Hz, so 30 is the max (server default 10)
+WS=192.168.0.62  # workstation address seen from PC2
+UNIT=groot-server-$PORT
+cd "$(dirname "$0")"
+
+case $1 in
+server)
+  LOG=$MODEL/server_gpu${GPU}_${PORT}_t${NOISE_SCALE:-1}.log
+  # memory-capped user service: loading the fp32 checkpoint on the CPU first can trigger systemd-oomd otherwise
+  systemd-run --user --unit=$UNIT -p MemoryMax=32G -p MemorySwapMax=0 -p WorkingDirectory="$PWD" \
+    -E PATH="$PATH" -E HOME="$HOME" -E CUDA_VISIBLE_DEVICES=$GPU -E HF_HUB_OFFLINE=1 \
+    bash -c "exec uv run --project ../.. python -u sonic_policy_server.py --policy-path $MODEL/pretrained_model \
+      --port $PORT --backbone-dtype bfloat16 ${NOISE_SCALE:+--noise-scale $NOISE_SCALE} > $LOG 2>&1"
+  until grep -q "ready on port" "$LOG" 2>/dev/null; do
+    systemctl --user is-active -q $UNIT || { tail -20 "$LOG"; exit 1; }
+    sleep 5
+  done
+  grep "ready on port" "$LOG" ;;
+deploy)
+  ssh -t pc2_222 'cd ~/GR00T-WholeBodyControl/gear_sonic_deploy && source scripts/setup_env.sh &&
+    bash deploy.sh --cp policy/sonic_v1_1/model --obs-config policy/sonic_v1_1/observation_config.yaml \
+      --input-type zmq_manager --zmq-host localhost real' ;;
+camera)
+  ssh -t pc2_222 "cd ~/g1_sonic_eval && .venv/bin/python code/g1_head_camera_server.py \
+    --device /dev/video4 --name egocentric --width 640 --height 480 --publish-fps $CAM_FPS" ;;
+stream)
+  RUN=${2:?run name, e.g. run20_he_groot_official_laptop_t0}; TASK=${3:-close a laptop g1}; shift $(($# < 3 ? $# : 3))
+  ssh -t pc2_222 "cd ~/g1_sonic_eval/code && ../.venv/bin/python -u sonic_policy_streamer.py \
+    --policy-server tcp://$WS:$PORT --images zmq --camera-host localhost --task '$TASK' \
+    --start planner --end planner --duration-s 30 --replan-s 0.4 --max-token-step 0.1 \
+    --log ../runs/$RUN.npz $* 2>&1 | tee ../runs/$RUN.log" ;;
+stop)
+  systemctl --user stop $UNIT ;;
+*)
+  sed -n 2,15p "$0"; exit 1 ;;
+esac
