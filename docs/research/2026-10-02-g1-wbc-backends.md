@@ -16,8 +16,10 @@ scene, with one validity-gated scorer: **A** = SONIC (joints encoded to tokens o
 policy for legs and waist, arm and hand targets straight to PD). Replay results (6 held-out Humanoid Everyday (HE)
 episodes x 3 repeats, all valid): online A reproduces the stored-token result (11 of 12 gate rows within 0.07 cm;
 the one miss is a table-contact event, tokens identical), C tracks the palm about 2.7-4x worse (p95 9.6-11.0 cm vs 2.7-3.5 cm on
-five episodes), touches the table more, and fails gates G1 and G2. The **closed-loop comparison
-(28D GR00T through A and C) is deferred**: the batch is prepared but not run, because GPU 7 was given to another training queue.
+five episodes), touches the table more, and fails gates G1 and G2. With arm gravity compensation and SONIC's stance
+(controlled C) the gap shrinks 2-2.5x but A still wins. Closed loop with a 28D GR00T (3 rounds x 54 runs): the policy's
+chunk-to-chunk jumps trip the arm-speed watchdog on both backends; a 0.3 s chunk blend removes almost all trips, the
+sampler noise scale 0 only part of them; A keeps the better palm tracking and C touches the table far more.
 
 31D waist extension: see the follow-up PR.
 
@@ -195,18 +197,13 @@ Read: A's online encoding reproduces the stored result within 0.00-0.07 cm (mean
   the host.
 - Hand gains seen by the sim at run time (A): kp 1.5, kd 0.1 on all motors, after `Init Done` and while streaming.
 
-## Closed loop (deferred)
+## Closed loop: model
 
-Not run. The user gave the second H100 host's GPU 7 to another training queue after this session's 28D GR00T training.
-That training finished (smoke run passed, processor q01/q99 equal to the dataset stats): `groot_joint28_ho5_official_full`
+The 28D GR00T for the closed loop trained (smoke run passed, processor q01/q99 equal to the dataset stats): `groot_joint28_ho5_official_full`
 (official recipe, 20K steps x batch 32, bf16, HE `joint28` with exact quantiles). Exit 0, 20000/20000 steps in 3:13:04
 (1.73 step/s), "End of training" 2026-10-02 15:31 UTC; checkpoints 005000, 010000, 015000, 020000 and last under
-`/run-output/humanoid_everyday_g1_20260923/runs/groot_joint28_ho5_official_full`. The closed-loop batch is prepared but not run: policy server
-`--noise-seed 0` for all configs (this branch's server has no `--noise-scale`, so this is not the robot-accepted
-noise-scale-0 setting), configurations A28cl, C28cl and Anative (the 78D HE GR00T `*_official_full` through stored-token
-SONIC) x 6 episodes x 3 repeats, plus a re-run of A28 ep 2006 r3.
-
-**Results to be added.**
+`/run-output/humanoid_everyday_g1_20260923/runs/groot_joint28_ho5_official_full`. Results are in "Closed loop: results"
+below (after the controlled-C section, because the closed loop runs controlled C).
 
 ## Controlled C (C28g)
 
@@ -261,9 +258,43 @@ in the pelvis frame and does not see this offset; table contact does.
 SONIC regression on the restructured streamer (`stream_backends.py`), same host and batch: episode 1293, HE GR00T
 official, seed 0: palm p50 / p95 3.9 / 10.0 cm (pre-refactor 3.9 / 10.0), `termination.json` completed.
 
+## Closed loop: results (2026-10-06)
+
+Configurations, each 6 episodes x 3 repeats, policy server per run on the same GPU, `--policy-timeout-s 5`:
+**A28cl** = 28D GR00T, joints encoded online, SONIC; **C28cl** = the same policy through controlled C
+(`HOST_ARGS="--gravity-comp arms --height-cmd 0.79"`); **Anative** = the 78D HE GR00T (`groot_sonic78sonicstate_ho5_official_full`)
+through stored-token SONIC. Three rounds that differ only in how chunk switches are smoothed:
+
+- round 1 (`*cl`): server `--noise-seed 0`, chunks switch at once (`--chunk-blend-s 0`, the evaluated setting so far);
+- round 2 (`*clb`): as round 1 plus streamer `--chunk-blend-s 0.3`;
+- round 3 (`*cln`): server `--noise-scale 0` (the GR00T setting accepted on the robot, runs 20-21; ported to this branch's
+  server), no blend.
+
+Valid runs (of 18) and, over valid runs, palm error p50 / p95 (cm) vs the streamer's `joint_ref` (the policy's own
+targets; not defined for Anative) and table hit records:
+
+| Config | Round 1 (no smoothing) | Round 2 (blend 0.3 s) | Round 3 (noise scale 0) |
+| --- | --- | --- | --- |
+| A28cl | 8 valid; 1.75 / 3.30; 19 | **16**; 1.57 / 3.17; 24 | 11; 1.63 / 3.09; 20 |
+| C28cl | 12; 2.57 / 7.83; 130 | **18**; 2.32 / 7.03; 136 | 14; 2.29 / 8.70; 224 |
+| Anative | 17; -; 21 | **18**; -; 34 | 18; -; 37 |
+
+- Every invalid run is the streamer's arm-speed watchdog (> 6 rad/s, mostly the left elbow). The cause is the 28D
+  GR00T's chunk-to-chunk jumps: in the first C smoke run the elbow target went 0.36 -> -0.29 rad at the second chunk
+  (t_ep 0.4 s). SONIC does not absorb these jumps either (A trips more often than C in rounds 1 and 3).
+- A 0.3 s chunk blend removes almost all trips (A 8 -> 16, C 12 -> 18 valid) without hurting tracking.
+- Noise scale 0 only helps partly (A 11, C 14). Its trips are deterministic per episode (A: none valid on 1300 and
+  2207; C: none on 1293), so the jumps are in the policy's mean prediction for a changed observation, not only sampling
+  noise.
+- When runs complete, A tracks the policy's targets better (p95 ~3.1-3.3 cm vs C 7.0-8.7 cm) and C touches the table
+  5-10x more, as in replay. G1 (C vs A) fails in every round.
+- Palm error vs the recorded demo (closed loop: how far the policy's motion drifts from the demo, not a tracking
+  measure) is p50 4-7 cm, p95 17-31 cm for all configs.
+
 ## Next steps
 
-1. C28g did not pass G2; the closed loop still runs C28g next to A (it is the better C). Arm velocity feed-forward or
-   higher arm gains would test the PD-lag explanation.
-2. Closed-loop results (A28cl vs C28cl vs Anative); G1 applies, palm error reported both ways.
+1. Closed loop with noise scale 0 plus the 0.3 s blend (the two smoothers together) as the candidate default for 28D
+   joint policies.
+2. C did not pass G2 in replay or G1 in closed loop. Arm velocity feed-forward or higher arm gains would test the
+   remaining PD-lag explanation.
 3. Real-robot C needs a joint-step cap first (none in sim).
