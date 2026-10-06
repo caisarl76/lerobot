@@ -123,14 +123,21 @@ def tilt_deg(quat_wxyz) -> float:
 
 class FallDetector:
     """Armed after GATE/settled (the robot hangs on the band before). Fires when the pelvis tilts more than 20 deg,
-    drops below 0.4 m or no foot touches the floor, sustained for 0.2 s."""
+    drops below 0.4 m or no foot touches the floor, sustained for 0.2 s, or once the simulator itself reported a fall
+    (latch(): gear_sonic resets the robot upright below 0.2 m inside sim_step, which could hide a fast collapse)."""
 
     def __init__(self):
-        self.armed, self._since = False, None
+        self.armed, self._since, self.latched = False, None, None
+
+    def latch(self, reason: str) -> None:
+        if self.armed and self.latched is None:
+            self.latched = reason
 
     def update(self, t: float, quat_wxyz, z: float, floor_contacts: int) -> str | None:
         if not self.armed:
             return None
+        if self.latched:
+            return self.latched
         tilt = tilt_deg(quat_wxyz)
         if tilt <= FALL_TILT_DEG and z >= FALL_Z_M and floor_contacts > 0:
             self._since = None
