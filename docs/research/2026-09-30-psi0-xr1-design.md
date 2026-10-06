@@ -423,3 +423,43 @@ GR00T runs on the robot at noise 0.5 to escape stalls, so the two new VLAs were 
 2. A second GPU for the Unitree runs (~170 GPU-hours): GPU 6 once its official queue ends, and/or the three idle
    GPU 6 containers (~20 GB).
 3. Also repair `combined_sonicstate_1cam` (same Unitree frames)?
+
+## Closed-loop sim (2026-10-06)
+
+`sonic_official_sim_eval.sh` (NVIDIA deploy + MuJoCo, table 25 cm, planner start and end, slew `--max-token-step
+0.05`, `--policy-timeout-s 5`, server `--noise-scale 0`) on the six HE held-out episodes, H100 GPUs 0 and 6, code
+`lerobot-g1-psi0-xr1-eval`. HE GR00T `official_full` at noise 0 is the baseline (1293 / 1300 from the earlier run with
+the same settings). Palm error is against the recording; jerk is the fastest arm joint's p95 (rad/s³, from
+`robot_run_smoothness.py` on the streamer log).
+
+| Model | Ep   | Palm p50 / p95 (cm) | Wrist p95 (°) | Tilt max (°) | Arm jerk p95 | Arm speed p95 (rad/s) |
+| ----- | ---- | ------------------- | ------------- | ------------ | ------------ | --------------------- |
+| GR00T | 91   | 11.6 / 34.5         | 102.8         | 3.4          | 582          | 1.12                  |
+| GR00T | 102  | 9.2 / 40.9          | 91.8          | 2.6          | 707          | 1.25                  |
+| GR00T | 1208 | 4.3 / 25.5          | 36.4          | 1.6          | 343          | 0.78                  |
+| GR00T | 1219 | 3.7 / 23.9          | 42.1          | 2.4          | 840          | 1.29                  |
+| GR00T | 1293 | 3.9 / 10.4          | 19.2          | 2.2          | 413          | 1.42                  |
+| GR00T | 1300 | 3.6 / 10.8          | 23.9          | 2.2          | 394          | 1.57                  |
+| XR-1  | 91   | 20.6 / 46.4         | 109.2         | 2.5          | 321          | 0.52                  |
+| XR-1  | 102  | 22.1 / 48.5         | 113.0         | 2.3          | 298          | 0.46                  |
+| XR-1  | 1208 | 8.5 / 53.4          | 57.8          | 2.4          | 245          | 0.73                  |
+| XR-1  | 1219 | 9.0 / 53.9          | 62.3          | 3.1          | 308          | 0.45                  |
+| XR-1  | 1293 | 4.8 / 29.3          | 57.8          | 2.3          | 300          | 1.01                  |
+| XR-1  | 1300 | 6.1 / 29.7          | 56.7          | 2.9          | 518          | 1.44                  |
+| Psi0  | 91   | 10.5 / 27.2         | 66.9          | 2.8          | 813          | 1.53                  |
+| Psi0  | 102  | 6.6 / 27.7          | 81.1          | 3.3          | 531          | 1.29                  |
+| Psi0  | 1208 | 3.7 / 22.6          | 34.7          | 3.2          | 484          | 1.34                  |
+| Psi0  | 1219 | 3.2 / 19.0          | 34.7          | 2.7          | 788          | 1.39                  |
+| Psi0  | 1293 | 2.4 / 6.3           | 17.2          | 1.9          | 969          | 1.96                  |
+| Psi0  | 1300 | 3.3 / 10.2 (86 of 337 frames) | 19.5 | **9.8** | **3122**     | 4.24                  |
+
+Means over the six episodes: palm p50 / p95 GR00T 6.1 / 24.3 cm, XR-1 11.9 / 43.5 cm, Psi0 5.0 / 18.8 cm (1300
+partial); wrist p95 GR00T 53°, XR-1 76°, Psi0 42°.
+
+- **Psi0 is the most accurate in closed loop**, ahead of GR00T on palm and wrist in five of six episodes. Its arm
+  jerk is higher (484–969 vs GR00T's 343–840, so about 1.3× on average), and on episode 1300 the joint-speed watchdog
+  ended the run after 2.9 s (arm joint 3 at 6.7 rad/s > 6), with 9.8° tilt and one floor contact by then.
+- **XR-1 is the smoothest and never unstable, but it drifts** in every episode (palm p95 29–54 cm, its hand outputs
+  1.3–1.4 rad from the recording at p95) although its open-loop chunks were accurate. It is not a robot candidate
+  until the closed-loop drift is understood (check its state input on the robot-state path first).
+- Episodes 91 and 102 are short and hard for every model, GR00T included.
