@@ -130,12 +130,12 @@ def g1(runs, test="C28", ref="A28", episodes=None) -> dict:
     return {"pass": bool(rows) and all(x["pass"] for x in rows), "rows": rows}
 
 
-def g2(runs, episodes=None) -> dict:
-    eps = sorted(set(runs.get("C28", {})) & set(runs.get("A28", {})))
+def g2(runs, episodes=None, test="C28") -> dict:
+    eps = sorted(set(runs.get(test, {})) & set(runs.get("A28", {})))
     want = len(episodes) if episodes is not None else 6
     if episodes is not None:
         eps = [e for e in eps if e in episodes]
-    c = [metric(runs["C28"][e], "palm_err_vs_joint_ref_cm", "p95") for e in eps]
+    c = [metric(runs[test][e], "palm_err_vs_joint_ref_cm", "p95") for e in eps]
     a = [metric(runs["A28"][e], "palm_err_vs_joint_ref_cm", "p95") for e in eps]
     pairs = [
         (e, float(np.mean(ci)), float(np.mean(ai))) for e, ci, ai in zip(eps, c, a, strict=True) if ci and ai
@@ -146,14 +146,14 @@ def g2(runs, episodes=None) -> dict:
             "why": f"{len(pairs)} episodes with valid runs on both backends (need {want})",
             "rows": [],
         }
-    thin = {e: w for e in eps if (w := uncovered(C28=runs["C28"][e], A28=runs["A28"][e]))}
+    thin = {e: w for e in eps if (w := uncovered(**{test: runs[test][e], "A28": runs["A28"][e]}))}
     if thin:
         return {"pass": False, "why": f"coverage failed for episodes {thin}", "rows": []}
     gain = float(np.mean([ai - ci for _, ci, ai in pairs]))
     better = int(sum(ci < ai for _, ci, ai in pairs))
     need = 4 if want == 6 else math.ceil(2 * want / 3)
     rows = [{"episode": e, "c_p95": round(ci, 2), "a_p95": round(ai, 2),
-             "c_wrist_deg_p95": mean(metric(runs["C28"][e], "wrist_orientation_err_deg", "p95")),
+             "c_wrist_deg_p95": mean(metric(runs[test][e], "wrist_orientation_err_deg", "p95")),
              "a_wrist_deg_p95": mean(metric(runs["A28"][e], "wrist_orientation_err_deg", "p95"))} for e, ci, ai in pairs]  # fmt: skip
     return {
         "pass": bool(gain >= 1.0 and better >= need),
@@ -199,11 +199,12 @@ def main():
     p.add_argument(
         "--episodes", type=lambda s: [int(x) for x in s.split(",")], help="comma-separated gated episodes"
     )
+    p.add_argument("--test", default="C28", help="config gated against A28 in G1/G2 (C28g: controlled C)")
     a = p.parse_args()
     all_runs = load(a.root)
     runs = only(all_runs, a.episodes)
     out = {"counts": {cfg: {ep: len(v) for ep, v in eps.items()} for cfg, eps in runs.items()},
-           "G0": g0(runs, a.episodes), "G1": g1(runs, "C28", "A28", a.episodes), "G2": g2(runs, a.episodes),
+           "G0": g0(runs, a.episodes), "G1": g1(runs, a.test, "A28", a.episodes), "G2": g2(runs, a.episodes, a.test),
            "syn_A": syn(all_runs, "A31syn", "A28"), "syn_C": syn(all_runs, "C31syn", "C28")}  # fmt: skip
     if "C28cl" in runs:
         out["G1_closed"] = g1(runs, "C28cl", "A28cl", a.episodes)

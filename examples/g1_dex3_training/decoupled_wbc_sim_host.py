@@ -4,7 +4,8 @@ waist, arm and Dex3 hand joint targets straight to PD) in the same scene as soni
 Contract (docs/superpowers/specs/2026-10-01-g1-wbc-backends-design.md; upstream NVlabs/GR00T-WholeBodyControl
 b042411fae with only decoupled_wbc/ mounted at /upstream/decoupled_wbc; onnxruntime on PYTHONPATH):
   lower body  G1GearWbcPolicy with GEAR_WBC_CONFIG of control/main/teleop/configs/g1_29dof_gear_wbc.yaml (516 obs,
-              15 actions) and the Balance/Walk ONNX; walking command 0, height 0.74 (Balance runs throughout)
+              15 actions) and the Balance/Walk ONNX; walking command 0, height --height-cmd (0.74; Balance runs
+              throughout)
   upper body  IdentityPolicy: the streamer's 50 Hz targets as they are; every wrapper goal is complete;
               the first goal is the start pose: arms in A's planner-stance pose (START_ARMS), hands and waist at the
               measured pose; the gear-WBC default arm pose reaches table-top height (0.80 m)
@@ -12,7 +13,9 @@ b042411fae with only decoupled_wbc/ mounted at /upstream/decoupled_wbc; onnxrunt
               roll/pitch/yaw from FK of the commanded waist, RL moves waist + legs to follow)
   activation  RL output switched on through the lower-body policy (key "]"), never a toggle-only wrapper goal
   gains       body MOTOR_KP / MOTOR_KD of g1_29dof_gear_wbc.yaml; Dex3 kp 1.5 / kd 0.1 (A's deploy defaults,
-              dex3_hands.hpp), written into gear_sonic's bridge command slots by joint name (no DDS, no slot swap)
+              dex3_hands.hpp), written into gear_sonic's bridge command slots by joint name (no DDS, no slot swap);
+              --gravity-comp arms adds upstream's arm gravity torques (RobotModel.compute_gravity_compensation_torques
+              at the measured pose, fixed base, as upstream's sync_env) as feed-forward tau (upstream default: off)
   rates       physics 200 Hz (A's scene; upstream sim_frequency 200), control 50 Hz
   messages    ZMQ SUB "joints" (wbc_common.pack_joint_message) on --action-port; drops messages older than 0.1 s,
               holds the previous target on stale or non-finite ones, clips to the MuJoCo joint ranges (counted);
@@ -21,7 +24,8 @@ Timeline: band on, RL off -> 1 s RL on -> 3 s band released -> 4 s reset onto th
 table placed, GATE/deploy_ready + GATE/settled, fall detection armed -> GATE/done + 3 s: stop. Streamer silent for
 5 s without GATE/done: aborted.
 Usage (in jihun/sonic-vla-sim, cwd gear_sonic_deploy):
-  python decoupled_wbc_sim_host.py OUT_DIR GATE_DIR [--waist-location ...] [--selfcheck contract|state|command|waist|stand]
+  python decoupled_wbc_sim_host.py OUT_DIR GATE_DIR [--waist-location ...] [--gravity-comp arms] [--height-cmd H]
+                                   [--selfcheck contract|state|command|waist|stand]
 """
 
 from __future__ import annotations
@@ -63,7 +67,6 @@ HAND_KP, HAND_KD = (
 DECIMATION = 4  # 200 Hz physics -> 50 Hz control
 MAX_MSG_AGE_S, SILENCE_S = 0.1, 5.0
 FIRST_MSG_S = 600.0  # must exceed policy-server load (MolmoAct2 ~2 min) + streamer startup + first inference
-GOAL_CONST = {"base_height_command": np.array([0.74]), "navigate_cmd": np.zeros(3)}
 OBS_DIM = 86  # one frame of the lower-body observation (516 = 86 x 6)
 T_ACTIVATE, T_BAND, T_RESET, T_SETTLED = 1.0, 3.0, 4.0, 9.0
 # Arms during hang/settle: the SONIC planner stance backend A holds before its episode (mean of the pre-episode records
@@ -127,9 +130,10 @@ class Plant:
         for c in self.br.left_hand_cmd.motor_cmd + self.br.right_hand_cmd.motor_cmd:
             c.kp, c.kd = HAND_KP, HAND_KD
 
-    def set(self, targets: dict) -> None:
+    def set(self, targets: dict, tau: dict) -> None:
         for i, n in enumerate(self.body_slots):
             self.br.low_cmd.motor_cmd[i].q = float(targets[n])
+            self.br.low_cmd.motor_cmd[i].tau = float(tau.get(n, 0.0))
         for slots, cmd in (
             (self.left_slots, self.br.left_hand_cmd),
             (self.right_slots, self.br.right_hand_cmd),
@@ -141,8 +145,11 @@ class Plant:
 class Controller:
     """50 Hz decoupled-WBC step: MuJoCo state -> upstream observation, complete goal, PD targets by joint name."""
 
-    def __init__(self, scene: Scene, waist_location: str):
-        self.scene = scene
+    def __init__(
+        self, scene: Scene, waist_location: str, gravity_comp: str = "off", height_cmd: float = 0.74
+    ):
+        self.scene, self.gravity_comp = scene, gravity_comp
+        self.goal_const = {"base_height_command": np.array([height_cmd]), "navigate_cmd": np.zeros(3)}
         assert abs(scene.dt * DECIMATION - 0.02) < 1e-9, (
             f"need physics 200 Hz / control 50 Hz, got dt {scene.dt} x {DECIMATION}"
         )
@@ -202,16 +209,24 @@ class Controller:
                 "floating_base_pose": d.qpos[:7].copy(), "floating_base_vel": d.qvel[:6].copy()}  # fmt: skip
 
     def goal(self) -> dict:
-        return {"target_upper_body_pose": np.array([self.ref[n] for n in self.upper_names]), **GOAL_CONST}
+        return {
+            "target_upper_body_pose": np.array([self.ref[n] for n in self.upper_names]),
+            **self.goal_const,
+        }
 
     def step(self, t: float) -> None:
-        self.wbc.set_observation(self.observation())
+        obs = self.observation()
+        self.wbc.set_observation(obs)
         self.wbc.set_goal(self.goal())  # always complete: IdentityPolicy returns exactly this goal
         q = self.wbc.get_action(time=t)["q"]
         targets = dict(zip(self.rm_names, q, strict=True))
         targets.update({n: self.ref[n] for n in HANDS})  # hands straight from the joint message
+        tau = {}
+        if self.gravity_comp == "arms":  # zero outside the arm joints
+            g = self.rm.compute_gravity_compensation_torques(obs["q"], "arms")
+            tau = dict(zip(self.rm_names, g, strict=True))
         with self.scene.lock:
-            self.plant.set(targets)
+            self.plant.set(targets, tau)
 
     def activate(self) -> None:
         self.lower.handle_keyboard_button("]")  # use_policy_action = True, on the lower-body policy only
@@ -264,7 +279,7 @@ def run(a) -> None:
     ctl = None
     wall0 = time.monotonic()
     try:
-        ctl = Controller(scene, a.waist_location)
+        ctl = Controller(scene, a.waist_location, a.gravity_comp, a.height_cmd)
         for f in MODEL_PATH.split(","):
             scene.mark(f"onnx {f} sha256 {hashlib.sha256((POLICY_DIR / f).read_bytes()).hexdigest()}")
         ctx = zmq.Context()
@@ -274,7 +289,8 @@ def run(a) -> None:
         sub.connect(f"tcp://localhost:{a.action_port}")
         pub = ctx.socket(zmq.PUB)
         pub.bind(f"tcp://*:{a.state_port}")
-        scene.mark(f"decoupled WBC host started (waist_location {a.waist_location})")
+        scene.mark(f"decoupled WBC host started (waist_location {a.waist_location}, gravity_comp {a.gravity_comp}, "
+                   f"height_cmd {a.height_cmd})")  # fmt: skip
         wall0 = time.monotonic()
         while True:
             scene.step()
@@ -337,12 +353,11 @@ def run(a) -> None:
         raise
     finally:
         counts = ctl.counts if ctl else {}
+        cfg = {"waist_location": a.waist_location, "gravity_comp": a.gravity_comp, "height_cmd": a.height_cmd}
         try:
-            scene.close(reason, detail, counts=counts, waist_location=a.waist_location)
+            scene.close(reason, detail, counts=counts, **cfg)
         except Exception as e:
-            write_termination(
-                a.out, reason, "close", detail + repr(e), counts=counts, waist_location=a.waist_location
-            )
+            write_termination(a.out, reason, "close", detail + repr(e), counts=counts, **cfg)
 
 
 def selfcheck(a) -> None:
@@ -380,7 +395,7 @@ def selfcheck(a) -> None:
         assert np.allclose(msg["left_hand_q"], [vals[n] for n in HANDS[:7]])
         assert np.allclose(msg["right_hand_q"], [vals[n] for n in HANDS[7:]])
     elif a.selfcheck == "command":
-        ctl = Controller(scene, "lower_body")
+        ctl = Controller(scene, "lower_body", a.gravity_comp, a.height_cmd)
         ref = np.array(
             [lo + (hi - lo) * (i + 1) / 32 for i, (lo, hi) in enumerate(ctl.ranges[n] for n in REF_NAMES)],
             np.float32,
@@ -399,6 +414,13 @@ def selfcheck(a) -> None:
             for i, n in enumerate(slots):
                 assert abs(cmd.motor_cmd[i].q - ref[REF_NAMES.index(n)]) < 1e-6, n
         print("right-hand bridge slots:", ctl.plant.right_slots)
+        tau = {n: br.low_cmd.motor_cmd[i].tau for i, n in enumerate(ctl.plant.body_slots)}
+        arm_tau = [tau[n] for n in REF_NAMES[:14]]
+        assert all(v == 0.0 for n, v in tau.items() if n not in REF_NAMES[:14]), (
+            "feed-forward only on the arms"
+        )
+        assert any(arm_tau) == (a.gravity_comp == "arms"), arm_tau
+        print("arm feed-forward tau:", np.round(arm_tau, 2).tolist())
     elif a.selfcheck == "waist":
         ctl = Controller(scene, "lower_and_upper_body")
         ctl.activate()
@@ -417,8 +439,8 @@ def selfcheck(a) -> None:
         got = ctl.rpy_cmd()
         assert np.abs(got).max() > 0 and np.allclose(got, expect, atol=0.01), (got, expect)
     elif a.selfcheck == "stand":
-        ctl = Controller(scene, a.waist_location)
-        steps, n, tilts = {}, 0, []
+        ctl = Controller(scene, a.waist_location, a.gravity_comp, a.height_cmd)
+        steps, n, tilts, pelvis_z = {}, 0, [], []
         scene.fall.armed = False
         while scene.t < T_SETTLED + 30:
             scene.step()
@@ -429,10 +451,12 @@ def selfcheck(a) -> None:
                 if scene.t >= T_SETTLED:
                     scene.fall.armed = True
                     tilts.append(tilt_deg(d.qpos[3:7]))
+                    pelvis_z.append(float(d.qpos[2]))
                     fell = scene.check_fall()
                     assert fell is None, fell
         assert max(tilts) < 3.0, f"max tilt {max(tilts):.2f} deg"
-        print(f"stand: max tilt {max(tilts):.2f} deg over 30 s")
+        print(f"stand: max tilt {max(tilts):.2f} deg, pelvis z mean {np.mean(pelvis_z):.3f} m over 30 s "
+              f"(height_cmd {a.height_cmd})")  # fmt: skip
     scene.view["stop"] = True
     print(f"selfcheck {a.selfcheck}: ok")
 
@@ -444,6 +468,8 @@ def main():
     p.add_argument("--waist-location", choices=["lower_body", "lower_and_upper_body"], default="lower_body")
     p.add_argument("--action-port", type=int, default=5556)
     p.add_argument("--state-port", type=int, default=5557)
+    p.add_argument("--gravity-comp", choices=["off", "arms"], default="off", help="arm gravity feed-forward")
+    p.add_argument("--height-cmd", type=float, default=0.74, help="lower-body RL base height command (m)")
     p.add_argument("--selfcheck", choices=["contract", "state", "command", "waist", "stand"])
     a = p.parse_args()
     a.gate.mkdir(parents=True, exist_ok=True)

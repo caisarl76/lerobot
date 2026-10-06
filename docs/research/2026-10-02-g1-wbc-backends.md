@@ -16,9 +16,12 @@ scene, with one validity-gated scorer: **A** = SONIC (joints encoded to tokens o
 policy for legs and waist, arm and hand targets straight to PD). Replay results (6 held-out Humanoid Everyday (HE)
 episodes x 3 repeats, all valid): online A reproduces the stored-token result (11 of 12 gate rows within 0.07 cm;
 the one miss is a table-contact event, tokens identical), C tracks the palm about 2.7-4x worse (p95 9.6-11.0 cm vs 2.7-3.5 cm on
-five episodes), touches the table more, and fails gates G1 and G2. With a synthetic 31D waist, C follows the commanded
-waist (gate passes), while A's waist path trips the arm-speed watchdog in 5 of 6 runs. The **closed-loop comparison
-(28D GR00T through A and C) is deferred**: the batch is prepared but not run, because GPU 7 was given to another training queue.
+five episodes), touches the table more, and fails gates G1 and G2. With arm gravity compensation and SONIC's stance
+(controlled C) the gap shrinks 2-2.5x but A still wins. With a synthetic 31D waist, C follows the commanded waist (gate
+passes), while A's waist path trips the arm-speed watchdog in 5 of 6 runs. Closed loop with a 28D GR00T (4 rounds x 54
+runs): the policy's chunk-to-chunk jumps trip the arm-speed watchdog on both backends; a 0.3 s chunk blend removes
+almost all trips, the sampler noise scale 0 only part of them, both together leave 1 trip in 54 runs; A keeps the better
+palm tracking and C touches the table far more.
 
 ## What was added
 
@@ -220,23 +223,109 @@ Episodes 3555 and 2006 (2006: "fold and pass coat", 507 frames, not one of the s
   the host.
 - Hand gains seen by the sim at run time (A): kp 1.5, kd 0.1 on all motors, after `Init Done` and while streaming.
 
-## Closed loop (deferred)
+## Closed loop: model
 
-Not run. The user gave the second H100 host's GPU 7 to another training queue after this session's 28D GR00T training.
-That training finished (smoke run passed, processor q01/q99 equal to the dataset stats): `groot_joint28_ho5_official_full`
+The 28D GR00T for the closed loop trained (smoke run passed, processor q01/q99 equal to the dataset stats): `groot_joint28_ho5_official_full`
 (official recipe, 20K steps x batch 32, bf16, HE `joint28` with exact quantiles). Exit 0, 20000/20000 steps in 3:13:04
 (1.73 step/s), "End of training" 2026-10-02 15:31 UTC; checkpoints 005000, 010000, 015000, 020000 and last under
-`/run-output/humanoid_everyday_g1_20260923/runs/groot_joint28_ho5_official_full`. The closed-loop batch is prepared but not run: policy server
-`--noise-seed 0` for all configs (this branch's server has no `--noise-scale`, so this is not the robot-accepted
-noise-scale-0 setting), configurations A28cl, C28cl and Anative (the 78D HE GR00T `*_official_full` through stored-token
-SONIC) x 6 episodes x 3 repeats, plus a re-run of A28 ep 2006 r3.
+`/run-output/humanoid_everyday_g1_20260923/runs/groot_joint28_ho5_official_full`. Results are in "Closed loop: results"
+below (after the controlled-C section, because the closed loop runs controlled C).
 
-**Results to be added.**
+## Controlled C (C28g)
+
+C as shipped mixes two things into its palm error: PD sag of the arms under gravity (upstream ships
+`enable_gravity_compensation` off) and a lower stance (pelvis about 0.747 m at height command 0.74, A about 0.764 m), so
+the palms sit lower relative to the table. C28g removes both:
+
+- `--gravity-comp arms`: each 50 Hz step writes upstream's arm gravity torques
+  (`RobotModel.compute_gravity_compensation_torques(q, "arms")` at the measured pose, fixed base, as upstream's
+  `sync_env`) into the bridge's feed-forward `tau`; legs, waist and hands get 0. The `command` self-check asserts this.
+- `--height-cmd H`: the lower-body RL's base height command. H is picked with the `stand` self-check (it prints the
+  mean pelvis height), so the pelvis matches A's (~0.764 m). Stand (30 s, gravity compensation on): command 0.74 ->
+  pelvis 0.746 m, 0.76 -> 0.755, 0.78 -> 0.761, **0.79 -> 0.764 (max tilt 2.1 deg, used)**, 0.80 -> 0.766, 0.82 fails
+  the 3 deg tilt check. Without compensation, 0.74 -> 0.747 m.
+
+Run: `BACKEND=decoupled REPLAY=1 HOST_ARGS="--gravity-comp arms --height-cmd H"` with run names `WBC_C28g_ep<E>_r<R>`
+over the same 6 episodes x 3 repeats, then
+`wbc_compare.py AUDIT --episodes 1293,1300,1455,2207,3555,3600 --test C28g` (G1/G2 against the existing A28 runs).
+`termination.json` records `gravity_comp` and `height_cmd`.
+
+**Results (2026-10-05, 18 runs, all valid; A28 and C28 are the step-1 runs).** Palm error vs `joint_ref` p50 / p95 (cm),
+mean over 3 repeats, and table hit records:
+
+| Episode | A28 | C28 | C28g |
+| --- | --- | --- | --- |
+| 1293 | 1.60 / 2.77, 0 | 5.80 / 10.47, 68 | 2.10 / 4.50, 2 |
+| 1300 | 1.73 / 2.77, 0 | 5.50 / 11.00, 80 | 2.00 / 4.70, 13 |
+| 1455 | 1.83 / 7.77, 199 | 6.00 / 10.67, 335 | 2.47 / 5.60, 189 |
+| 2207 | 1.50 / 3.17, 24 | 6.70 / 10.67, 0 | 3.00 / 5.70, 0 |
+| 3555 | 1.70 / 3.40, 0 | 6.70 / 10.20, 8 | 2.73 / 7.33, 36 |
+| 3600 | 2.00 / 3.57, 6 | 4.90 / 9.80, 396 | 2.20 / 5.37, 120 |
+
+- Gravity compensation plus the matched height cut C's palm error by about 2-2.5x (p50 4.9-6.7 -> 2.0-3.0 cm, p95
+  9.8-11.0 -> 4.5-7.3 cm). Most of C28's error was PD sag, as suspected.
+- C28g is still behind A: p95 worse on 5 of 6 episodes (better only on 1455, where A hits the table). **G2 FAIL**
+  (gain -1.63 cm, better on 1 of 6). **G1 FAIL** on table contact (C28g hits more than A on 1293, 1300, 3555, 3600;
+  tilt is lower than A's on every episode).
+- Wrist orientation p95 (deg) is within 1.3 deg of A's (slightly worse) on 4 episodes and better on 1455 and 3600 (11.1 vs 21.4, 11.0 vs 17.0).
+- The remaining gap is at p50 too (~0.5-1.5 cm), so it is not only contact events; plausible causes are the arm PD
+  (kp 20-100, no velocity feed-forward) lagging the 50 Hz targets, against SONIC's learned tracking. Not tested.
+- Ran on the main H100 host (A28/C28 ran on the second one); the same host's SONIC regression below matched the
+  pre-refactor numbers exactly, so the hosts are comparable.
+
+Recorded stance for reference: the raw HE source (`USC-PSI-Lab/Humanoid-Everyday-G1`) stores
+`observation.leg_joints` (12 legs + 3 waist; our `joint28` keeps only arms and hands). Forward kinematics of the sim's
+G1 model with both feet flat gives a pelvis height of 0.773-0.776 m for the 6 test episodes (knees ~0.48 rad, pelvis
+tilt 1.8-2.9 deg); the same method on sim runs is within 1 mm of the recorded sim pelvis (0.7637 vs 0.7628 m). So the
+HE robot (Unitree's own lower-body controller) stood ~1 cm higher than SONIC and ~2.8 cm higher than C at command 0.74;
+C cannot reach it within its stable range (command 0.80 -> 0.766 m, 0.82 fails the tilt check). Palm error is measured
+in the pelvis frame and does not see this offset; table contact does.
+
+SONIC regression on the restructured streamer (`stream_backends.py`), same host and batch: episode 1293, HE GR00T
+official, seed 0: palm p50 / p95 3.9 / 10.0 cm (pre-refactor 3.9 / 10.0), `termination.json` completed.
+
+## Closed loop: results (2026-10-06)
+
+Configurations, each 6 episodes x 3 repeats, policy server per run on the same GPU, `--policy-timeout-s 5`:
+**A28cl** = 28D GR00T, joints encoded online, SONIC; **C28cl** = the same policy through controlled C
+(`HOST_ARGS="--gravity-comp arms --height-cmd 0.79"`); **Anative** = the 78D HE GR00T (`groot_sonic78sonicstate_ho5_official_full`)
+through stored-token SONIC. Three rounds that differ only in how chunk switches are smoothed:
+
+- round 1 (`*cl`): server `--noise-seed 0`, chunks switch at once (`--chunk-blend-s 0`, the evaluated setting so far);
+- round 2 (`*clb`): as round 1 plus streamer `--chunk-blend-s 0.3`;
+- round 3 (`*cln`): server `--noise-scale 0` (the GR00T setting accepted on the robot, runs 20-21; ported to this branch's
+  server), no blend;
+- round 4 (`*clnb`): noise scale 0 and the 0.3 s blend together.
+
+Valid runs (of 18) and, over valid runs, palm error p50 / p95 (cm) vs the streamer's `joint_ref` (the policy's own
+targets; not defined for Anative) and table hit records:
+
+| Config | Round 1 (no smoothing) | Round 2 (blend 0.3 s) | Round 3 (noise scale 0) | Round 4 (noise 0 + blend) |
+| --- | --- | --- | --- | --- |
+| A28cl | 8 valid; 1.75 / 3.30; 19 | 16; 1.57 / 3.17; 24 | 11; 1.63 / 3.09; 20 | **17**; 1.60 / 3.22; 26 |
+| C28cl | 12; 2.57 / 7.83; 130 | **18**; 2.32 / 7.03; 136 | 14; 2.29 / 8.70; 224 | **18**; 2.24 / 7.89; 196 |
+| Anative | 17; -; 21 | **18**; -; 34 | 18; -; 37 | **18**; -; 37 |
+
+- Every invalid run is the streamer's arm-speed watchdog (> 6 rad/s, mostly the left elbow). The cause is the 28D
+  GR00T's chunk-to-chunk jumps: in the first C smoke run the elbow target went 0.36 -> -0.29 rad at the second chunk
+  (t_ep 0.4 s). SONIC does not absorb these jumps either (A trips more often than C in rounds 1 and 3).
+- A 0.3 s chunk blend removes almost all trips (A 8 -> 16, C 12 -> 18 valid) without hurting tracking.
+- Noise scale 0 only helps partly (A 11, C 14). Its trips are deterministic per episode (A: none valid on 1300 and
+  2207; C: none on 1293), so the jumps are in the policy's mean prediction for a changed observation, not only sampling
+  noise.
+- Noise scale 0 plus the blend is the most reliable setting: 53 of 54 runs valid (the one trip is A on 2207, joint 0
+  at just over 6 rad/s). Tracking matches the blend-only round. Palm error vs the recorded demo is lowest with noise 0
+  (A p50 4.5 cm, Anative 4.1 cm in round 4).
+- When runs complete, A tracks the policy's targets better (p95 ~3.1-3.3 cm vs C 7.0-8.7 cm) and C touches the table
+  5-10x more, as in replay. G1 (C vs A) fails in every round.
+- Palm error vs the recorded demo (closed loop: how far the policy's motion drifts from the demo, not a tracking
+  measure) is p50 4-7 cm, p95 17-31 cm for all configs.
 
 ## Next steps
 
-1. Closed-loop results (A28cl vs C28cl vs Anative); G1 applies, palm error reported both ways.
-2. C with arm gravity compensation (upstream `enable_gravity_compensation`) to separate PD sag from the controller.
+1. Use noise scale 0 plus `--chunk-blend-s 0.3` as the default for 28D joint policies in sim; check the blend on the
+   robot next to the existing `--max-token-step` limit.
+2. C did not pass G2 in replay or G1 in closed loop. Arm velocity feed-forward or higher arm gains would test the
+   remaining PD-lag explanation.
 3. A31syn without the watchdog (`--max-arm-speed 0`) to see whether SONIC stays stable under the synthetic waist.
 4. Real-robot C needs a joint-step cap first (none in sim).
-5. Height command matched to A's stance for table tasks (C stands lower).
