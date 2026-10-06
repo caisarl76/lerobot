@@ -87,17 +87,26 @@ checkpoint's processors from the new dataset's stats, as a base run builds them.
 model's stats and re-saves the model. After it ran, the GR00T and Pi0.5 processor stats were checked to equal the
 dataset's (e.g. hand q99 0.4025, 0.7084, 1.7500).
 
-## Status (2026-10-04 15:10 UTC)
+## Results (finished 2026-10-05)
 
-| Run                                        | Result                                                                             |
-| ------------------------------------------ | ---------------------------------------------------------------------------------- |
-| All 7 smoke tests (Psi0 HE pending)        | passed                                                                             |
-| `psi0_wbt50_base_full`                     | done, 2 h 01 min, loss 1.09 (8.8 passes)                                           |
-| `xr1_wbt50_base_full`                      | running (restarted 10-04 14:45 after the GPU 7 conflict), ~2 h                     |
-| GR00T base/he, Pi0.5 base/he, XR-1 he full | queued; Pi0.5 ~7.5 h per run at ~9 samples/s                                       |
-| Psi0 he                                    | checkpoint copying from h100 (~3 MB/s); then retarget, smoke and full are appended |
+All 8 full runs exited 0. Final training losses (scales differ between models; compare base vs he within a model):
 
-Expected end: around 10-05 13:00 UTC.
+| Model | base: time, loss  | he: time, loss    |
+| ----- | ----------------- | ----------------- |
+| GR00T | 48 min, 0.041     | 56 min, 0.033     |
+| Pi0.5 | 7 h 15 min, 0.021 | 7 h 05 min, 0.017 |
+| Psi0  | 2 h 01 min, 1.088 | 1 h 55 min, 1.079 |
+| XR-1  | 2 h 22 min, 3.699 | 2 h 21 min, 1.064 |
+
+- Every he run ends lower than its base run. These are training losses only; the held-out comparison (episodes 27, 35) is the next step.
+- Checkpoints: `runs/<name>/checkpoints/last/pretrained_model` (Pi0.5 also `pretrained_model_ema`). Each run also keeps
+  `training_state/`; Pi0.5 runs take 71 GB each. h100_174's `/mnt/data01` was at 99 % (185 GB free) on 10-06.
+- Psi0 he started from a much higher loss than the other he runs (smoke: 15.9 vs base 22.4, against 3–6× lower for
+  the others). The weights load completely; the cause is normalization. Psi0 uses MIN_MAX, and the HE ranges are
+  ~2.7× wider for tokens and ~4.1× for arm state, so the rewritten stats rescale its inputs and targets. The user
+  chose to keep the rewritten stats (2026-10-05) rather than the HE stats.
+- The Psi0 he config needed the checkpoint's own `config.json` as its policy block: Psi0 loads a checkpoint only with
+  `vlm_config`, which exists only in the saved config (originals kept as `*.bak-novlmconfig`).
 
 Check progress:
 
