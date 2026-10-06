@@ -138,6 +138,29 @@ seam = jump at the chunk switch. Zero noise (`temp:0`) was best or equal for eve
   and the clipped std turned XR-1's tiny state-relative offsets on it into ~130 std errors. The first pass (before
   the fix) is kept in `eval/v1/`.
 
+## Closed-loop sim, 50 Hz end to end (2026-10-06)
+
+Official SONIC sim on h100*174 (`HOST=h100_174 sonic_official_sim_eval.sh`, code copy `sonic_roundtrip_20260923/code_wbt`,
+run dirs `WBT*\*`). Policy server + streamer in dataset-image mode at the dataset's 50 Hz, held-out episode 27,
+`--start planner --max-token-step 0.05`, noise scale 0.5, table 25 cm unless noted. All runs completed: 465 of the 475
+episode frames were scored, with no rejected or stale chunks (chunk time median 0.19 s for GR00T, 0.27 s for Pi0.5).
+
+| Run                | Palm err p50 / p95 | p95 left / right | Wrist err p50 | Tilt max | Token vs stored p50 |
+| ------------------ | ------------------ | ---------------- | ------------- | -------- | ------------------- |
+| GR00T he           | **3.7 / 9.7 cm**   | 9.3 / 12.6 cm    | **7°**        | 8.0°     | 0.020               |
+| GR00T he, no table | 4.3 / 10.7 cm      | 9.4 / 14.7 cm    | 9°            | 8.7°     | 0.022               |
+| Pi0.5 he           | 9.2 / 17.6 cm      | 10.8 / 20.0 cm   | 32°           | 8.6°     | 0.058               |
+
+- **Reference = measured joints.** The scorer's reference (`wbt_joint28_reference.py`) is the arm pose the real
+  robot measured (`observation.state`). Against the commanded joints (`action.wbc`), all runs scored ~14 / 34 cm,
+  and so did a replay of the recording's own tokens (12.9 / 32.7 cm, `WBT_replay_ep27`). In that replay, the sim arm
+  joints match the real robot's measured ones within 1.2° (right) and 2.7° (left), while the real right arm stayed ~9°
+  from its commands (it holds the bottle). SONIC's decoder output is a PD setpoint, not the reached pose.
+- So the sim reproduces this real recording. GR00T he tracks the recorded motion closely in closed loop; Pi0.5 he
+  is 2.5× further off with large wrist errors, although its open-loop token error was lower.
+- The table made no difference (it was not the cause of the error).
+- Results scored against the commanded joints are kept as `stream_eval.wbccmd.json` in each run dir.
+
 Check progress:
 
 ```bash
@@ -168,5 +191,6 @@ ssh h100_174 'cd /mnt/data01/jhkim/model_weight/g1_dex3_20260922/g1_wbt_handover
    `wbt_pi05_he_full/pretrained_model_ema` (config `dtype` set to bfloat16, original `config.json.fp32`). On the
    workstation RTX 3060 they reproduce the h100_174 open-loop numbers (GR00T he temp:0 tokens err 0.315, Pi0.5 he
    0.284). Psi0 and XR-1 servers would need the `feat/g1-psi0-xiaomi-policies` code.
-4. Sim, then robot, with the task text "pick drink bottle from the table and handover".
+4. Sim done for GR00T he and Pi0.5 he (section above). Robot next, with the task text "pick drink bottle from the
+   table and handover" and `POLICY_FPS=50`; GR00T he first.
 5. Done 2026-10-06: `training_state/` of all 8 runs deleted (181 GB; 365 GB free afterwards). Final weights kept.
