@@ -150,14 +150,20 @@ episode frames were scored, with no rejected or stale chunks (chunk time median 
 | GR00T he           | **3.7 / 9.7 cm**   | 9.3 / 12.6 cm    | **7°**        | 8.0°     | 0.020               |
 | GR00T he, no table | 4.3 / 10.7 cm      | 9.4 / 14.7 cm    | 9°            | 8.7°     | 0.022               |
 | Pi0.5 he           | 9.2 / 17.6 cm      | 10.8 / 20.0 cm   | 32°           | 8.6°     | 0.058               |
+| Psi0 he            | 4.2 / 20.3 cm      | 13.1 / 23.8 cm   | 10°           | 9.1°     | 0.027               |
+| XR-1 he            | 9.9 / 34.0 cm      | 12.8 / 41.7 cm   | 28°           | 8.0°     | 0.058               |
 
 - **Reference = measured joints.** The scorer's reference (`wbt_joint28_reference.py`) is the arm pose the real
   robot measured (`observation.state`). Against the commanded joints (`action.wbc`), all runs scored ~14 / 34 cm,
   and so did a replay of the recording's own tokens (12.9 / 32.7 cm, `WBT_replay_ep27`). In that replay, the sim arm
   joints match the real robot's measured ones within 1.2° (right) and 2.7° (left), while the real right arm stayed ~9°
   from its commands (it holds the bottle). SONIC's decoder output is a PD setpoint, not the reached pose.
-- So the sim reproduces this real recording. GR00T he tracks the recorded motion closely in closed loop; Pi0.5 he
-  is 2.5× further off with large wrist errors, although its open-loop token error was lower.
+- So the sim reproduces this real recording. Ranking in closed loop: GR00T he (best median and tail), Psi0 he (median
+  close to GR00T, tail 2× worse), Pi0.5 he (2.5× GR00T's median, 32° wrist error), XR-1 he (right hand drifts; the
+  token slew limit was active on 30 ticks vs 9 for GR00T). Open-loop token error ranked Pi0.5 and XR-1 first, so
+  open loop did not predict closed-loop quality here.
+- Psi0 and XR-1 servers on h100_174 need `HF_CACHE=/mnt/data01/jhkim/huggingface` (CLIP / Qwen3-VL are not in the
+  shared `/mnt/data01/huggingface` there); the first Psi0 run failed on the missing CLIP text encoder.
 - The table made no difference (it was not the cause of the error).
 - Results scored against the commanded joints are kept as `stream_eval.wbccmd.json` in each run dir.
 
