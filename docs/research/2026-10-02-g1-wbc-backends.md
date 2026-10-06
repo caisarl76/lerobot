@@ -250,6 +250,14 @@ mean over 3 repeats, and table hit records:
 - Ran on the main H100 host (A28/C28 ran on the second one); the same host's SONIC regression below matched the
   pre-refactor numbers exactly, so the hosts are comparable.
 
+Recorded stance for reference: the raw HE source (`USC-PSI-Lab/Humanoid-Everyday-G1`) stores
+`observation.leg_joints` (12 legs + 3 waist; our `joint28` keeps only arms and hands). Forward kinematics of the sim's
+G1 model with both feet flat gives a pelvis height of 0.773-0.776 m for the 6 test episodes (knees ~0.48 rad, pelvis
+tilt 1.8-2.9 deg); the same method on sim runs is within 1 mm of the recorded sim pelvis (0.7637 vs 0.7628 m). So the
+HE robot (Unitree's own lower-body controller) stood ~1 cm higher than SONIC and ~2.8 cm higher than C at command 0.74;
+C cannot reach it within its stable range (command 0.80 -> 0.766 m, 0.82 fails the tilt check). Palm error is measured
+in the pelvis frame and does not see this offset; table contact does.
+
 SONIC regression on the restructured streamer (`stream_backends.py`), same host and batch: episode 1293, HE GR00T
 official, seed 0: palm p50 / p95 3.9 / 10.0 cm (pre-refactor 3.9 / 10.0), `termination.json` completed.
 
