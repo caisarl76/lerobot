@@ -68,7 +68,14 @@ try:
         observation_state,
         ticks,
     )
-    from .wbc_common import check_replay_width, replay_chunk, to_joint_ref, write_done
+    from .wbc_common import (
+        check_replay_width,
+        check_synthetic_duration,
+        replay_chunk,
+        synthetic_waist,
+        to_joint_ref,
+        write_done,
+    )
 except ImportError:
     from sonic_targets import SonicEncoder, joint_chunk_to_sonic, load_joint_limits
     from stream_backends import (
@@ -82,7 +89,14 @@ except ImportError:
         observation_state,
         ticks,
     )
-    from wbc_common import check_replay_width, replay_chunk, to_joint_ref, write_done
+    from wbc_common import (
+        check_replay_width,
+        check_synthetic_duration,
+        replay_chunk,
+        synthetic_waist,
+        to_joint_ref,
+        write_done,
+    )
 
 TOKEN_BOUND = 1.25  # run_vla_inference rejects chunks whose token magnitude exceeds this
 
@@ -548,9 +562,9 @@ def main():
     )
     p.add_argument(
         "--action-space",
-        choices=["sonic78", "joint28"],
+        choices=["sonic78", "joint28", "joint31"],
         default="sonic78",
-        help="joint28: the policy outputs arm + Dex3 hand joints (28D). "
+        help="joint28: the policy outputs arm + Dex3 hand joints (28D); joint31: + waist yaw/roll/pitch (motor 12-14). "
         "With --backend sonic each chunk is encoded to SONIC tokens here (needs --encoder-model, "
         "--observation-config, --robot-xml)",
     )
@@ -570,6 +584,11 @@ def main():
     p.add_argument(
         "--replay-horizon", type=int, default=40, help="--replay chunk length in frames (GR00T: 40)"
     )
+    p.add_argument(
+        "--synthetic-waist",
+        action="store_true",
+        help="--action-space joint31: append wbc_common.synthetic_waist (16 s test track) to 28D chunks",
+    )
     for name in ("encoder-model", "observation-config", "robot-xml"):
         p.add_argument(f"--{name}", type=Path, help="--action-space joint28: as for prepare_sonic_dataset.py")
     a = p.parse_args()
@@ -577,7 +596,7 @@ def main():
         p.error(
             "--start planner excludes --startup-tokens and needs --handoff-blend-s > 0 (it reads the planner token)"
         )
-    joint_space = a.action_space == "joint28"
+    joint_space = a.action_space in ("joint28", "joint31")
     if a.replay:
         if a.policy_path or a.policy_server:
             p.error("--replay excludes --policy-path and --policy-server")
@@ -588,9 +607,11 @@ def main():
     if a.backend == "decoupled" and a.dex3_right_order == "swap":
         p.error("--backend decoupled excludes --dex3-right-order swap (C addresses joints by name)")
     if a.backend == "decoupled" and not joint_space:
-        p.error("--backend decoupled needs --action-space joint28")
+        p.error("--backend decoupled needs --action-space joint28 or joint31")
     if a.backend == "decoupled" and (a.startup_tokens or a.max_token_step > 0):
         p.error("--backend decoupled excludes --startup-tokens and --max-token-step (token-only options)")
+    if a.synthetic_waist and a.action_space != "joint31":
+        p.error("--synthetic-waist needs --action-space joint31")
     joint28 = None  # (robot joint limits, SONIC encoder) for encoding joint chunks
     if joint_space and a.backend == "sonic":
         if not (a.encoder_model and a.observation_config and a.robot_xml):
@@ -631,7 +652,9 @@ def main():
     replay = None
     if a.replay:
         replay = images.actions()
-        check_replay_width(replay.shape[1], a.action_space)
+        check_replay_width(replay.shape[1], a.action_space, a.synthetic_waist)
+    if a.synthetic_waist:
+        check_synthetic_duration(a.duration_s or images.n / images.fps)
     worker = InferenceWorker()
     _, warm_imgs, warm_state, warm_task = images.frame(0.0)
     warm_state = np.zeros(28, np.float32) if warm_state is None else warm_state
@@ -716,14 +739,18 @@ def main():
             # --state-source dataset: recorded state (isolates execution from state feedback); robot: closed loop
             states = [o[2] for o in obs] if a.state_source == "dataset" else robot_hist
             joints = policy.chunk(states, [o[1] for o in obs], task)
+        if a.synthetic_waist:
+            times = (k + np.arange(len(joints))) / images.fps
+            joints = np.hstack([joints[:, :28], synthetic_waist(times).astype(np.float32)])
         if not np.isfinite(joints).all():
             raise ValueError(f"rejected chunk at t={t_ep:.2f}s (nonfinite)")
         if a.action_space == "sonic78":
             chunk, joints = joints, None
         else:
-            if joints.shape[1] != 28:
+            width = 31 if a.action_space == "joint31" else 28
+            if joints.shape[1] != width:
                 raise ValueError(
-                    f"policy chunk is {joints.shape[1]}D, --action-space {a.action_space} needs 28D"
+                    f"policy chunk is {joints.shape[1]}D, --action-space {a.action_space} needs {width}D"
                 )
             # backend sonic: the 30 Hz joint chunk -> tokens + hands, exactly as before (A's baseline path)
             chunk = None if joint28 is None else joint_chunk_to_sonic(joints, *joint28, fps=images.fps)

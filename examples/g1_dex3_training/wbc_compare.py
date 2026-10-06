@@ -1,5 +1,5 @@
 """Comparison gates of the WBC backend comparison (spec: docs/superpowers/specs/2026-10-01-g1-wbc-backends-design.md)
-from sonic_stream_eval.py results. Run dirs: WBC_<config>_ep<episode>_r<repeat> (Astored, A28, C28;
+from sonic_stream_eval.py results. Run dirs: WBC_<config>_ep<episode>_r<repeat> (Astored, A28, C28, A31syn, C31syn;
 closed loop A28cl, C28cl, Anative). Statistics are per-episode means over valid repeats; spread = max - min.
 Coverage rule (every gate): each side of a row needs >= REPEATS (3) runs and ALL of them valid, else the row fails with
 a why ("A28: 1 valid of 3", "no runs for C28"). A run dir without stream_eval.json (crash) is an invalid run.
@@ -9,7 +9,8 @@ of the episodes present.
   G1  equal balance: every repeat valid; mean max tilt <= reference + 2 deg; mean table.hit_records (contact records during the episode) <= reference's
   G2  C better: mean joint_ref palm p95 over the episodes >= 1.0 cm lower than A28, lower on >= 4 of 6 episodes
       (other episode counts n: all n paired, lower on >= ceil(2n/3)); every pair needs REPEATS runs on both sides
---episodes sets the gated episodes of G0/G1/G2/closed loop; G2 needs all of them.
+--episodes sets the gated episodes of G0/G1/G2/closed loop (syn loops over the episodes present for its cfg); G2 needs all of them.
+  syn 31D synthetic waist: valid, joint_ref palm p95 <= the same backend's 28D replay + 2 cm
 Usage: python wbc_compare.py AUDIT_DIR [--out compare.json] [--episodes 1293,1300,1455,2207,3555,3600]
 """
 
@@ -162,6 +163,22 @@ def g2(runs, episodes=None, test="C28") -> dict:
     }
 
 
+def syn(runs, cfg="C31syn", base="C28", episodes=None) -> dict:
+    rows = []
+    for ep in episodes_of(runs, episodes if episodes is not None else runs.get(cfg, {}), cfg):
+        s, b = runs.get(cfg, {}).get(ep, []), runs.get(base, {}).get(ep, [])
+        sv, bv = metric(s, "palm_err_vs_joint_ref_cm", "p95"), metric(b, "palm_err_vs_joint_ref_cm", "p95")
+        all_valid = bool(s) and all(x.get("valid") for x in s)
+        row = {"episode": ep, "n": len(s), "n_base": len(b), "all_valid": all_valid, "p95": mean(sv), "base_p95": mean(bv),
+               **{f"torso_{ax}_rad_p95": mean(metric(s, "torso_err_rad", ax, "p95")) for ax in ("roll", "pitch", "yaw")}}  # fmt: skip
+        if why := uncovered(**{cfg: s, base: b}):
+            row.update(why=why, **{"pass": False})
+        else:
+            row["pass"] = bool(all_valid and sv and bv and np.mean(sv) <= np.mean(bv) + 2)
+        rows.append(row)
+    return {"pass": bool(rows) and all(x["pass"] for x in rows), "rows": rows}
+
+
 def closed_loop(runs, episodes=None) -> list:
     rows = []
     for cfg in ("A28cl", "C28cl", "Anative"):
@@ -187,7 +204,8 @@ def main():
     all_runs = load(a.root)
     runs = only(all_runs, a.episodes)
     out = {"counts": {cfg: {ep: len(v) for ep, v in eps.items()} for cfg, eps in runs.items()},
-           "G0": g0(runs, a.episodes), "G1": g1(runs, a.test, "A28", a.episodes), "G2": g2(runs, a.episodes, a.test)}  # fmt: skip
+           "G0": g0(runs, a.episodes), "G1": g1(runs, a.test, "A28", a.episodes), "G2": g2(runs, a.episodes, a.test),
+           "syn_A": syn(all_runs, "A31syn", "A28"), "syn_C": syn(all_runs, "C31syn", "C28")}  # fmt: skip
     if "C28cl" in runs:
         out["G1_closed"] = g1(runs, "C28cl", "A28cl", a.episodes)
     if any(c in runs for c in ("A28cl", "C28cl", "Anative")):

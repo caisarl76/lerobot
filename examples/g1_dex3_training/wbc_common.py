@@ -4,8 +4,6 @@ wbc_compare.py. numpy only (msgpack imported where used), so it runs on the work
 the scoring container.
 
 joint_ref (31): arms 14 (motor 15..28) | Dex3 hands 14 (dataset order) | waist 3 (motor 12..14: yaw, roll, pitch).
-This 31-value layout (joint_ref and the joint message) is the spec's message contract. The 28D action space sends the
-nominal waist in it; a policy-commanded waist is a follow-up extension.
 """
 
 from __future__ import annotations
@@ -25,6 +23,7 @@ except ImportError:
 WAIST_NAMES = ("waist_yaw_joint", "waist_roll_joint", "waist_pitch_joint")
 REF_NAMES = ACTION_NAMES + WAIST_NAMES
 WAIST = slice(28, 31)
+SYNTHETIC_WAIST_S = 16.0  # yaw 0-5 s, roll 5-10 s, pitch 10-16 s
 JOINT_TOPIC = b"joints"
 FALL_TILT_DEG, FALL_Z_M, FALL_HOLD_S = 20.0, 0.4, 0.2  # gear_sonic itself resets the robot below z 0.2 m
 MIN_COVERAGE, MAX_HELD = 0.98, 0.02
@@ -49,12 +48,33 @@ def replay_chunk(actions, k: int, horizon: int) -> np.ndarray:
     return np.vstack([out, np.repeat(out[-1:], horizon - len(out), axis=0)])
 
 
-def check_replay_width(width: int, action_space: str) -> None:
-    expected = {"sonic78": 78, "joint28": 28}[action_space]
+def synthetic_waist(t) -> np.ndarray:
+    """Waist test track [N,3] (yaw, roll, pitch rad) at episode times t (s), one axis at a time: yaw +-0.4 sine at
+    0.2 Hz (0-5 s), roll +-0.15 sine at 0.2 Hz (5-10 s), pitch 0 -> 0.3 -> 0 (2 s ramp, 2 s hold, 2 s ramp; 10-16 s),
+    then zero."""
+    t = np.asarray(t, np.float64)
+    w = np.zeros((len(t), 3))
+    s = np.sin(2 * np.pi * 0.2 * t)
+    yaw, roll = (t >= 0) & (t < 5), (t >= 5) & (t < 10)
+    w[yaw, 0] = 0.4 * s[yaw]
+    w[roll, 1] = 0.15 * s[roll]
+    tp = t - 10
+    w[:, 2] = 0.3 * np.clip(np.minimum(tp / 2, (6 - tp) / 2), 0, 1)
+    return w
+
+
+def check_replay_width(width: int, action_space: str, synthetic: bool) -> None:
+    expected = {"sonic78": 78, "joint28": 28, "joint31": 28 if synthetic else 31}[action_space]
     if width != expected:
         raise ValueError(
-            f"--replay dataset has {width}D actions; --action-space {action_space} needs {expected}D"
+            f"--replay dataset has {width}D actions; --action-space {action_space}"
+            f"{' --synthetic-waist' if synthetic else ''} needs {expected}D"
         )
+
+
+def check_synthetic_duration(duration_s: float) -> None:
+    if duration_s < SYNTHETIC_WAIST_S:
+        raise ValueError(f"--synthetic-waist needs >= {SYNTHETIC_WAIST_S:g} s, the run is {duration_s:.1f} s")
 
 
 def pack_joint_message(seq: int, phase: str, frame: int, joint_ref, t_wall: float | None = None) -> bytes:
@@ -123,14 +143,21 @@ def tilt_deg(quat_wxyz) -> float:
 
 class FallDetector:
     """Armed after GATE/settled (the robot hangs on the band before). Fires when the pelvis tilts more than 20 deg,
-    drops below 0.4 m or no foot touches the floor, sustained for 0.2 s."""
+    drops below 0.4 m or no foot touches the floor, sustained for 0.2 s, or once the simulator itself reported a fall
+    (latch(): gear_sonic resets the robot upright below 0.2 m inside sim_step, which could hide a fast collapse)."""
 
     def __init__(self):
-        self.armed, self._since = False, None
+        self.armed, self._since, self.latched = False, None, None
+
+    def latch(self, reason: str) -> None:
+        if self.armed and self.latched is None:
+            self.latched = reason
 
     def update(self, t: float, quat_wxyz, z: float, floor_contacts: int) -> str | None:
         if not self.armed:
             return None
+        if self.latched:
+            return self.latched
         tilt = tilt_deg(quat_wxyz)
         if tilt <= FALL_TILT_DEG and z >= FALL_Z_M and floor_contacts > 0:
             self._since = None
@@ -139,6 +166,14 @@ class FallDetector:
         if t - self._since >= FALL_HOLD_S:
             return f"tilt {tilt:.1f} deg, pelvis z {z:.3f} m, floor contacts {floor_contacts}"
         return None
+
+
+def rpy_from_matrix(r) -> np.ndarray:
+    """Roll, pitch, yaw of R = Rz(yaw) Ry(pitch) Rx(roll) (pinocchio rpy.matrixToRpy convention)."""
+    r = np.asarray(r, np.float64)
+    return np.array(
+        [np.arctan2(r[2, 1], r[2, 2]), np.arcsin(np.clip(-r[2, 0], -1, 1)), np.arctan2(r[1, 0], r[0, 0])]
+    )
 
 
 def log_settings(args_json: str) -> tuple[str, str]:

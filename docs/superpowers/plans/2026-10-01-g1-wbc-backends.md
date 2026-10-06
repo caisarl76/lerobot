@@ -6,8 +6,8 @@
 **Status.** Step 1 of the spec's evaluation plan (28D replay through A and C, 6 held-out HE episodes x 3 configurations
 x 3 repeats) is built, run and gated. Step 3 (closed loop with a 28D GR00T) has its model trained; the batch is
 prepared but not run. The 31D waist extension (spec step 2: `--action-space joint31`, synthetic waist, waist location
-`lower_and_upper_body`, torso and `rpy_cmd` metrics, `syn` gates) and the exact-quantile tool
-(`augment_joint_quantiles.py`) are follow-up PRs. This page condenses the original task-by-task plan into what was
+`lower_and_upper_body`, torso and `rpy_cmd` metrics, `syn` gates) came in the follow-up 31D PR and is run and gated
+(results doc); the exact-quantile tool (`augment_joint_quantiles.py`) is a separate PR. This page condenses the original task-by-task plan into what was
 built and how to rerun it.
 
 **Backends.** **A** = SONIC: the streamer encodes each 30 Hz joint chunk to SONIC tokens
