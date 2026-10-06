@@ -463,3 +463,18 @@ partial); wrist p95 GR00T 53°, XR-1 76°, Psi0 42°.
   1.3–1.4 rad from the recording at p95) although its open-loop chunks were accurate. It is not a robot candidate
   until the closed-loop drift is understood (check its state input on the robot-state path first).
 - Episodes 91 and 102 are short and hard for every model, GR00T included.
+
+## Workstation fit (RTX 3060 12 GB, GPU 1; 2026-10-06)
+
+| Model            | Local copy                                                        | Peak GPU memory | Chunk latency (warm) |
+| ---------------- | ----------------------------------------------------------------- | --------------- | -------------------- |
+| HE XR-1 78D      | `/mnt/data/jihun/g1_models/he_xr1_sonic78sonicstate_ho5_official_full` | 9.8 GB      | 0.27 s               |
+| HE Psi0 78D      | `/mnt/data/jihun/g1_models/he_psi0_sonic78sonicstate_ho5_matched640k` | 6.8 GB       | 0.28 s               |
+
+- The Psi0 checkpoint is float32 (11.2 GB). Its local `config.json` sets `tune_vlm: false` (original in
+  `config.json.orig`), which builds the VLM in bf16. The bf16 copy reproduces the H100 float32 open-loop numbers
+  exactly at temp:0 (tokens err 0.142, hands err 0.234).
+- Psi0 needs `openai/clip-vit-large-patch14` weights in the local HF cache (`combined_temb`); the workstation cache
+  had only the tokenizer files, so `model.safetensors` was copied from the H100 cache (sha256 checked).
+- Neither model loads with the main checkout's `lerobot` until this branch is merged; run the server with the main
+  venv and `PYTHONPATH=<this worktree>/src:<this worktree>/examples/g1_dex3_training`.
