@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import queue
 import threading
 import time
@@ -175,6 +176,13 @@ class DatasetImages:
         return out
 
 
+def rtc_prefix(last_raw, offset: int | None):
+    """The unplayed tail [1, T - offset, A] of the last normalized chunk, or None (no chunk yet, or all played)."""
+    if last_raw is None or offset is None or offset >= last_raw.shape[1]:
+        return None
+    return last_raw[:, max(0, offset) :]
+
+
 def dataset_obs(ds, k: int, n: int, image_keys: list[str]) -> tuple[list[np.ndarray], list[dict], str]:
     """Last n dataset frames up to k (oldest first): states, images (HWC uint8), task. For offline diagnostics."""
     items = [ds[max(k - i, 0)] for i in reversed(range(n))]
@@ -296,6 +304,14 @@ class ChunkPolicy:
         self.last_raw = actions  # normalized [1, T, 78], the RTC prefix source for the next chunk
         return self.post(actions).squeeze(0).float().cpu().numpy()  # [T, 78]
 
+    def chunk_rtc(self, states, images, task: str, offset: int | None, delay: int) -> np.ndarray:
+        """Closed-loop RTC: condition on the unplayed tail of the last chunk. offset = rows of that chunk already
+        played at this observation, delay = rows that will play while this chunk is computed (kept frozen)."""
+        prev = rtc_prefix(getattr(self, "last_raw", None), offset)
+        if prev is None:
+            return self.chunk(states, images, task)
+        return self.chunk(states, images, task, prev_chunk_left_over=prev, inference_delay=delay)
+
 
 class LiveImages:
     """Latest head-camera frames from LeRobot's ImageServer (robots/unitree_g1/run_g1_server.py --camera: ZMQ JSON,
@@ -392,7 +408,9 @@ class RemotePolicy:
             self.sock.close()
             self.sock = None
 
-    def chunk(self, states: list[np.ndarray], images: list[dict], task: str) -> np.ndarray:
+    def chunk(
+        self, states: list[np.ndarray], images: list[dict], task: str, rtc: dict | None = None
+    ) -> np.ndarray:
         import cv2
 
         jpegs = [
@@ -405,9 +423,14 @@ class RemotePolicy:
                 "states": [np.asarray(x, np.float32).tolist() for x in states],
                 "images": jpegs,
                 "task": task,
+                **({"rtc": rtc} if rtc else {}),
             }
         )
         return np.frombuffer(rep["chunk"], np.float32).reshape(rep["shape"])
+
+    def chunk_rtc(self, states, images, task: str, offset: int | None, delay: int) -> np.ndarray:
+        rtc = None if offset is None else {"offset": int(offset), "delay": int(delay)}
+        return self.chunk(states, images, task, rtc)
 
 
 class InferenceWorker:
@@ -472,6 +495,12 @@ def main():
     )
     p.add_argument("--task", help="instruction text (required with --images zmq; overrides the episode's)")
     p.add_argument("--replan-s", type=float, default=0.4)
+    p.add_argument(
+        "--rtc",
+        action="store_true",
+        help="real-time chunking in closed loop: each new chunk is generated from the unplayed tail of the current "
+        "one (GR00T native overlap inpainting, Pi0.5 guided RTC), with the last inference latency's rows frozen",
+    )
     p.add_argument(
         "--chunk-blend-s",
         type=float,
@@ -739,7 +768,7 @@ def main():
             out.append(earlier[-1] if earlier else now)
         return out
 
-    def infer(t_ep, robot_hist):
+    def infer(t_ep, robot_hist, rtc_offset=None, rtc_delay=0):
         obs = [images.frame(max(t_ep - i / images.fps, 0.0)) for i in reversed(range(policy.n_obs))]
         k, task = obs[-1][0], a.task or obs[-1][3]
         if replay is not None:
@@ -747,7 +776,7 @@ def main():
         else:
             # --state-source dataset: recorded state (isolates execution from state feedback); robot: closed loop
             states = [o[2] for o in obs] if a.state_source == "dataset" else robot_hist
-            joints = policy.chunk(states, [o[1] for o in obs], task)
+            joints = policy.chunk_rtc(states, [o[1] for o in obs], task, rtc_offset, rtc_delay)
         if a.synthetic_waist:
             times = (k + np.arange(len(joints))) / images.fps
             joints = np.hstack([joints[:, :28], synthetic_waist(times).astype(np.float32)])
@@ -815,7 +844,11 @@ def main():
             print(f"[streamer] {episode_end}: ending episode", flush=True)
             break
         if t_ep >= next_replan and not worker.busy:
-            slot, slot_t = worker.submit(infer, t_ep, robot_states(t_ep)), t_ep
+            rtc = ()
+            if a.rtc:  # rows of the current chunk played by now; rows that play during inference stay frozen
+                lat = latencies[-1] if latencies else a.replan_s / 2
+                rtc = (round((t_ep - chunk_t0) * images.fps), math.ceil(lat * images.fps))
+            slot, slot_t = worker.submit(infer, t_ep, robot_states(t_ep), *rtc), t_ep
             next_replan = t_ep + a.replan_s
         k = min(int(t_ep * images.fps), images.n - 1)
         backend.episode_tick(t_ep, k, chunk_t0)

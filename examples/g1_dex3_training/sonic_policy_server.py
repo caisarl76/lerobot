@@ -5,8 +5,11 @@ across a VPN that only allows robot -> H100 (decided 2026-09-27).
 
 Protocol (ZMQ REQ/REP, msgpack):
   {"op": "info"}  -> {"image_keys": [...], "n_obs": int, "shapes": {key: [C, H, W]}}
-  {"op": "chunk", "states": [[28 floats]] * n_obs, "images": [{key: jpeg bytes}] * n_obs, "task": str}
+  {"op": "chunk", "states": [[28 floats]] * n_obs, "images": [{key: jpeg bytes}] * n_obs, "task": str,
+   "rtc": {"offset": int, "delay": int} (optional, streamer --rtc)}
                   -> {"chunk": float32 bytes, "shape": [T, 78], "latency_s": float}
+With "rtc" the chunk is generated from the unplayed tail (rows offset..) of the last chunk this server returned,
+with `delay` rows frozen (ChunkPolicy.chunk_rtc).
 JPEGs carry RGB arrays encoded and decoded without colour conversion (RGB in, RGB out).
 
 Usage (H100, lerobot container with the GPU and the port published, e.g. docker run -p 5560:5560 ...):
@@ -75,7 +78,9 @@ def main():
                 started = time.monotonic()
                 images = [{k: decode(v, policy.shapes[k]) for k, v in im.items()} for im in req["images"]]
                 states = [np.asarray(s, np.float32) for s in req["states"]]
-                chunk = np.ascontiguousarray(policy.chunk(states, images, req["task"]), np.float32)
+                rtc = req.get("rtc") or {}
+                chunk = policy.chunk_rtc(states, images, req["task"], rtc.get("offset"), rtc.get("delay", 0))
+                chunk = np.ascontiguousarray(chunk, np.float32)
                 rep = {
                     "chunk": chunk.tobytes(),
                     "shape": list(chunk.shape),
