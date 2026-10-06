@@ -13,13 +13,16 @@
 #
 # e.g. g1_groot_real_run.sh stream run20_he_groot_official_laptop_t0 "close a laptop g1"
 # Env: MODEL (checkpoint dir), GPU, PORT, NOISE_SCALE (default 0.5; 0 = runs 20-21; empty = unscaled sampling), CAM_FPS (default 30),
-#      POLICY_FPS (50 for the G1 WBT models; needs the PC2 streamer copy with --policy-fps).
+#      POLICY_FPS (50 for the G1 WBT models; needs the PC2 streamer copy with --policy-fps),
+#      POLICY_SUBDIR (default pretrained_model), BACKBONE_DTYPE (default bfloat16, GR00T only; empty for others).
 set -e
 MODEL=${MODEL:-/mnt/data/jihun/g1_models/he_groot_sonic78sonicstate_ho5_official_full}
 # NOISE_SCALE 0.5 keeps some sample variety so the policy can escape a stall (user decision 2026-10-02; open loop seam
 # 0.103 vs 0.091 at 0; not yet run on the robot). NOISE_SCALE=0 reproduces the passed runs 20-21. If stalls become a
 # major problem: raise the noise only while the arm is stalled (impl log 10, option 4; not implemented).
 GPU=${GPU:-1}; PORT=${PORT:-5560}; NOISE_SCALE=${NOISE_SCALE-0.5}
+POLICY_SUBDIR=${POLICY_SUBDIR:-pretrained_model}  # pretrained_model_ema for Pi0.5
+BACKBONE_DTYPE=${BACKBONE_DTYPE-bfloat16}  # GR00T only; set empty (BACKBONE_DTYPE=) for other policies
 CAM_FPS=${CAM_FPS:-30}  # camera publish rate; capture is 30 Hz, so 30 is the max (server default 10)
 WS=192.168.0.62  # workstation address seen from PC2
 UNIT=groot-server-$PORT
@@ -31,8 +34,8 @@ server)
   # memory-capped user service: loading the fp32 checkpoint on the CPU first can trigger systemd-oomd otherwise
   systemd-run --user --unit=$UNIT -p MemoryMax=32G -p MemorySwapMax=0 -p WorkingDirectory="$PWD" \
     -E PATH="$PATH" -E HOME="$HOME" -E CUDA_VISIBLE_DEVICES=$GPU -E HF_HUB_OFFLINE=1 \
-    bash -c "exec uv run --project ../.. python -u sonic_policy_server.py --policy-path $MODEL/pretrained_model \
-      --port $PORT --backbone-dtype bfloat16 ${NOISE_SCALE:+--noise-scale $NOISE_SCALE} > $LOG 2>&1"
+    bash -c "exec uv run --project ../.. python -u sonic_policy_server.py --policy-path $MODEL/$POLICY_SUBDIR \
+      --port $PORT ${BACKBONE_DTYPE:+--backbone-dtype $BACKBONE_DTYPE} ${NOISE_SCALE:+--noise-scale $NOISE_SCALE} > $LOG 2>&1"
   until grep -q "ready on port" "$LOG" 2>/dev/null; do
     systemctl --user is-active -q $UNIT || { tail -20 "$LOG"; exit 1; }
     sleep 5

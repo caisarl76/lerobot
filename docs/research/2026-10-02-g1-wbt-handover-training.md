@@ -164,7 +164,9 @@ ssh h100_174 'cd /mnt/data01/jhkim/model_weight/g1_dex3_20260922/g1_wbt_handover
 1. Done 2026-10-06: held-out open-loop comparison (section above).
 2. Done 2026-10-06: `sonic_policy_streamer.py --policy-fps 50` (live camera mode; dataset mode already uses the
    dataset's rate), `POLICY_FPS=50` in `g1_groot_real_run.sh`. The PC2 streamer copy must be updated before use.
-3. Copy the chosen checkpoints to the workstation. Psi0 and XR-1 servers need the `feat/g1-psi0-xiaomi-policies`
-   code.
+3. Done 2026-10-06 for the first two: `/mnt/data/jihun/g1_models/wbt_groot_he_full/pretrained_model` and
+   `wbt_pi05_he_full/pretrained_model_ema` (config `dtype` set to bfloat16, original `config.json.fp32`). On the
+   workstation RTX 3060 they reproduce the h100_174 open-loop numbers (GR00T he temp:0 tokens err 0.315, Pi0.5 he
+   0.284). Psi0 and XR-1 servers would need the `feat/g1-psi0-xiaomi-policies` code.
 4. Sim, then robot, with the task text "pick drink bottle from the table and handover".
 5. Done 2026-10-06: `training_state/` of all 8 runs deleted (181 GB; 365 GB free afterwards). Final weights kept.
