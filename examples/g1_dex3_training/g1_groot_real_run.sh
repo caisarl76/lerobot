@@ -12,7 +12,8 @@
 #   g1_groot_real_run.sh stop                    # stop the workstation server
 #
 # e.g. g1_groot_real_run.sh stream run20_he_groot_official_laptop_t0 "close a laptop g1"
-# Env: MODEL (checkpoint dir), GPU, PORT, NOISE_SCALE (default 0.5; 0 = runs 20-21; empty = unscaled sampling), CAM_FPS (default 30).
+# Env: MODEL (checkpoint dir), GPU, PORT, NOISE_SCALE (default 0.5; 0 = runs 20-21; empty = unscaled sampling), CAM_FPS (default 30),
+#      POLICY_FPS (50 for the G1 WBT models; needs the PC2 streamer copy with --policy-fps).
 set -e
 MODEL=${MODEL:-/mnt/data/jihun/g1_models/he_groot_sonic78sonicstate_ho5_official_full}
 # NOISE_SCALE 0.5 keeps some sample variety so the policy can escape a stall (user decision 2026-10-02; open loop seam
@@ -49,7 +50,7 @@ stream)
   ssh -t pc2_222 "cd ~/g1_sonic_eval/code && ../.venv/bin/python -u sonic_policy_streamer.py \
     --policy-server tcp://$WS:$PORT --images zmq --camera-host localhost --task '$TASK' \
     --start planner --end planner --duration-s 30 --replan-s 0.4 --max-token-step 0.1 \
-    --log ../runs/$RUN.npz $* 2>&1 | tee ../runs/$RUN.log" ;;
+    ${POLICY_FPS:+--policy-fps $POLICY_FPS} --log ../runs/$RUN.npz $* 2>&1 | tee ../runs/$RUN.log" ;;
 stop)
   systemctl --user stop $UNIT ;;
 *)

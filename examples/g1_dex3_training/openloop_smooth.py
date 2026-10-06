@@ -1,7 +1,7 @@
 """Open-loop smoothness of predicted chunks on held-out episodes (no robot, no closed loop).
 
 Every 12 frames (0.4 s replan at 30 Hz) predict a chunk from the recorded observation, then measure, in units of the
-per-dimension action std (tokens 0:64, hands 64:78):
+per-dimension action std (tokens 0:64, hands 64:78; dimensions with zero std in the dataset are skipped):
   overlap  - disagreement between consecutive chunks over their shared future frames
   seam     - jump at each seam of the chunks spliced as executed (first 12 frames of each), vs the recorded step
   step     - frame-to-frame step inside the spliced sequence away from seams, and the recording's step
@@ -46,8 +46,12 @@ if "rtc" in flags and cp.policy.config.type == "pi05":
     cp.policy.config.rtc_config = RTCConfig()
     cp.policy.init_rtc_processor()
 with open(f"{root}/meta/stats.json") as f:
-    std = np.asarray(json.load(f)["action"]["std"], np.float32).clip(1e-6)
-parts = {"tokens": slice(0, 64), "hands": slice(64, 78)}
+    std = np.asarray(json.load(f)["action"]["std"], np.float32)
+# Dimensions that never move in the dataset (std 0, e.g. a hand joint left at 0) are left out of every metric:
+# divided by a clipped std, any tiny prediction offset (e.g. state-relative XR-1 hands) would dominate the means.
+live = std > 1e-6
+std = std.clip(1e-6)
+parts = {"tokens": np.flatnonzero(live[:64]), "hands": 64 + np.flatnonzero(live[64:])}
 acc = {p: {k: [] for k in ("overlap", "seam", "step", "gt_step", "curv", "gt_curv", "err")} for p in parts}
 for ep in episodes:
     ds = LeRobotDataset("local/x", root=root, episodes=[ep], video_backend="torchcodec")

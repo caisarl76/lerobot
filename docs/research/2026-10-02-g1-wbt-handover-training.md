@@ -108,6 +108,36 @@ All 8 full runs exited 0. Final training losses (scales differ between models; c
 - The Psi0 he config needed the checkpoint's own `config.json` as its policy block: Psi0 loads a checkpoint only with
   `vlm_config`, which exists only in the saved config (originals kept as `*.bak-novlmconfig`).
 
+## Held-out open-loop comparison (2026-10-06)
+
+`openloop_smooth.py` on episodes 27 and 35, replanning every 20 frames (0.4 s at 50 Hz), run in the training
+container (outputs in `eval/` of the job root). Std units of the dataset's action; err = mean |executed − recorded|,
+seam = jump at the chunk switch. Zero noise (`temp:0`) was best or equal for every model; shown here:
+
+| Model      | Tokens err | Tokens seam | Hands err | Hands seam |
+| ---------- | ---------- | ----------- | --------- | ---------- |
+| GR00T base | 0.332      | 0.191       | 0.068     | 0.124      |
+| GR00T he   | 0.315      | 0.184       | **0.053** | **0.066**  |
+| Pi0.5 base | 0.300      | **0.146**   | 0.079     | 0.172      |
+| Pi0.5 he   | **0.284**  | 0.151       | 0.106     | 0.115      |
+| Psi0 base  | 0.303      | 0.162       | 0.077     | 0.092      |
+| Psi0 he    | 0.303      | 0.170       | 0.089     | 0.075      |
+| XR-1 base  | 0.316      | 0.171       | 0.173     | 0.147      |
+| XR-1 he    | 0.287      | 0.158       | 0.168     | 0.132      |
+
+- Step inside a chunk at zero noise is 0.014–0.019 for tokens (recording 0.019).
+- HE init lowers the token error for GR00T, Pi0.5 and XR-1 (5–9 %), not for Psi0. Psi0 he was rescaled 3–4× by the
+  new MIN_MAX stats, see Results.
+- Best token accuracy: Pi0.5 he and XR-1 he. Best hands: GR00T he. XR-1 hands are 2–3× worse than the others; XR-1
+  predicts hands relative to the measured state.
+- XR-1 base with random noise is unusable: token err 0.645 and steps 35× the recording's. At zero noise it is normal.
+- Token errors are about twice the HE models' on HE held-out episodes (0.13–0.15). With 41 training and 2 held-out
+  episodes, the differences between models (a few hundredths) are within the noise. Robot or sim runs should
+  decide.
+- `openloop_smooth.py` now skips action dimensions with zero std in the dataset. Here the right thumb_0 is constant,
+  and the clipped std turned XR-1's tiny state-relative offsets on it into ~130 std errors. The first pass (before
+  the fix) is kept in `eval/v1/`.
+
 Check progress:
 
 ```bash
@@ -131,11 +161,10 @@ ssh h100_174 'cd /mnt/data01/jhkim/model_weight/g1_dex3_20260922/g1_wbt_handover
 
 ## Next steps
 
-1. When the queue ends, compare the 8 models open loop on episodes 27 and 35 (`openloop_smooth.py`, replan
-   `REPLAN=20` frames = 0.4 s at 50 Hz; check its other 30 Hz assumptions), including zero noise.
-2. Add a 50 Hz mode to `sonic_policy_streamer.py`: live mode is hard-coded to 30 Hz. With 50 Hz chunks, the
-   30→50 Hz token interpolation is not needed.
+1. Done 2026-10-06: held-out open-loop comparison (section above).
+2. Done 2026-10-06: `sonic_policy_streamer.py --policy-fps 50` (live camera mode; dataset mode already uses the
+   dataset's rate), `POLICY_FPS=50` in `g1_groot_real_run.sh`. The PC2 streamer copy must be updated before use.
 3. Copy the chosen checkpoints to the workstation. Psi0 and XR-1 servers need the `feat/g1-psi0-xiaomi-policies`
    code.
 4. Sim, then robot, with the task text "pick drink bottle from the table and handover".
-5. Delete `training_state/` of finished runs if h100_174's disk gets tight (467 GB free on 10-04).
+5. Done 2026-10-06: `training_state/` of all 8 runs deleted (181 GB; 365 GB free afterwards). Final weights kept.

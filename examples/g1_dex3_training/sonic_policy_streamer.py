@@ -1,4 +1,5 @@
-"""Stream a LeRobot SONIC-token policy (78D = token 64 + Dex3 hands 14, 30 Hz) to NVIDIA's g1_deploy_onnx_ref.
+"""Stream a LeRobot SONIC-token policy (78D = token 64 + Dex3 hands 14, 30 Hz; --policy-fps 50 for 50 Hz policies)
+to NVIDIA's g1_deploy_onnx_ref.
 --action-space joint28 instead takes a 28D arm + Dex3 hand joint policy and encodes each chunk to tokens here
 (sonic_targets.joint_chunk_to_sonic, the official encoder on CPU, speed limits off as in sonic78_nolimit).
 
@@ -497,6 +498,13 @@ def main():
     p.add_argument("--task", help="instruction text (required with --images zmq; overrides the episode's)")
     p.add_argument("--replan-s", type=float, default=0.4)
     p.add_argument(
+        "--policy-fps",
+        type=float,
+        default=30.0,
+        help="--images zmq: frame rate the policy was trained at, i.e. of its chunks and observation history (30 for "
+        "the HE/Unitree models, 50 for the G1 WBT models); --images dataset uses the dataset's rate",
+    )
+    p.add_argument(
         "--chunk-blend-s",
         type=float,
         default=0.0,
@@ -645,6 +653,7 @@ def main():
         images = LiveImages(
             ctx, a.camera_host, a.camera_port, policy.image_keys, policy.shapes, a.stereo_camera, a.task
         )
+        images.fps = a.policy_fps
     else:
         images = DatasetImages(a.dataset_root, a.episode, policy.image_keys)
     worker = InferenceWorker()
