@@ -396,6 +396,24 @@ block only.
   accurate on tokens, with XR-1 close.
 - The usual temp:0 cost holds: almost no hand motion inside a chunk (step ~0.006–0.012).
 
+### Noise scale sweep, HE 78D (2026-10-06)
+
+GR00T runs on the robot at noise 0.5 to escape stalls, so the two new VLAs were checked between 0 and 1.
+
+| Model / noise | Tokens: seam | Tokens: err | Hands: seam | Hands: err | Hands: step (rec. 0.063) |
+| ------------- | ------------ | ----------- | ----------- | ---------- | ------------------------ |
+| XR-1 0        | 0.081        | 0.122       | 0.133       | 0.219      | 0.011                    |
+| XR-1 0.25     | 0.084        | 0.122       | 0.135       | 0.220      | 0.012                    |
+| XR-1 0.5      | 0.088        | 0.124       | 0.150       | 0.223      | 0.017                    |
+| XR-1 1        | 0.115        | 0.135       | 0.194       | 0.248      | 0.058                    |
+| Psi0 0        | 0.082        | 0.142       | 0.103       | 0.234      | 0.012                    |
+| Psi0 0.25     | 0.095        | 0.145       | 0.128       | 0.237      | 0.020                    |
+| Psi0 0.5      | 0.118        | 0.151       | 0.160       | 0.242      | 0.031                    |
+| Psi0 1        | 0.172        | 0.171       | 0.277       | 0.276      | 0.048                    |
+
+- XR-1 is nearly flat up to 0.5 (token seam +0.007, err +0.002), so 0.5 costs little if stalls need noise.
+- Psi0 degrades steadily with noise; start it at 0 and raise only to 0.25 if it stalls.
+
 ## Open questions for the user
 
 1. **Permission to apply the Unitree data fix** (writes 11 files in each of the three shared datasets, backups
