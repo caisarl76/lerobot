@@ -39,6 +39,15 @@ class WbcCommonTests(unittest.TestCase):
         g.update(0.0, [1, 0, 0, 0], 0.7, 0)
         self.assertIsNotNone(g.update(0.25, [1, 0, 0, 0], 0.7, 0))  # both feet off the floor
 
+    def test_fall_detector_latches_simulator_reset(self):
+        f = FallDetector()
+        f.latch("pelvis below 0.2 m")  # not armed: ignored (band hang, startup reset)
+        f.armed = True
+        self.assertIsNone(f.update(0.0, [1, 0, 0, 0], 0.79, 8))
+        f.latch("pelvis below 0.2 m")
+        # the robot is upright again after the simulator's reset; the latched fall still ends the run
+        self.assertEqual(f.update(0.005, [1, 0, 0, 0], 0.79, 8), "pelvis below 0.2 m")
+
 
 if __name__ == "__main__":
     unittest.main()
