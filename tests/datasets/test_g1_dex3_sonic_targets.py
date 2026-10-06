@@ -88,6 +88,29 @@ class SonicTargetTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             combine_tokens_and_hands(np.full((1, 64), 0.01), np.zeros((1, 14)))
 
+    def test_31d_with_nominal_waist_equals_28d(self):
+        rng = np.random.default_rng(0)
+        a28 = rng.uniform(-0.5, 0.5, (45, 28))
+        a31 = np.hstack([a28, np.tile(NOMINAL_BODY[12:15], (45, 1))])
+        i28, h28, _ = build_encoder_inputs(a28, self.limits, arm_speed_limit=None, hand_speed_limit=None)
+        i31, h31, _ = build_encoder_inputs(a31, self.limits, arm_speed_limit=None, hand_speed_limit=None)
+        np.testing.assert_array_equal(i31, i28)
+        np.testing.assert_array_equal(h31, h28)
+
+    def test_31d_waist_enters_body_target(self):
+        a31 = np.zeros((30, 31))
+        a31[:, 28:31] = [0.3, -0.1, 0.2]
+        inputs, _, report = build_encoder_inputs(a31, self.limits)
+        body = inputs[0, 4:294].reshape(10, 29)
+        for motor, val in ((12, 0.3), (13, -0.1), (14, 0.2)):
+            slot = int(np.flatnonzero(motor == ISAAC_FROM_MOTOR)[0])
+            np.testing.assert_allclose(body[:, slot], val, atol=1e-6)
+        self.assertEqual(report["lower_body_assumption"], "fixed_nominal_standing_legs_waist_from_action")
+
+    def test_rejects_other_widths(self):
+        with self.assertRaises(ValueError):
+            build_encoder_inputs(np.zeros((5, 30)), self.limits)
+
 
 if __name__ == "__main__":
     unittest.main()

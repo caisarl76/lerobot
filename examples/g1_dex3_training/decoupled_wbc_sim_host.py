@@ -8,7 +8,8 @@ b042411fae with only decoupled_wbc/ mounted at /upstream/decoupled_wbc; onnxrunt
   upper body  IdentityPolicy: the streamer's 50 Hz targets as they are; every wrapper goal is complete;
               the first goal is the start pose: arms in A's planner-stance pose (START_ARMS), hands and waist at the
               measured pose; the gear-WBC default arm pose reaches table-top height (0.80 m)
-  waist       robot model waist_location lower_body: torso command 0, the RL holds waist + legs
+  waist       robot model waist_location lower_body (28D: torso command 0) or lower_and_upper_body (31D: torso
+              roll/pitch/yaw from FK of the commanded waist, RL moves waist + legs to follow)
   activation  RL output switched on through the lower-body policy (key "]"), never a toggle-only wrapper goal
   gains       body MOTOR_KP / MOTOR_KD of g1_29dof_gear_wbc.yaml; Dex3 kp 1.5 / kd 0.1 (A's deploy defaults,
               dex3_hands.hpp), written into gear_sonic's bridge command slots by joint name (no DDS, no slot swap)
@@ -20,7 +21,7 @@ Timeline: band on, RL off -> 1 s RL on -> 3 s band released -> 4 s reset onto th
 table placed, GATE/deploy_ready + GATE/settled, fall detection armed -> GATE/done + 3 s: stop. Streamer silent for
 5 s without GATE/done: aborted.
 Usage (in jihun/sonic-vla-sim, cwd gear_sonic_deploy):
-  python decoupled_wbc_sim_host.py OUT_DIR GATE_DIR [--selfcheck contract|state|command|stand]
+  python decoupled_wbc_sim_host.py OUT_DIR GATE_DIR [--waist-location ...] [--selfcheck contract|state|command|waist|stand]
 """
 
 from __future__ import annotations
@@ -45,6 +46,7 @@ from wbc_common import (
     WAIST_NAMES,
     pack_joint_message,
     read_done,
+    rpy_from_matrix,
     tilt_deg,
     unpack_joint_message,
     write_termination,
@@ -62,6 +64,7 @@ DECIMATION = 4  # 200 Hz physics -> 50 Hz control
 MAX_MSG_AGE_S, SILENCE_S = 0.1, 5.0
 FIRST_MSG_S = 600.0  # must exceed policy-server load (MolmoAct2 ~2 min) + streamer startup + first inference
 GOAL_CONST = {"base_height_command": np.array([0.74]), "navigate_cmd": np.zeros(3)}
+OBS_DIM = 86  # one frame of the lower-body observation (516 = 86 x 6)
 T_ACTIVATE, T_BAND, T_RESET, T_SETTLED = 1.0, 3.0, 4.0, 9.0
 # Arms during hang/settle: the SONIC planner stance backend A holds before its episode (mean of the pre-episode records
 # of WBC_A28_ep1293_r1 on the second H100 host, std <= 0.007 rad). The G1 zero arm pose holds the forearms forward at table-top
@@ -216,6 +219,9 @@ class Controller:
     def flags(self) -> tuple[bool, bool]:
         return bool(self.lower.use_policy_action), bool(self.lower.use_teleop_policy_cmd)
 
+    def rpy_cmd(self) -> np.ndarray:
+        return np.asarray(self.lower.obs_buffer[-OBS_DIM:][4:7], np.float64).copy()
+
 
 def state_message(scene: Scene) -> bytes:
     d = scene.d
@@ -297,7 +303,7 @@ def run(a) -> None:
                     scene.view["phase"] = "streaming joint targets"
                 if "settled" in steps:
                     scene.record(applied_ref=ctl.applied_ref(), clipped=ctl.clipped.copy(), held=ctl.held,
-                                 seq=ctl.seq)  # fmt: skip
+                                 seq=ctl.seq, rpy_cmd=ctl.rpy_cmd())  # fmt: skip
                     fell = scene.check_fall()
                     if fell:
                         reason, detail = "fell", fell
@@ -351,7 +357,7 @@ def selfcheck(a) -> None:
         print("upper_body", ctl.upper_names)
         print("lower_body", [ctl.rm_names[i] for i in ctl.rm.get_joint_group_indices("lower_body")])
         assert set(REF_NAMES[:14]) <= set(ctl.upper_names), "arms must be upper-body joints"
-        assert not set(WAIST_NAMES) <= set(ctl.upper_names), "waist must stay a lower-body joint"
+        assert (set(WAIST_NAMES) <= set(ctl.upper_names)) == (a.waist_location == "lower_and_upper_body")
         d.qpos[3:7] = [
             np.cos(0.1),
             0,
@@ -393,6 +399,23 @@ def selfcheck(a) -> None:
             for i, n in enumerate(slots):
                 assert abs(cmd.motor_cmd[i].q - ref[REF_NAMES.index(n)]) < 1e-6, n
         print("right-hand bridge slots:", ctl.plant.right_slots)
+    elif a.selfcheck == "waist":
+        ctl = Controller(scene, "lower_and_upper_body")
+        ctl.activate()
+        ref = ctl.applied_ref()
+        ref[28:31] = [0.2, 0.1, 0.15]
+        for k in range(3):  # the torso command enters the observation one tick after get_action sets it
+            ctl.apply_message(unpack_joint_message(pack_joint_message(k, "selfcheck", -1, ref)))
+            ctl.step(0.02 * k)
+        assert ctl.flags() == (True, True), ctl.flags()
+        kin = mujoco.MjData(m)
+        kin.qpos[3] = 1.0
+        for n, v in zip(WAIST_NAMES, ref[28:31], strict=True):
+            kin.qpos[m.jnt_qposadr[m.joint(n).id]] = v
+        mujoco.mj_kinematics(m, kin)
+        expect = rpy_from_matrix(kin.xmat[scene.torso].reshape(3, 3))
+        got = ctl.rpy_cmd()
+        assert np.abs(got).max() > 0 and np.allclose(got, expect, atol=0.01), (got, expect)
     elif a.selfcheck == "stand":
         ctl = Controller(scene, a.waist_location)
         steps, n, tilts = {}, 0, []
@@ -418,10 +441,10 @@ def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("out", type=Path)
     p.add_argument("gate", type=Path)
-    p.add_argument("--waist-location", choices=["lower_body"], default="lower_body")
+    p.add_argument("--waist-location", choices=["lower_body", "lower_and_upper_body"], default="lower_body")
     p.add_argument("--action-port", type=int, default=5556)
     p.add_argument("--state-port", type=int, default=5557)
-    p.add_argument("--selfcheck", choices=["contract", "state", "command", "stand"])
+    p.add_argument("--selfcheck", choices=["contract", "state", "command", "waist", "stand"])
     a = p.parse_args()
     a.gate.mkdir(parents=True, exist_ok=True)
     selfcheck(a) if a.selfcheck else run(a)
