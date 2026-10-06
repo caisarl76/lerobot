@@ -1,7 +1,11 @@
-"""Gate, termination and fall helpers shared by the sim hosts (sim_scene.py, sonic_official_sim_host.py) and
-sonic_policy_streamer.py: GATE/done carries how the streamer's episode ended, sim/termination.json records why the
-sim run stopped, and FallDetector decides when the robot fell. numpy only, so it runs on the workstation and in the
-sim container.
+"""Pure helpers of the WBC backend comparison (docs/superpowers/specs/2026-10-01-g1-wbc-backends-design.md), shared by
+sonic_policy_streamer.py, the sim hosts (sim_scene.py, decoupled_wbc_sim_host.py), sonic_stream_eval.py and
+wbc_compare.py. numpy only (msgpack imported where used), so it runs on the workstation, in the sim container and in
+the scoring container.
+
+joint_ref (31): arms 14 (motor 15..28) | Dex3 hands 14 (dataset order) | waist 3 (motor 12..14: yaw, roll, pitch).
+This 31-value layout (joint_ref and the joint message) is the spec's message contract. The 28D action space sends the
+nominal waist in it; a policy-commanded waist is a follow-up extension.
 """
 
 from __future__ import annotations
@@ -13,7 +17,82 @@ from pathlib import Path
 
 import numpy as np
 
+try:
+    from .sonic_targets import ACTION_NAMES, NOMINAL_BODY
+except ImportError:
+    from sonic_targets import ACTION_NAMES, NOMINAL_BODY
+
+WAIST_NAMES = ("waist_yaw_joint", "waist_roll_joint", "waist_pitch_joint")
+REF_NAMES = ACTION_NAMES + WAIST_NAMES
+WAIST = slice(28, 31)
+JOINT_TOPIC = b"joints"
 FALL_TILT_DEG, FALL_Z_M, FALL_HOLD_S = 20.0, 0.4, 0.2  # gear_sonic itself resets the robot below z 0.2 m
+MIN_COVERAGE, MAX_HELD = 0.98, 0.02
+
+
+def to_joint_ref(chunk) -> np.ndarray:
+    """[N,28] or [N,31] joints -> [N,31] joint_ref (28D gets the nominal waist)."""
+    chunk = np.asarray(chunk, np.float32)
+    if chunk.ndim != 2 or chunk.shape[1] not in (28, 31):
+        raise ValueError(f"expected a [N,28] or [N,31] joint chunk, got {chunk.shape}")
+    if chunk.shape[1] == 31:
+        return chunk
+    return np.hstack([chunk, np.tile(NOMINAL_BODY[12:15].astype(np.float32), (len(chunk), 1))])
+
+
+def replay_chunk(actions, k: int, horizon: int) -> np.ndarray:
+    """Recorded actions[k : k + horizon], the last row held past the episode's end."""
+    actions = np.asarray(actions, np.float32)
+    if not 0 <= k < len(actions) or horizon < 1:
+        raise ValueError(f"replay frame {k} outside the episode's {len(actions)} frames (horizon {horizon})")
+    out = actions[k : k + horizon]
+    return np.vstack([out, np.repeat(out[-1:], horizon - len(out), axis=0)])
+
+
+def check_replay_width(width: int, action_space: str) -> None:
+    expected = {"sonic78": 78, "joint28": 28}[action_space]
+    if width != expected:
+        raise ValueError(
+            f"--replay dataset has {width}D actions; --action-space {action_space} needs {expected}D"
+        )
+
+
+def pack_joint_message(seq: int, phase: str, frame: int, joint_ref, t_wall: float | None = None) -> bytes:
+    """Streamer -> decoupled_wbc_sim_host.py, one per 50 Hz tick. q_body: motor order 0..28 (legs nominal and
+    ignored by backend C, waist used for 31D); q_hand: dataset order (left thumb0-2, middle0-1, index0-1; right
+    thumb0-2, index0-1, middle0-1)."""
+    import msgpack
+
+    ref = np.asarray(joint_ref, np.float32)
+    if ref.shape != (31,) or not np.isfinite(ref).all():
+        raise ValueError(f"joint_ref must be 31 finite values, got {ref}")
+    body = NOMINAL_BODY.astype(np.float32).copy()
+    body[15:29], body[12:15] = ref[:14], ref[WAIST]
+    payload = {
+        "t_wall": time.time() if t_wall is None else float(t_wall),
+        "seq": int(seq),
+        "phase": phase,
+        "frame": int(frame),
+        "q_body": body.tolist(),
+        "q_hand": ref[14:28].tolist(),
+    }
+    return JOINT_TOPIC + msgpack.packb(payload)
+
+
+def unpack_joint_message(raw: bytes) -> dict:
+    """Inverse of pack_joint_message; values are not checked for finiteness (the host decides to hold)."""
+    import msgpack
+
+    if not raw.startswith(JOINT_TOPIC):
+        raise ValueError("not a joint message")
+    msg = msgpack.unpackb(raw[len(JOINT_TOPIC) :], raw=False)
+    msg["q_body"], msg["q_hand"] = (
+        np.asarray(msg["q_body"], np.float64),
+        np.asarray(msg["q_hand"], np.float64),
+    )
+    if msg["q_body"].shape != (29,) or msg["q_hand"].shape != (14,):
+        raise ValueError("joint message must carry q_body[29] and q_hand[14]")
+    return msg
 
 
 def write_done(gate_dir: Path, episode_end: str) -> None:
@@ -67,3 +146,33 @@ class FallDetector:
         if t - self._since >= FALL_HOLD_S:
             return f"tilt {tilt:.1f} deg, pelvis z {z:.3f} m, floor contacts {floor_contacts}"
         return None
+
+
+def log_settings(args_json: str) -> tuple[str, str]:
+    """(backend, action_space) of a streamer log; logs from before the backends existed are SONIC token runs."""
+    args = json.loads(args_json)
+    return args.get("backend", "sonic"), args.get("action_space", "sonic78")
+
+
+def run_validity(termination, phase, frame, wall, sim_wall, n_frames: int, held_fraction: float = 0.0):
+    """(valid, reason): only runs that completed, cover >= 98% of the episode's frames, stay inside the sim
+    recording and (backend C) held their targets on <= 2% of episode records are scored. Same rule for A and C."""
+    if termination is None:
+        return False, "no termination.json"
+    if termination.get("reason") != "completed":
+        return False, f"termination: {termination.get('reason')} ({termination.get('detail', '')})"
+    ep = np.asarray(phase) == "episode"
+    if not ep.any():
+        return False, "no episode ticks"
+    coverage = len(np.unique(np.asarray(frame)[ep])) / n_frames
+    if coverage < MIN_COVERAGE:
+        return False, f"scored frames cover {coverage:.1%} of the episode (< {MIN_COVERAGE:.0%})"
+    w = np.asarray(wall)[ep]
+    if w.min() < sim_wall[0] or w.max() > sim_wall[-1]:
+        return False, "streamer episode ticks fall outside the sim recording"
+    if held_fraction > MAX_HELD:
+        return (
+            False,
+            f"targets held (stale or non-finite messages) on {held_fraction:.1%} of records (> {MAX_HELD:.0%})",
+        )
+    return True, "ok"

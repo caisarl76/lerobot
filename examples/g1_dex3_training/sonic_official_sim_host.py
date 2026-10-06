@@ -1,4 +1,4 @@
-"""Sim host for sonic_policy_streamer.py: gear_sonic MuJoCo + NVIDIA g1_deploy_onnx_ref, recorded.
+"""Sim host for sonic_policy_streamer.py --backend sonic: gear_sonic MuJoCo + NVIDIA g1_deploy_onnx_ref, recorded.
 
 The streamer owns every deploy command (ZMQ "command"/"pose" on 5556). This process runs the physics (sim_scene.Scene),
 performs the confirmed operator steps that belong to the simulator, and exchanges gate files with the streamer:
