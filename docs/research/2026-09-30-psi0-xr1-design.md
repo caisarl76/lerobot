@@ -542,3 +542,29 @@ from `robot_run_smoothness.py`:
   bash deploy.sh --cp policy/sonic_v1_1/model --obs-config policy/sonic_v1_1/observation_config.yaml \
     --input-type zmq_manager --zmq-host localhost real
   ```
+
+## Handover: real-robot continuation (open, 2026-10-06)
+
+To be continued by another session. State at handover:
+
+- **Psi0 server is running** on the workstation as user unit `groot-server-5560` (GPU 1, port 5560, noise scale 0,
+  model `/mnt/data/jihun/g1_models/he_psi0_sonic78sonicstate_ho5_matched640k`, VLM in bf16 via the local
+  `config.json`; log `server_gpu1_5560_t0.log` in the model dir). Stop it with `./g1_groot_real_run.sh stop`.
+- **Robot side:** start the deploy with the PC2 command in the run22 note above (`conda deactivate` + `LD_PRELOAD`;
+  the launcher's `deploy` step crashes). Camera: `./g1_groot_real_run.sh camera`.
+- **Last run:** run22 (see the table above). Logs on PC2 in `~/g1_sonic_eval/runs/`, copies in `~/g1_runs/`.
+
+Next trials, in this order, one change at a time (same scene, "close a laptop g1"):
+
+1. run23 — same settings as run22, for repeatability:
+   `./g1_groot_real_run.sh stream run23_he_psi0_laptop_t0 "close a laptop g1" --max-token-step 0.05 --chunk-blend-s 0.3`
+2. run24 — slew 0.1 (GR00T's setting; run22 never hit 0.05):
+   `... stream run24_he_psi0_laptop_t0 "close a laptop g1" --max-token-step 0.1 --chunk-blend-s 0.3`
+3. run25 — noise 0.25 if it still stops short of the lid (restart the server with `NOISE_SCALE=0.25`):
+   `... stream run25_he_psi0_laptop_t025 "close a laptop g1" --max-token-step 0.1 --chunk-blend-s 0.3`
+
+After each run: copy the `.npz`/`.log` back, run `robot_run_smoothness.py
+/mnt/data/jihun/datasets/he_sonic78_nolimit_sonicstate_heldout6 <runs>`, and add a row with the user's observation
+(reach, which part of the laptop, closed or not, smoothness) to the table above. XR-1 is not a robot candidate (its
+closed-loop drift, see the sim follow-up); do not run it on the robot until it is retrained without the state
+dependence.
