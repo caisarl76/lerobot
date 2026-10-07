@@ -42,7 +42,11 @@ server)
   done
   grep "ready on port" "$LOG" ;;
 deploy)
-  ssh -t pc2_222 'cd ~/GR00T-WholeBodyControl/gear_sonic_deploy && source scripts/setup_env.sh &&
+  # A conda env's DDS library clashes with the SDK's ("corrupted size vs. prev_size" at "Creating G1Deploy object",
+  # 2026-10-06): leave conda and preload the SDK's own libddsc/libddscxx (what worked for run22).
+  ssh -t pc2_222 'cd ~/GR00T-WholeBodyControl/gear_sonic_deploy && { conda deactivate 2>/dev/null || true; } &&
+    source scripts/setup_env.sh && L=$(pwd)/thirdparty/unitree_sdk2/thirdparty/lib/aarch64 &&
+    export LD_PRELOAD="$L/libddsc.so:$L/libddscxx.so" &&
     bash deploy.sh --cp policy/sonic_v1_1/model --obs-config policy/sonic_v1_1/observation_config.yaml \
       --input-type zmq_manager --zmq-host localhost real' ;;
 camera)
