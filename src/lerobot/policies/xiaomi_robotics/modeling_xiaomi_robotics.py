@@ -336,6 +336,10 @@ class XR1Model(nn.Module):
         self.register_buffer("state_min", torch.full((state_dim,), -1e4))
         self.register_buffer("state_max", torch.full((state_dim,), 1e4))
 
+        # Learned "no state" input, only when the config drops the state (keeps older checkpoints loadable).
+        self.state_null = (
+            nn.Parameter(torch.zeros(config.model_state_dim)) if config.state_drop_prob > 0 else None
+        )
         self._state_embeds: Tensor | None = None
         self.vlm.language_model.embed_tokens.register_forward_hook(self._embedding_hook)
 
@@ -384,7 +388,7 @@ class XR1Model(nn.Module):
         own = {k: v for k, v in self.state_dict().items() if k not in dict(self.named_buffers())}
         notes = adapt_action_width(state_dict, own, self.config.n_choices)
         missing, unexpected = self.load_state_dict(state_dict, strict=False)
-        missing = [k for k in missing if k not in dict(self.named_buffers())]
+        missing = [k for k in missing if k not in dict(self.named_buffers()) and k != "state_null"]
         logger.info("XR-1 weights from %s; resized: %s", path, notes)
         if missing or unexpected:
             raise ValueError(
@@ -503,6 +507,20 @@ class XR1Model(nn.Module):
         )
         out[..., self.state_slots] = norm
         return out
+
+    def _state_input(self, raw_state: Tensor, train: bool) -> Tensor:
+        """Normalized (B, 1, S) bf16 state for the model, with the training-time noise and null-vector dropout."""
+        cfg = self.config
+        state = self._normalize_state(raw_state)[:, None]
+        if train and cfg.state_noise_std > 0:
+            state = (state + torch.randn_like(state) * cfg.state_noise_std).clamp(-1.0, 1.0)
+        if self.state_null is not None:
+            if train:
+                drop = torch.rand(state.shape[0], device=state.device) < cfg.state_drop_prob
+            else:
+                drop = torch.full((state.shape[0],), cfg.state_drop_prob >= 1.0, device=state.device)
+            state = torch.where(drop[:, None, None], self.state_null.to(state.dtype), state)
+        return state.to(torch.bfloat16)
 
     def _relative(self, actions: Tensor, state: Tensor, sign: float) -> Tensor:
         rel = self.relative_index >= 0
@@ -640,7 +658,7 @@ class XR1Model(nn.Module):
         dim_mask[self.action_slots] = True
         action_mask = valid_steps[..., None] & dim_mask
         steps = valid_steps.sum(dim=1).tolist()
-        state = self._normalize_state(raw_state)[:, None].to(torch.bfloat16)  # (B, 1, S)
+        state = self._state_input(raw_state, train=self.training)  # (B, 1, S)
         actions = actions.to(torch.bfloat16)
 
         inputs = self._vlm_inputs(batch, steps, train=self.training)
@@ -759,7 +777,7 @@ class XR1Model(nn.Module):
         raw_state = batch[OBS_STATE].float()
         if raw_state.dim() == 3:
             raw_state = raw_state[:, -1]
-        state = self._normalize_state(raw_state)[:, None].to(torch.bfloat16)
+        state = self._state_input(raw_state, train=False)
         inputs = self._vlm_inputs(batch, None, train=False)
         _, cache, position_ids = self._vlm_forward(inputs, None)
         cache_layers, cache_mask, pos_base = self._condition(
@@ -825,7 +843,7 @@ class XiaomiRoboticsPolicy(PreTrainedPolicy):
 
     def get_optim_params(self) -> list[dict[str, Any]]:
         """XR-1 `BaseRunner.build_optimizer`: no weight decay for biases, norms, rotary and adaLN tables."""
-        no_decay = ("bias", "norm", "ln", "rotary_emb", "adaln")
+        no_decay = ("bias", "norm", "ln", "rotary_emb", "adaln", "state_null")
         decay, other = [], []
         for name, param in self.model.named_parameters():
             if not param.requires_grad:
