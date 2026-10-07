@@ -620,3 +620,42 @@ Both `*_jitter640k_full` runs finished (exit 0, HE 10-06 14:05, Unitree 18:34 UT
 - Robot candidate stays the run22 model (`*_matched640k`) with `--chunk-blend-s 0.3`; the jitter model
   (`/run-output/humanoid_everyday_g1_20260923/runs/psi0_sonic78sonicstate_ho5_jitter640k_full`, not copied to the
   workstation) is an optional robot A/B after run23–25.
+
+## XR-1 without its state dependence (2026-10-07)
+
+User decision: two HE 78D variants at the official budget (48 × 10K, 480K samples), both with **absolute hands**
+(`relative_action_state_indices` all −1, stats `psi0_xr1/stats/he_sonic78_abs.json`, same 226 held-out episodes
+excluded): **A** `xr1_sonic78sonicstate_ho5_nostate_full` — `state_drop_prob: 1.0`, the model never sees the state
+(a learned null vector instead, also at inference); **B** `xr1_sonic78sonicstate_ho5_statedrop_full` —
+`state_drop_prob: 0.5`, `state_noise_std: 0.05`. A trained on H100 GPU 0, B on h100_174 GPU 4 (weights copied to the
+H100 for the sim); both exit 0, pruned to the final 030000 weights. Code: branch `feat/g1-xr1-state-drop` (bbb7286d).
+
+**Open loop, temp:0** (six HE held-out episodes):
+
+| Model              | Tokens: seam | Tokens: err | Hands: seam | Hands: err |
+| ------------------ | ------------ | ----------- | ----------- | ---------- |
+| XR-1 (original)    | 0.081        | 0.122       | 0.133       | 0.219      |
+| XR-1 A, no state   | 0.110        | 0.169       | 0.121       | 0.373      |
+| XR-1 B, state drop | 0.078        | 0.133       | 0.109       | 0.275      |
+
+**Closed-loop sim** (same settings as the first XR-1 sim: noise 0, slew 0.05, no blend, `--policy-timeout-s 5`):
+
+| Ep   | XR-1 palm p50 / p95 | **A** palm p50 / p95        | **B** palm p50 / p95 | Psi0 palm p95 | GR00T palm p95 | A / B arm jerk p95 |
+| ---- | ------------------- | --------------------------- | -------------------- | ------------- | -------------- | ------------------ |
+| 91   | 20.6 / 46.4         | 5.0 / 16.8                  | 6.3 / 40.8           | 27.2          | 34.5           | 911 / 353          |
+| 102  | 22.1 / 48.5         | 6.6 / 11.3                  | 6.4 / 39.3           | 27.7          | 40.9           | 581 / 670          |
+| 1208 | 8.5 / 53.4          | 2.5 / 13.4 (watchdog 8.6 s) | 5.1 / 20.0           | 22.6          | 25.5           | 546 / 464          |
+| 1219 | 9.0 / 53.9          | 2.6 / 11.8 (watchdog 7.7 s) | 2.8 / 20.0           | 19.0          | 23.9           | 603 / 482          |
+| 1293 | 4.8 / 29.3          | 1.9 / 5.4                   | 2.3 / 7.5            | 6.3           | 10.4           | 475 / 538          |
+| 1300 | 6.1 / 29.7          | 2.1 / 5.4                   | 2.1 / 7.8            | 10.2          | 10.8           | 597 / 841          |
+
+Hands vs stored, p95 (rad): XR-1 1.27–1.44, A 0.16–0.64, B 0.28–0.62. Wrist p95: XR-1 57–113°, A 16–36°, B 17–118°.
+
+- **The drift came from the state, and removing it fixes it.** A is the most accurate model in closed loop so far
+  (palm p95 5–17 cm on every episode, ahead of Psi0 and GR00T), although its open-loop error is higher: without the
+  state its chunks match a replayed recording less well, but it no longer follows its own measured state.
+- **A moves more abruptly:** the joint-speed watchdog ended 2 of 6 runs (6.0–6.3 rad/s; tilt ≈ 4°); jerk 475–911,
+  like Psi0. Its 1208/1219 scores cover the frames up to the stop.
+- **B is in between:** no watchdog stop, hands no longer drift, palm p95 ≈ GR00T's (7.5–41 cm, mean 22.6 vs 24.3),
+  open loop close to the original XR-1. Keeping a little state brings part of the drift back on 91 and 102.
+- Next: A with `--chunk-blend-s 0.3` in sim (it removed Psi0's seams and cut its jerk) before any robot run.
