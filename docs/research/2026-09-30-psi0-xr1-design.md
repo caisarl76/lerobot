@@ -568,6 +568,10 @@ After each run: copy the `.npz`/`.log` back, run `robot_run_smoothness.py
 (reach, which part of the laptop, closed or not, smoothness) to the table above. XR-1 is not a robot candidate (its
 closed-loop drift, see the sim follow-up); do not run it on the robot until it is retrained without the state
 dependence.
+Optional after run23–25: an A/B with the state-jitter model (`psi0_sonic78sonicstate_ho5_jitter640k_full`, same
+settings; it showed no clear gain in sim, see "Jitter results"). Copy its `pretrained_model` from the H100 through a
+container (resume-safe: `dd skip=` in whole MiB), set `tune_vlm: false` in the local `config.json` (bf16 VLM), and
+point `MODEL` at it.
 
 ## Psi0 with state temporal jitter (2026-10-06)
 
@@ -588,3 +592,31 @@ two disagree (latency, pose drift).
   (`jihun-lerobot-psi0-jitter-174-gpu4-20261006`). Configs are the `*_matched640k` ones plus
   `state_temporal_jitter: 10, state_temporal_jitter_prob: 0.5`; code `/mnt/data01/jhkim/code/lerobot-g1-psi0-jitter`
   (branch `feat/g1-psi0-state-jitter`, f4ff099b).
+
+### Jitter results (2026-10-07)
+
+Both `*_jitter640k_full` runs finished (exit 0, HE 10-06 14:05, Unitree 18:34 UTC); training state pruned.
+
+**Open loop, temp:0** (same episodes as above): HE tokens seam / err 0.086 / 0.146, hands 0.104 / 0.235 (no jitter:
+0.082 / 0.142, 0.103 / 0.234); Unitree tokens 0.090 / 0.181, hands 0.070 / 0.125 (no jitter: 0.091 / 0.181,
+0.068 / 0.122). Unchanged, as expected: open loop always pairs the image with its own recorded state.
+
+**Closed-loop sim, HE** (same settings as the Psi0 sim above: noise 0, slew 0.05, no blend, `--policy-timeout-s 5`):
+
+| Ep   | Psi0 palm p50 / p95 (cm) | Psi0 + jitter palm p50 / p95 (cm) | Wrist p95 (°), Psi0 → jitter | Arm jerk p95, Psi0 → jitter |
+| ---- | ------------------------ | --------------------------------- | ---------------------------- | --------------------------- |
+| 91   | 10.5 / 27.2              | 11.9 / 31.1 (watchdog at 1.3 s)   | 66.9 → 80.6                  | 813 → 3079                  |
+| 102  | 6.6 / 27.7               | 6.3 / 27.5                        | 81.1 → 86.6                  | 531 → 868                   |
+| 1208 | 3.7 / 22.6               | 4.0 / 20.2                        | 34.7 → 28.7                  | 484 → 364                   |
+| 1219 | 3.2 / 19.0               | 3.6 / 17.1                        | 34.7 → 29.7                  | 788 → 529                   |
+| 1293 | 2.4 / 6.3                | 2.1 / 7.2                         | 17.2 → 18.1                  | 969 → 928                   |
+| 1300 | 3.3 / 10.2 (watchdog at 2.9 s) | 2.0 / 7.4                   | 19.5 → 19.6                  | 3122 → 1051                 |
+
+- **No clear closed-loop gain.** On the four episodes both completed (102, 1208, 1219, 1293) palm p95 averages
+  18.0 cm with jitter vs 18.9 cm without, wrist and jerk mixed. The joint-speed watchdog still fires in 1 of 6
+  episodes, now on 91 (arm joint 12, 6.5 rad/s) instead of 1300; that stop was intermittent before as well.
+- Psi0, unlike XR-1, did not drift in closed loop to begin with, so the jitter (aimed at state/image disagreement)
+  had little to fix here. It may still matter on the real robot, where state latency is larger than in sim.
+- Robot candidate stays the run22 model (`*_matched640k`) with `--chunk-blend-s 0.3`; the jitter model
+  (`/run-output/humanoid_everyday_g1_20260923/runs/psi0_sonic78sonicstate_ho5_jitter640k_full`, not copied to the
+  workstation) is an optional robot A/B after run23–25.
