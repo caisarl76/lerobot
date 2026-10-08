@@ -695,3 +695,28 @@ Same sim settings plus `--chunk-blend-s 0.3` (`OFF_xr1Ab_t0_*`):
 - **XR-1 A + blend 0.3 s is the strongest sim candidate for the robot** (noise 0, slew 0.05 for the first runs).
   Its workstation copy fits GPU 1 (XR-1 78D: 9.8 GB, 0.27 s per chunk); the server needs a code tree with
   `state_drop_prob` (branch `feat/g1-xr1-state-drop`) to load it.
+
+## Real robot: XR-1 A (no state input) (2026-10-08)
+
+Server: `g1_groot_real_run.sh server` on workstation GPU 1 (port 5560) with
+`MODEL=/mnt/data/jihun/g1_models/he_xr1_sonic78sonicstate_ho5_nostate_full BACKBONE_DTYPE= NOISE_SCALE=0`; streamer
+with the launcher's `--chunk-blend-s 0.3` plus `--max-token-step 0.05`, planner start/end, 30 s, head camera 640×480
+`egocentric`. Smoothness from `robot_run_smoothness.py` (logs in `~/g1_runs/` on the workstation).
+
+| Run   | Prompt                          | In HE?    | Result (user)                                                                 | Arm speed p95 | Arm jerk p95 | 1–2 Hz |
+| ----- | ------------------------------- | --------- | ----------------------------------------------------------------------------- | ------------- | ------------ | ------ |
+| run30 | close a laptop g1               | yes       | **success**: reached, touched the lid's top, closed it, returned to the initial pose | 1.41 | 256 | 26 % |
+| run31 | close a laptop g1               | yes       | fail: reached, then small motions to the end (stall)                          | 0.47          | 155          | 8 %    |
+| run32 | close a laptop g1               | yes       | **success**, but both arms swayed ~2 s after closing                          | 2.22          | 334          | 41 %   |
+| run38 | push the red block away         | zero-shot | **bad result**                                                                | –             | –            | –      |
+| run39 | place the bottle on the plate   | zero-shot | **bad result**                                                                | –             | –            | –      |
+
+- **In-distribution task: 2/3**, the first completions of "close a laptop g1" by any model (GR00T closes it only part
+  way, Psi0 run22 stopped short of the lid). Movement is fast and decisive (arm speed p95 1.4–2.2 vs Psi0's 0.25–0.5).
+- Run timing varies a lot: run30 hovered ~15 s (6–21 s) before one fast close, run32 closed at 4.5–5.5 s, run31
+  never closed. So the no-state model also stalls; the stall is not only a state-dependence effect (see the open
+  laptop half-close item in `2026-09-29-sonic-real-robot-first-runs.md`).
+- Run32's sway is in the policy output: the token commands changed 5–10× faster than normal for ~2 s after the
+  close; the slew limit (0.05) never engaged. Candidates: blend 0.5 s, or a tighter slew cap.
+- **Zero-shot prompts fail** (runs 38–39, user verdict "bad result"): the model does not transfer to new objects or
+  task combinations outside HE. Logs not yet analysed (PC2 was unreachable afterwards).
