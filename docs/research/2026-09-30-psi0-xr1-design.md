@@ -161,7 +161,7 @@ and decay by the accumulation factor (pitfall in the retraining handover).
 | Header             | 6 blocks, last-layer VLM context, state as context token, dropout 0.1, state-feature dropout 0.2                                                                  | 12 blocks, one VLM layer per block (3…28), qk RMSNorm, CLIP-L pooled task embedding, state as action token 0 with learned null token (drop 0.1) | same                                                                                      |
 | RTC                | training-time RTC, delay 0–7                                                                                                                                      | off (test-time RTC)                                                                                                                             | same                                                                                      |
 | Images             | 240×320, ColorJitter(0.2, 0.8–1.2, 0.8–1.2, 0.05)                                                                                                                 | 270×480, same jitter + view crop 85–100 %                                                                                                       | same                                                                                      |
-| State augmentation | none                                                                                                                                                              | noise N(0, 0.05) on the normalized state; ±10-frame temporal jitter (p 0.5)                                                                     | noise yes; **temporal jitter not implemented** (needs a 21-frame state window per sample) |
+| State augmentation | none                                                                                                                                                              | noise N(0, 0.05) on the normalized state; ±10-frame temporal jitter (p 0.5)                                                                     | noise yes; temporal jitter since 2026-10-06 (`state_temporal_jitter`, `*_jitter640k` runs) |
 | Normalization      | bounds (min/max), state normalized                                                                                                                                | bounds                                                                                                                                          | bounds; **Unitree state q01/q99** (corrupt frames)                                        |
 | Chunk padding      | not masked                                                                                                                                                        | not masked                                                                                                                                      | same (`mask_padded_actions=false`)                                                        |
 
@@ -517,3 +517,181 @@ robot still executes) against the closed-loop runs above:
 - Blending removes the chunk seams (token seam 0.06–0.12 → 0.005–0.008), cuts jerk on 91 and 1219 by ~3–4×, and
   keeps accuracy (palm p95 within ±5 cm). First Psi0 robot runs: noise 0, `--chunk-blend-s 0.3`, slew 0.05, the
   default joint-speed watchdog.
+
+## Real robot (2026-10-06)
+
+Workstation GPU 1 server (`g1_groot_real_run.sh server` with `MODEL=.../he_psi0_sonic78sonicstate_ho5_matched640k
+BACKBONE_DTYPE= NOISE_SCALE=0`), PC2 streamer `--max-token-step 0.05 --chunk-blend-s 0.3`, planner start/end, 30 s,
+head camera 640×480 `egocentric`, "close a laptop g1". GR00T runs 20–21 (noise 0, slew 0.1, no blend) for reference,
+from `robot_run_smoothness.py`:
+
+| Run   | Model / settings                    | Token seam / step | Hands seam / step | Arm speed p95 | Arm jerk p95 | 1–2 Hz | Result (user)                                                    |
+| ----- | ----------------------------------- | ----------------- | ----------------- | ------------- | ------------ | ------ | ---------------------------------------------------------------- |
+| run20 | GR00T, noise 0, slew 0.1            | 0.107 / 0.005     | 0.045 / 0.002     | 0.99          | 514          | 7.4 %  | acceptable zero-shot (touched the laptop)                        |
+| run21 | GR00T, noise 0, slew 0.1            | 0.074 / 0.005     | 0.037 / 0.002     | 0.70          | 315          | 7.1 %  | acceptable zero-shot                                             |
+| run22 | Psi0, noise 0, blend 0.3, slew 0.05 | 0.003 / 0.003     | 0.004 / 0.005     | 0.50          | 194          | 9.6 %  | reached, touched the lower part of the laptop, not the lid; did not close it; smooth |
+
+- Full 30 s, no watchdog stop, slew limit never active, 73 chunks at 0.29 s.
+- The smoothest robot run so far: no seams, jerk 194 vs GR00T's 315–514. The arm also moved slower (speed p95 0.50
+  vs 0.70–0.99), so part of the smoothness may be less motion.
+- PC2 deploy: `g1_groot_real_run.sh deploy` crashed at "Creating G1Deploy object" (`corrupted size vs. prev_size`);
+  it ran from a PC2 shell after `conda deactivate`, with the SDK's own DDS libraries preloaded:
+  ```bash
+  cd ~/GR00T-WholeBodyControl/gear_sonic_deploy && conda deactivate && source scripts/setup_env.sh
+  export LD_PRELOAD="$(pwd)/thirdparty/unitree_sdk2/thirdparty/lib/aarch64/libddsc.so:$(pwd)/thirdparty/unitree_sdk2/thirdparty/lib/aarch64/libddscxx.so"
+  bash deploy.sh --cp policy/sonic_v1_1/model --obs-config policy/sonic_v1_1/observation_config.yaml \
+    --input-type zmq_manager --zmq-host localhost real
+  ```
+
+## Handover: real-robot continuation (open, 2026-10-06)
+
+To be continued by another session. State at handover:
+
+- **Psi0 server is running** on the workstation as user unit `groot-server-5560` (GPU 1, port 5560, noise scale 0,
+  model `/mnt/data/jihun/g1_models/he_psi0_sonic78sonicstate_ho5_matched640k`, VLM in bf16 via the local
+  `config.json`; log `server_gpu1_5560_t0.log` in the model dir). Stop it with `./g1_groot_real_run.sh stop`.
+- **Robot side:** start the deploy with the PC2 command in the run22 note above (`conda deactivate` + `LD_PRELOAD`;
+  the launcher's `deploy` step crashes). Camera: `./g1_groot_real_run.sh camera`.
+- **Last run:** run22 (see the table above). Logs on PC2 in `~/g1_sonic_eval/runs/`, copies in `~/g1_runs/`.
+
+Next trials, in this order, one change at a time (same scene, "close a laptop g1"):
+
+1. run23 — same settings as run22, for repeatability:
+   `./g1_groot_real_run.sh stream run23_he_psi0_laptop_t0 "close a laptop g1" --max-token-step 0.05 --chunk-blend-s 0.3`
+2. run24 — slew 0.1 (GR00T's setting; run22 never hit 0.05):
+   `... stream run24_he_psi0_laptop_t0 "close a laptop g1" --max-token-step 0.1 --chunk-blend-s 0.3`
+3. run25 — noise 0.25 if it still stops short of the lid (restart the server with `NOISE_SCALE=0.25`):
+   `... stream run25_he_psi0_laptop_t025 "close a laptop g1" --max-token-step 0.1 --chunk-blend-s 0.3`
+
+After each run: copy the `.npz`/`.log` back, run `robot_run_smoothness.py
+/mnt/data/jihun/datasets/he_sonic78_nolimit_sonicstate_heldout6 <runs>`, and add a row with the user's observation
+(reach, which part of the laptop, closed or not, smoothness) to the table above. XR-1 is not a robot candidate (its
+closed-loop drift, see the sim follow-up); do not run it on the robot until it is retrained without the state
+dependence.
+**XR-1 A (no state input) is now the strongest sim candidate** (see "XR-1 A with chunk blend 0.3 s"): best
+closed-loop accuracy, no watchdog stop, lowest jerk. To run it on the robot (after this branch is in the main
+checkout's code; the server must know `state_drop_prob`):
+
+- Workstation copy: `/mnt/data/jihun/g1_models/he_xr1_sonic78sonicstate_ho5_nostate_full/pretrained_model` (bf16,
+  no config change needed; fits GPU 1: ~9.8 GB, ~0.27 s per chunk).
+  Copied 2026-10-08 (sha256 checked); loads with this branch's code and returns the same chunk for any state.
+  It does not fit next to the Psi0 server on GPU 1 (or on GPU 0 beside the desktop): stop the Psi0 server first.
+- Server: `./g1_groot_real_run.sh stop` (if the Psi0 server still runs), then
+  `MODEL=/mnt/data/jihun/g1_models/he_xr1_sonic78sonicstate_ho5_nostate_full BACKBONE_DTYPE= NOISE_SCALE=0 ./g1_groot_real_run.sh server`
+- Stream (first runs, same safeguards as Psi0):
+  `./g1_groot_real_run.sh stream runNN_he_xr1nostate_laptop_t0 "close a laptop g1" --max-token-step 0.05 --chunk-blend-s 0.3`
+- Record each run like run22 (smoothness script + the user's observation). Suggested order with the Psi0 trials:
+  one Psi0 repeat (run23), then XR-1 A (two or three trials), then the slew 0.1 / noise variants for whichever does
+  better.
+
+Optional after run23–25: an A/B with the state-jitter model (`psi0_sonic78sonicstate_ho5_jitter640k_full`, same
+settings; it showed no clear gain in sim, see "Jitter results"). Copy its `pretrained_model` from the H100 through a
+container (resume-safe: `dd skip=` in whole MiB), set `tune_vlm: false` in the local `config.json` (bf16 VLM), and
+point `MODEL` at it.
+
+## Psi0 with state temporal jitter (2026-10-06)
+
+The released SONIC v1.1 recipe (`finetune-real-sonic-psi0-2.8B-sonic1.1-robust.sh`, also [the release
+note](https://github.com/physical-superintelligence-lab/Psi0/blob/main/examples/psi0_for_sonic.md)) is the one our
+Psi0 already follows, from the same `postpre.sonic1.1.unifolm.2609181726.40k` checkpoint (the 36-D AMO checkpoint
+was used only by the dropped `*_smoke_amo36`). The one piece we had not implemented was the ±10-frame state temporal
+jitter (p 0.5): pair the image with a state up to 10 frames earlier or later, so the policy leans on vision when the
+two disagree (latency, pose drift).
+
+- `Psi0Config.state_temporal_jitter` / `state_temporal_jitter_prob`: with J > 0 the dataset returns a −J..+J state
+  window (`state_observation_delta_indices`; images stay at the current frame) and training picks a random
+  in-episode frame (`observation.state_is_pad` false) with that probability, else the centre. Inference uses the
+  centre. Checked on HE: a (21, 28) window, the ten frames before an episode start flagged as padding, both kept
+  through the preprocessor.
+- Runs (user decision: 640K-sample budget, 78D only): `psi0_sonic78sonicstate_ho5_jitter640k_{smoke,full}`, HE on
+  H100 GPU 0 (container `jihun-lerobot-psi0-jitter-gpu0-20261006`), Unitree on h100_174 GPU 4
+  (`jihun-lerobot-psi0-jitter-174-gpu4-20261006`). Configs are the `*_matched640k` ones plus
+  `state_temporal_jitter: 10, state_temporal_jitter_prob: 0.5`; code `/mnt/data01/jhkim/code/lerobot-g1-psi0-jitter`
+  (branch `feat/g1-psi0-state-jitter`, f4ff099b).
+
+### Jitter results (2026-10-07)
+
+Both `*_jitter640k_full` runs finished (exit 0, HE 10-06 14:05, Unitree 18:34 UTC); training state pruned.
+
+**Open loop, temp:0** (same episodes as above): HE tokens seam / err 0.086 / 0.146, hands 0.104 / 0.235 (no jitter:
+0.082 / 0.142, 0.103 / 0.234); Unitree tokens 0.090 / 0.181, hands 0.070 / 0.125 (no jitter: 0.091 / 0.181,
+0.068 / 0.122). Unchanged, as expected: open loop always pairs the image with its own recorded state.
+
+**Closed-loop sim, HE** (same settings as the Psi0 sim above: noise 0, slew 0.05, no blend, `--policy-timeout-s 5`):
+
+| Ep   | Psi0 palm p50 / p95 (cm) | Psi0 + jitter palm p50 / p95 (cm) | Wrist p95 (°), Psi0 → jitter | Arm jerk p95, Psi0 → jitter |
+| ---- | ------------------------ | --------------------------------- | ---------------------------- | --------------------------- |
+| 91   | 10.5 / 27.2              | 11.9 / 31.1 (watchdog at 1.3 s)   | 66.9 → 80.6                  | 813 → 3079                  |
+| 102  | 6.6 / 27.7               | 6.3 / 27.5                        | 81.1 → 86.6                  | 531 → 868                   |
+| 1208 | 3.7 / 22.6               | 4.0 / 20.2                        | 34.7 → 28.7                  | 484 → 364                   |
+| 1219 | 3.2 / 19.0               | 3.6 / 17.1                        | 34.7 → 29.7                  | 788 → 529                   |
+| 1293 | 2.4 / 6.3                | 2.1 / 7.2                         | 17.2 → 18.1                  | 969 → 928                   |
+| 1300 | 3.3 / 10.2 (watchdog at 2.9 s) | 2.0 / 7.4                   | 19.5 → 19.6                  | 3122 → 1051                 |
+
+- **No clear closed-loop gain.** On the four episodes both completed (102, 1208, 1219, 1293) palm p95 averages
+  18.0 cm with jitter vs 18.9 cm without, wrist and jerk mixed. The joint-speed watchdog still fires in 1 of 6
+  episodes, now on 91 (arm joint 12, 6.5 rad/s) instead of 1300; that stop was intermittent before as well.
+- Psi0, unlike XR-1, did not drift in closed loop to begin with, so the jitter (aimed at state/image disagreement)
+  had little to fix here. It may still matter on the real robot, where state latency is larger than in sim.
+- Robot candidate stays the run22 model (`*_matched640k`) with `--chunk-blend-s 0.3`; the jitter model
+  (`/run-output/humanoid_everyday_g1_20260923/runs/psi0_sonic78sonicstate_ho5_jitter640k_full`, not copied to the
+  workstation) is an optional robot A/B after run23–25.
+
+## XR-1 without its state dependence (2026-10-07)
+
+User decision: two HE 78D variants at the official budget (48 × 10K, 480K samples), both with **absolute hands**
+(`relative_action_state_indices` all −1, stats `psi0_xr1/stats/he_sonic78_abs.json`, same 226 held-out episodes
+excluded): **A** `xr1_sonic78sonicstate_ho5_nostate_full` — `state_drop_prob: 1.0`, the model never sees the state
+(a learned null vector instead, also at inference); **B** `xr1_sonic78sonicstate_ho5_statedrop_full` —
+`state_drop_prob: 0.5`, `state_noise_std: 0.05`. A trained on H100 GPU 0, B on h100_174 GPU 4 (weights copied to the
+H100 for the sim); both exit 0, pruned to the final 030000 weights. Code: branch `feat/g1-xr1-state-drop` (bbb7286d).
+
+**Open loop, temp:0** (six HE held-out episodes):
+
+| Model              | Tokens: seam | Tokens: err | Hands: seam | Hands: err |
+| ------------------ | ------------ | ----------- | ----------- | ---------- |
+| XR-1 (original)    | 0.081        | 0.122       | 0.133       | 0.219      |
+| XR-1 A, no state   | 0.110        | 0.169       | 0.121       | 0.373      |
+| XR-1 B, state drop | 0.078        | 0.133       | 0.109       | 0.275      |
+
+**Closed-loop sim** (same settings as the first XR-1 sim: noise 0, slew 0.05, no blend, `--policy-timeout-s 5`):
+
+| Ep   | XR-1 palm p50 / p95 | **A** palm p50 / p95        | **B** palm p50 / p95 | Psi0 palm p95 | GR00T palm p95 | A / B arm jerk p95 |
+| ---- | ------------------- | --------------------------- | -------------------- | ------------- | -------------- | ------------------ |
+| 91   | 20.6 / 46.4         | 5.0 / 16.8                  | 6.3 / 40.8           | 27.2          | 34.5           | 911 / 353          |
+| 102  | 22.1 / 48.5         | 6.6 / 11.3                  | 6.4 / 39.3           | 27.7          | 40.9           | 581 / 670          |
+| 1208 | 8.5 / 53.4          | 2.5 / 13.4 (watchdog 8.6 s) | 5.1 / 20.0           | 22.6          | 25.5           | 546 / 464          |
+| 1219 | 9.0 / 53.9          | 2.6 / 11.8 (watchdog 7.7 s) | 2.8 / 20.0           | 19.0          | 23.9           | 603 / 482          |
+| 1293 | 4.8 / 29.3          | 1.9 / 5.4                   | 2.3 / 7.5            | 6.3           | 10.4           | 475 / 538          |
+| 1300 | 6.1 / 29.7          | 2.1 / 5.4                   | 2.1 / 7.8            | 10.2          | 10.8           | 597 / 841          |
+
+Hands vs stored, p95 (rad): XR-1 1.27–1.44, A 0.16–0.64, B 0.28–0.62. Wrist p95: XR-1 57–113°, A 16–36°, B 17–118°.
+
+- **The drift came from the state, and removing it fixes it.** A is the most accurate model in closed loop so far
+  (palm p95 5–17 cm on every episode, ahead of Psi0 and GR00T), although its open-loop error is higher: without the
+  state its chunks match a replayed recording less well, but it no longer follows its own measured state.
+- **A moves more abruptly:** the joint-speed watchdog ended 2 of 6 runs (6.0–6.3 rad/s; tilt ≈ 4°); jerk 475–911,
+  like Psi0. Its 1208/1219 scores cover the frames up to the stop.
+- **B is in between:** no watchdog stop, hands no longer drift, palm p95 ≈ GR00T's (7.5–41 cm, mean 22.6 vs 24.3),
+  open loop close to the original XR-1. Keeping a little state brings part of the drift back on 91 and 102.
+- Next: A with `--chunk-blend-s 0.3` in sim (it removed Psi0's seams and cut its jerk) before any robot run.
+
+### XR-1 A with chunk blend 0.3 s (2026-10-08)
+
+Same sim settings plus `--chunk-blend-s 0.3` (`OFF_xr1Ab_t0_*`):
+
+| Ep   | A palm p50 / p95 | A + blend palm p50 / p95 | Arm jerk p95, A → A + blend | Arm speed p95 | Slew-limited ticks | Watchdog |
+| ---- | ---------------- | ------------------------ | --------------------------- | ------------- | ------------------ | -------- |
+| 91   | 5.0 / 16.8       | 5.1 / 15.4               | 911 → 173                   | 1.38          | 5 % → 0            | –        |
+| 102  | 6.6 / 11.3       | 6.7 / 10.9               | 581 → 200                   | 1.35          | 2 % → 0            | –        |
+| 1208 | 2.5 / 13.4       | 2.4 / 14.1               | 546 → 220                   | 0.80          | 6 % → 0            | 8.6 s → none |
+| 1219 | 2.6 / 11.8       | 2.4 / 13.4               | 603 → 180                   | 1.28          | 4 % → 0            | 7.7 s → none |
+| 1293 | 1.9 / 5.4        | 2.0 / 5.6                | 475 → 104                   | 1.53          | 1 % → 0            | –        |
+| 1300 | 2.1 / 5.4        | 2.1 / 5.7                | 597 → 122                   | 1.54          | 1 % → 0            | –        |
+
+- **Blending fixes A's abrupt motion:** no watchdog stop, every episode runs to the end, arm jerk p95 104–220 (the
+  lowest of all models; GR00T 343–840, Psi0 with blend 195–894), chunk seams gone (token seam 0.006–0.012 = the
+  normal step), the token slew limit never active. Accuracy is unchanged (palm p95 5.6–15.4 cm, still the best).
+- **XR-1 A + blend 0.3 s is the strongest sim candidate for the robot** (noise 0, slew 0.05 for the first runs).
+  Its workstation copy fits GPU 1 (XR-1 78D: 9.8 GB, 0.27 s per chunk); the server needs a code tree with
+  `state_drop_prob` (branch `feat/g1-xr1-state-drop`) to load it.

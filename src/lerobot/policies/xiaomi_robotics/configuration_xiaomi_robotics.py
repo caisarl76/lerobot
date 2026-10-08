@@ -66,6 +66,11 @@ class XiaomiRoboticsConfig(PreTrainedConfig):
     # For each dataset action dim, the dataset state dim it is made relative to (a - s_t), or -1 to keep
     # it absolute (XR-1 packs relative end-effector/gripper deltas; SONIC tokens have no state).
     relative_action_state_indices: list[int] | None = None
+    # Robustness to the state input (closed-loop drift through the state, 2026-10-06): during training the normalized
+    # state is replaced by a learned null vector with probability `state_drop_prob` (1.0 = no state input at all;
+    # inference then uses the null vector too) and gets additive N(0, `state_noise_std`) noise.
+    state_drop_prob: float = 0.0
+    state_noise_std: float = 0.0
     # JSON from `examples/g1_dex3_training/xr1_action_stats.py` (per-step mean/std, state q01/q99).
     stats_path: str | None = None
 
@@ -130,6 +135,8 @@ class XiaomiRoboticsConfig(PreTrainedConfig):
             raise ValueError(
                 f"`state_slots` must place {state_dim} dims below {self.model_state_dim}: {slots}"
             )
+        if not 0.0 <= self.state_drop_prob <= 1.0 or self.state_noise_std < 0:
+            raise ValueError("`state_drop_prob` must be in [0, 1] and `state_noise_std` >= 0.")
         rel = self.relative_action_state_indices
         if rel is not None and (len(rel) != action_dim or any(i >= state_dim for i in rel)):
             raise ValueError(
