@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parents[2] / "examples" / "g1_dex3_training"))
-from sonic_policy_streamer import measured_ref
+from sonic_policy_streamer import measured_ref, rtc_args, rtc_prefix
 from sonic_targets import NOMINAL_BODY
 
 HERE = Path(__file__).parents[2] / "examples" / "g1_dex3_training"
@@ -22,6 +22,22 @@ def cli(*args):
 
 
 class StreamerCliTests(unittest.TestCase):
+    def test_rtc_prefix(self):
+        last = np.arange(40 * 3, dtype=np.float32).reshape(1, 40, 3)
+        self.assertIsNone(rtc_prefix(None, 12))  # no chunk yet
+        self.assertIsNone(rtc_prefix(last, None))  # first chunk of the episode
+        self.assertIsNone(rtc_prefix(last, 40))  # whole chunk already played
+        tail = rtc_prefix(last, 12)
+        self.assertEqual(tail.shape, (1, 28, 3))
+        self.assertEqual(tail[0, 0, 0], last[0, 12, 0])  # row 12 of the old chunk is row 0 of the new one
+
+    def test_rtc_args_only_after_an_accepted_chunk(self):
+        self.assertEqual(rtc_args(True, True, 1.2, 0.8, 0.22, 30), (12, 7))
+        self.assertEqual(
+            rtc_args(True, False, 1.2, 0.8, 0.22, 30), ()
+        )  # last request rejected: plain request
+        self.assertEqual(rtc_args(False, True, 1.2, 0.8, 0.22, 30), ())  # --rtc off
+
     def test_measured_ref_layout(self):
         body = np.arange(29, dtype=np.float32) / 100
         msg = {"body_q": body, "left_hand_q": np.full(7, 0.5), "right_hand_q": np.full(7, 0.7)}

@@ -235,6 +235,77 @@ Options, off by default: `--noise-seed` (server), `--chunk-blend-s`, `--replan-s
 sim (HE GR00T, planner start, held-out episodes 1293 / 1300), seed + blend 0.3 s cut palm jerk p95 from 126 / 166 to
 44 / 43 m/s³ and the 1–2 Hz share from 2.9 / 3.3 % to 1.6 / 1.0 %, at +1–1.5 cm median palm error.
 
+## Closed-loop finding: the chunk switch, not the plan change (2026-10-06)
+
+Five closed-loop rounds of the 28D HE GR00T (`groot_joint28_ho5_official_full`) through SONIC and the decoupled WBC,
+6 held-out episodes x 3 repeats each (details: `docs/research/2026-10-02-g1-wbc-backends.md`, "Closed loop: results"),
+measured from the streamer's 50 Hz arm targets:
+
+- Across a chunk switch the arm target moves 0.08 rad (p50) / 0.45-0.52 rad (p95) over the next 0.3 s, in every
+  round. The recorded HE demos move just as much: 0.12 / 0.50 rad over 0.3 s (p99 0.68), more than 0.3 rad in 17 % of
+  windows. **The plan changes between chunks are normal-sized motion, not abnormal jumps.**
+- The jerk comes from executing that change in one tick. With chunks switched at once the commanded arm speed peaks
+  at ~19-22 rad/s (median over runs), which trips the 6 rad/s watchdog in 6-10 of 18 runs. A 0.3 s blend brings it to
+  3-4 rad/s, closed-loop RTC (`--rtc`) to 5-8 rad/s; both remove almost all trips.
+- Noise scale 0 alone does not remove trips (its jumps repeat on the same episodes) but halves the motion inside a
+  chunk away from switches (p95 0.36 -> 0.23 rad per 0.3 s).
+- RTC keeps following its own plan: valid runs 18/18 (28D through SONIC and C) but the motion moves further from the
+  demo (SONIC palm p50 6.4 vs 4.5 cm with noise 0 + blend), and the 78D token GR00T drifts badly (palm vs demo p50
+  19.7 cm vs 4.1 cm), as RTC already did open loop. Do not use RTC with the token model.
+
+So for inference the fix is a smooth switch (noise scale 0 + `--chunk-blend-s 0.3`: 53 of 54 runs valid, closest to
+the demo). A training-side fix would have to make consecutive chunks agree on their overlap, which the official
+recipe does not target.
+
+### Robot check (pending, needs the G1)
+
+Add the 0.3 s blend to the robot-accepted setting (runs 20-21: HE GR00T `*_official_full`, noise scale 0,
+`--replan-s 0.4 --max-token-step 0.1`, planner start/end). The streamer copy on the robot PC already has
+`--chunk-blend-s` (it is the self-contained pre-WBC streamer; nothing to sync), and `g1_groot_real_run.sh stream`
+passes extra arguments through:
+
+```bash
+NOISE_SCALE=0 g1_groot_real_run.sh server   # workstation GPU 1; the launcher's default is now 0.5
+g1_groot_real_run.sh deploy     # PC2, wait for "Init Done"
+g1_groot_real_run.sh camera     # PC2, D435i 640x480 "egocentric"
+g1_groot_real_run.sh stream run24_he_groot_official_laptop_t0_blend03 "close a laptop g1" --chunk-blend-s 0.3
+```
+
+Compare with runs 20-21 (same task, no blend): copy the logs from `~/g1_sonic_eval/runs/` and run
+`robot_run_smoothness.py <HE dataset root> run20*.npz run21*.npz run24*.npz` (seam / step, arm speed p95, arm jerk p95,
+1-2 Hz share), plus whether the task still succeeds.
+
+**Robot result (2026-10-08, run 24):** the blend works on the G1. Same task and setting as runs 20-21 (HE GR00T
+official, noise scale 0, replan 0.4 s, `--max-token-step 0.1`, planner start/end), plus `--chunk-blend-s 0.3`. Server
+on workstation GPU 0, port 5561; inference median 0.22 s (73 chunks); the slew limit never fired.
+`robot_run_smoothness.py`:
+
+| Run | Blend | Token seam / step | Hands seam / step | Arm speed p95 (rad/s) | Arm jerk p95 | 1-2 Hz share |
+| --- | --- | --- | --- | --- | --- | --- |
+| 20 | 0 | 0.107 / 0.005 | 0.045 / 0.002 | 0.99 | 514 | 7.4 % |
+| 21 | 0 | 0.074 / 0.005 | 0.037 / 0.002 | 0.70 | 315 | 7.1 % |
+| **24** | **0.3 s** | **0.004 / 0.005** | **0.003 / 0.004** | 0.82 | **272** | 10.5 % |
+
+- The chunk seams are gone: the jump at a switch is now the size of a normal tick (tokens 0.004 vs 0.074-0.107).
+  Arm jerk p95 is lower (272 vs 315-514). The user saw smooth movement.
+- Task: the laptop closed part of the way, not fully.
+- The 1-2 Hz share went up (10.5 vs ~7 %); the blend turns each switch into a 0.3 s ramp, which sits in that band.
+
+Repeats the same day (same server, noise scale 0 throughout; runs 25-27 blend 0.3 s, run 28 blend 0.5 s):
+
+| Run | Blend | Token seam / step | Arm speed p95 | Arm jerk p95 | 1-2 Hz share |
+| --- | --- | --- | --- | --- | --- |
+| 25 | 0.3 s | 0.004 / 0.009 | 1.39 | 276 | 22.4 % |
+| 26 | 0.3 s | 0.004 / 0.004 | 0.68 | 214 | 8.4 % |
+| 27 | 0.3 s | 0.004 / 0.005 | 0.94 | 258 | 19.0 % |
+| 28 | 0.5 s | 0.005 / 0.003 | 0.54 | 213 | 7.3 % |
+
+- Every blended run is seam-free and has lower jerk than runs 20-21. The 1-2 Hz share varies a lot between runs at
+  the same setting (8-22 %), so it is not a reliable sign of the blend on its own.
+- Blend 0.5 s (longer than the 0.4 s replan, so the output is always cross-fading) was the gentlest: lowest speed and
+  jerk, 1-2 Hz share back at 7 %. The user judged it similar to 0.3 s. The laptop still closes only part way.
+
+
 ## Next steps
 
 - [x] Compare the training pipeline with Isaac-GR00T (section above); processor fallback fixed on this branch.
