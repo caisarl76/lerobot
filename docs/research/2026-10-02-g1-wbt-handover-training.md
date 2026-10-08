@@ -179,14 +179,16 @@ handover". Logs: `pc2_222:~/g1_sonic_eval/runs/run3{3..6}_wbt_*`. Smoothness by 
 | 34  | GR00T he | 30 s     | 0.012 / 0.013     | 1.17 rad/s    | 239      | 0 %                | (same session)                                  |
 | 35  | GR00T he | 30 s     | 0.011 / 0.014     | 1.50 rad/s    | 250      | 0 %                | (same session)                                  |
 | 36  | Pi0.5 he | 0.4 s    | – / 0.065         | 6.91 rad/s    | 1998     | 39 %               | watchdog stop: right arm joint at 6.2 rad/s     |
+| 37  | Pi0.5 he | 30 s     | 0.011 / 0.011     | 0.99 rad/s    | 242      | 1 %                | succeeded: pick and handover                    |
 
 - **GR00T he works on the robot:** it reaches the bottle, picks it up and goes to the handover posture. Its smoothness
   matches the HE GR00T with noise 0 + blend (runs 24–27, jerk p95 214–276).
-- **Pi0.5 he made an abrupt first move.** The right hand starts closed on the robot, in the planner stance and
-  therefore at episode start, but open in all 43 recordings. Pi0.5's second chunk (~0.3 s) snapped the right hand open
-  by 1.67 rad in one tick and moved the arm hard, so the watchdog ended the episode. The recordings themselves contain
-  instant hand switches (up to 1.78 rad per frame, teleop trigger). GR00T he kept the hand closed at first and then
-  performed normally.
+- **Pi0.5 he: one watchdog stop, then a success.** In run36 the right hand started closed on the robot (it is
+  closed in the planner stance, but open at the start of all 43 recordings). Pi0.5's second chunk (~0.3 s) snapped
+  it open by 1.67 rad in one tick and moved the arm hard, so the watchdog ended the episode. The recordings contain
+  such instant hand switches too (up to 1.78 rad per frame, teleop trigger). In run37, from the same closed-hand start,
+  Pi0.5 he succeeded at pick and handover, as smoothly as GR00T he; it still switched the hand by up to 1.64 rad in one
+  tick, but without a fast arm move. So the abrupt start is intermittent.
 - After the watchdog stop, the streamer exited with `terminate called without an active exception`. The normal exits
   of runs 33–35 don't show it. Harmless here (the robot was already back in planner mode); still to fix.
 
