@@ -1,6 +1,6 @@
 # G1 Dex3 model registry
 
-Generated 2026-10-07 12:22 UTC by `examples/g1_dex3_training/model_registry.py` (regenerate it after training or deleting runs; the CSV next to this file has the same rows).
+Generated 2026-10-08 02:14 UTC by `examples/g1_dex3_training/model_registry.py` (regenerate it after training or deleting runs; the CSV next to this file has the same rows).
 Paths are host paths under `/mnt/data01/jhkim/model_weight/g1_dex3_20260922` on the named host.
 
 ## g1_wbt_handover_20261002
@@ -39,7 +39,7 @@ Paths are host paths under `/mnt/data01/jhkim/model_weight/g1_dex3_20260922` on 
 | `vla_jepa_sonic78sonicstate_ho5_official_full` | vla_jepa | 78D | 960,000 (8 × 120000, accum 4) | 226 | 120000 | 0 | 2026-10-01 03:13 | 11.1 | h100 | yes |
 | `xr1_joint28_ho5_official_full` | xiaomi_robotics | 28D | 480,000 (16 × 30000, accum 3) | 226 | 030000 | 0 | 2026-09-30 17:56 | 10.2 | h100 |  |
 | `xr1_joint28_ho5_official_smoke` | xiaomi_robotics | 28D | 1,440 (16 × 90, accum 3) | 226 | 000090 | 0 | 2026-09-30 03:56 | 10.2 | h100 |  |
-| `xr1_sonic78sonicstate_ho5_nostate_full` | xiaomi_robotics | 78D | 480,000 (16 × 30000, accum 3) | 226 | 030000 | 0 | 2026-10-07 09:54 | 10.2 | h100 |  |
+| `xr1_sonic78sonicstate_ho5_nostate_full` | xiaomi_robotics | 78D | 480,000 (16 × 30000, accum 3) | 226 | 030000 | 0 | 2026-10-07 09:54 | 10.2 | h100 | yes |
 | `xr1_sonic78sonicstate_ho5_nostate_smoke` | xiaomi_robotics | 78D | 1,440 (16 × 90, accum 3) | 226 | 000090 | 0 | 2026-10-07 01:52 | 10.2 | h100 |  |
 | `xr1_sonic78sonicstate_ho5_official_full` | xiaomi_robotics | 78D | 480,000 (16 × 30000, accum 3) | 226 | 030000 | 0 | 2026-10-01 01:55 | 10.2 | h100 | yes |
 | `xr1_sonic78sonicstate_ho5_official_smoke` | xiaomi_robotics | 78D | 1,440 (16 × 90, accum 3) | 226 | 000090 | 0 | 2026-09-30 04:01 | 10.2 | h100 |  |

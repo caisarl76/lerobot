@@ -574,6 +574,8 @@ checkout's code; the server must know `state_drop_prob`):
 
 - Workstation copy: `/mnt/data/jihun/g1_models/he_xr1_sonic78sonicstate_ho5_nostate_full/pretrained_model` (bf16,
   no config change needed; fits GPU 1: ~9.8 GB, ~0.27 s per chunk).
+  Copied 2026-10-08 (sha256 checked); loads with this branch's code and returns the same chunk for any state.
+  It does not fit next to the Psi0 server on GPU 1 (or on GPU 0 beside the desktop): stop the Psi0 server first.
 - Server: `./g1_groot_real_run.sh stop` (if the Psi0 server still runs), then
   `MODEL=/mnt/data/jihun/g1_models/he_xr1_sonic78sonicstate_ho5_nostate_full BACKBONE_DTYPE= NOISE_SCALE=0 ./g1_groot_real_run.sh server`
 - Stream (first runs, same safeguards as Psi0):
