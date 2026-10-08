@@ -568,6 +568,20 @@ After each run: copy the `.npz`/`.log` back, run `robot_run_smoothness.py
 (reach, which part of the laptop, closed or not, smoothness) to the table above. XR-1 is not a robot candidate (its
 closed-loop drift, see the sim follow-up); do not run it on the robot until it is retrained without the state
 dependence.
+**XR-1 A (no state input) is now the strongest sim candidate** (see "XR-1 A with chunk blend 0.3 s"): best
+closed-loop accuracy, no watchdog stop, lowest jerk. To run it on the robot (after this branch is in the main
+checkout's code; the server must know `state_drop_prob`):
+
+- Workstation copy: `/mnt/data/jihun/g1_models/he_xr1_sonic78sonicstate_ho5_nostate_full/pretrained_model` (bf16,
+  no config change needed; fits GPU 1: ~9.8 GB, ~0.27 s per chunk).
+- Server: `./g1_groot_real_run.sh stop` (if the Psi0 server still runs), then
+  `MODEL=/mnt/data/jihun/g1_models/he_xr1_sonic78sonicstate_ho5_nostate_full BACKBONE_DTYPE= NOISE_SCALE=0 ./g1_groot_real_run.sh server`
+- Stream (first runs, same safeguards as Psi0):
+  `./g1_groot_real_run.sh stream runNN_he_xr1nostate_laptop_t0 "close a laptop g1" --max-token-step 0.05 --chunk-blend-s 0.3`
+- Record each run like run22 (smoothness script + the user's observation). Suggested order with the Psi0 trials:
+  one Psi0 repeat (run23), then XR-1 A (two or three trials), then the slew 0.1 / noise variants for whichever does
+  better.
+
 Optional after run23–25: an A/B with the state-jitter model (`psi0_sonic78sonicstate_ho5_jitter640k_full`, same
 settings; it showed no clear gain in sim, see "Jitter results"). Copy its `pretrained_model` from the H100 through a
 container (resume-safe: `dd skip=` in whole MiB), set `tune_vlm: false` in the local `config.json` (bf16 VLM), and
