@@ -290,7 +290,20 @@ on workstation GPU 0, port 5561; inference median 0.22 s (73 chunks); the slew l
   Arm jerk p95 is lower (272 vs 315-514). The user saw smooth movement.
 - Task: the laptop closed part of the way, not fully.
 - The 1-2 Hz share went up (10.5 vs ~7 %); the blend turns each switch into a 0.3 s ramp, which sits in that band.
-  Worth watching over more runs.
+
+Repeats the same day (same server, noise scale 0 throughout; runs 25-27 blend 0.3 s, run 28 blend 0.5 s):
+
+| Run | Blend | Token seam / step | Arm speed p95 | Arm jerk p95 | 1-2 Hz share |
+| --- | --- | --- | --- | --- | --- |
+| 25 | 0.3 s | 0.004 / 0.009 | 1.39 | 276 | 22.4 % |
+| 26 | 0.3 s | 0.004 / 0.004 | 0.68 | 214 | 8.4 % |
+| 27 | 0.3 s | 0.004 / 0.005 | 0.94 | 258 | 19.0 % |
+| 28 | 0.5 s | 0.005 / 0.003 | 0.54 | 213 | 7.3 % |
+
+- Every blended run is seam-free and has lower jerk than runs 20-21. The 1-2 Hz share varies a lot between runs at
+  the same setting (8-22 %), so it is not a reliable sign of the blend on its own.
+- Blend 0.5 s (longer than the 0.4 s replan, so the output is always cross-fading) was the gentlest: lowest speed and
+  jerk, 1-2 Hz share back at 7 %. The user judged it similar to 0.3 s. The laptop still closes only part way.
 
 
 ## Next steps
