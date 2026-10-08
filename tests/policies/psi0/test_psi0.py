@@ -15,6 +15,8 @@
 # limitations under the License.
 """Psi0 port: action header, weight loading, flow sampler, and a tiny end-to-end policy."""
 
+from types import SimpleNamespace
+
 import pytest
 import torch
 
@@ -22,12 +24,14 @@ pytest.importorskip("transformers")
 pytest.importorskip("diffusers")
 
 from lerobot.configs.types import FeatureType, PolicyFeature  # noqa: E402
+from lerobot.datasets.factory import resolve_delta_timestamps  # noqa: E402
 from lerobot.policies.psi0.action_header import ActionTransformerModel  # noqa: E402
 from lerobot.policies.psi0.configuration_psi0 import Psi0Config  # noqa: E402
 from lerobot.policies.psi0.modeling_psi0 import (  # noqa: E402
     Psi0Policy,
     flow_sigmas,
     load_action_header_weights,
+    pick_state_frame,
 )
 from tests.policies.tiny_qwen3vl import build_tiny_clip, build_tiny_qwen3vl  # noqa: E402
 
@@ -153,9 +157,14 @@ def _features(n_cams, action_dim):
     return inputs, {"action": PolicyFeature(FeatureType.ACTION, (action_dim,))}
 
 
-def _batch(n_cams, action_dim, bsz=2):
+def _batch(n_cams, action_dim, bsz=2, state_window=0):
     batch = {f"observation.images.cam{i}": torch.rand(bsz, 3, 96, 128) for i in range(n_cams)}
-    batch["observation.state"] = torch.rand(bsz, 28) * 2 - 1
+    if state_window:  # (B, 2J+1, 28) window for the temporal jitter, first frame past the episode start
+        batch["observation.state"] = torch.rand(bsz, 2 * state_window + 1, 28) * 2 - 1
+        batch["observation.state_is_pad"] = torch.zeros(bsz, 2 * state_window + 1, dtype=torch.bool)
+        batch["observation.state_is_pad"][:, 0] = True
+    else:
+        batch["observation.state"] = torch.rand(bsz, 28) * 2 - 1
     batch["action"] = torch.rand(bsz, 30, action_dim) * 2 - 1
     batch["action_is_pad"] = torch.zeros(bsz, 30, dtype=torch.bool)
     batch["task"] = ["Pick the Apple", "push the duck"][:bsz]
@@ -203,6 +212,7 @@ def test_psi0_policy_trains_samples_and_reloads(recipe, tiny_assets, tmp_path):
             "state_null_token": True,
             "state_drop_prob": 0.1,
             "state_noise_std": 0.05,
+            "state_temporal_jitter": 2,
             "tune_vlm": True,
             "gradient_checkpointing": True,
             "view_aug": True,
@@ -211,7 +221,7 @@ def test_psi0_policy_trains_samples_and_reloads(recipe, tiny_assets, tmp_path):
     inputs, outputs = _features(n_cams, action_dim)
     config = Psi0Config(input_features=inputs, output_features=outputs, device="cpu", **common, **extra)
     policy = Psi0Policy(config).train()
-    batch = _batch(n_cams, action_dim)
+    batch = _batch(n_cams, action_dim, state_window=config.state_temporal_jitter)
     loss, metrics = policy.forward(batch)
     assert torch.isfinite(loss) and metrics["loss"] > 0
     loss.backward()
@@ -229,3 +239,31 @@ def test_psi0_policy_trains_samples_and_reloads(recipe, tiny_assets, tmp_path):
     assert reloaded.config.load_base_weights is False
     torch.manual_seed(0)
     torch.testing.assert_close(reloaded.predict_action_chunk(batch), chunk)
+
+
+def test_pick_state_frame_uses_centre_or_a_valid_neighbour():
+    torch.manual_seed(0)
+    window = torch.arange(5.0)[None, :, None].repeat(4000, 1, 2)  # value = index in the window
+    is_pad = torch.zeros(4000, 5, dtype=torch.bool)
+    is_pad[:, :2] = True  # two frames before the episode start
+    assert torch.equal(pick_state_frame(window, is_pad, 0.0)[:, 0], torch.full((4000,), 2.0))
+    picked = pick_state_frame(window, is_pad, 1.0)[:, 0]
+    assert set(picked.unique().tolist()) == {2.0, 3.0, 4.0}  # never a padded frame
+    assert (picked == 2.0).float().mean().item() == pytest.approx(1 / 3, abs=0.05)
+    jittered = pick_state_frame(window, None, 0.5)[:, 0]
+    assert (jittered != 2.0).float().mean().item() == pytest.approx(0.5 * 4 / 5, abs=0.05)
+
+
+def test_state_jitter_requests_a_state_window_only():
+    inputs, outputs = _features(1, 78)
+    inputs["observation.state"] = PolicyFeature(FeatureType.STATE, (28,))
+    config = Psi0Config(
+        input_features=inputs, output_features=outputs, device="cpu", state_temporal_jitter=10
+    )
+    meta = SimpleNamespace(
+        features={"observation.images.cam0": {}, "observation.state": {}, "action": {}}, fps=30
+    )
+    deltas = resolve_delta_timestamps(config, meta)
+    assert deltas["observation.state"] == [i / 30 for i in range(-10, 11)]
+    assert "observation.images.cam0" not in deltas
+    assert Psi0Config(input_features=inputs, output_features=outputs).state_observation_delta_indices is None

@@ -104,6 +104,18 @@ def _vlm_group(name: str) -> str:
     return "lang_backbone"
 
 
+def pick_state_frame(window: Tensor, is_pad: Tensor | None, prob: float) -> Tensor:
+    """(B, 2J+1, D) state window centred on the current frame -> (B, D): the centre, or with probability `prob`
+    a uniformly random frame of the window that lies inside the episode (`is_pad` False)."""
+    bsz, width, _ = window.shape
+    idx = torch.full((bsz,), width // 2, device=window.device)
+    if prob > 0:
+        valid = torch.ones(bsz, width, dtype=torch.bool, device=window.device) if is_pad is None else ~is_pad
+        random_valid = torch.rand(bsz, width, device=window.device).masked_fill(~valid, -1.0).argmax(1)
+        idx = torch.where(torch.rand(bsz, device=window.device) < prob, random_valid, idx)
+    return window[torch.arange(bsz, device=window.device), idx]
+
+
 class Psi0Model(nn.Module):
     def __init__(self, config: Psi0Config):
         super().__init__()
@@ -317,7 +329,12 @@ class Psi0Model(nn.Module):
         if OBS_STATE in batch and self.state_slots.numel():
             raw = batch[OBS_STATE].float()
             if raw.dim() == 3:
-                raw = raw[:, -1]
+                if self.config.state_temporal_jitter > 0:
+                    pad = batch.get(f"{OBS_STATE}_is_pad")
+                    prob = self.config.state_temporal_jitter_prob if train else 0.0
+                    raw = pick_state_frame(raw, pad, prob)
+                else:
+                    raw = raw[:, -1]
             raw = raw.clamp(-1.0, 1.0)
             if train and self.config.state_noise_std > 0:
                 raw = (raw + torch.randn_like(raw) * self.config.state_noise_std).clamp(-1.0, 1.0)

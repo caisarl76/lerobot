@@ -116,6 +116,11 @@ class Psi0Config(PreTrainedConfig):
     view_aug_prob: float = 1.0
     # Additive N(0, std) noise on the normalized state during training (SONIC "robust" recipe).
     state_noise_std: float = 0.0
+    # Pair the image with the state up to this many frames earlier or later (same episode), with probability
+    # `state_temporal_jitter_prob`, during training (SONIC "robust" recipe: 10 and 0.5). 0 = off. Inference always
+    # uses the current frame.
+    state_temporal_jitter: int = 0
+    state_temporal_jitter_prob: float = 0.5
     lowercase_instruction: bool = True
 
     # ---- VLM training -------------------------------------------------------------------------
@@ -140,6 +145,10 @@ class Psi0Config(PreTrainedConfig):
         super().__post_init__()
         if self.n_action_steps > self.chunk_size:
             raise ValueError("`n_action_steps` must be <= `chunk_size`.")
+        if self.state_temporal_jitter < 0 or not 0.0 <= self.state_temporal_jitter_prob <= 1.0:
+            raise ValueError(
+                "`state_temporal_jitter` must be >= 0 and `state_temporal_jitter_prob` in [0, 1]."
+            )
         if self.vlm_layer_indices is not None and len(self.vlm_layer_indices) != self.num_blocks:
             raise ValueError(
                 f"`vlm_layer_indices` needs one VLM layer per header block: got "
@@ -188,6 +197,12 @@ class Psi0Config(PreTrainedConfig):
     @property
     def observation_delta_indices(self) -> None:
         return None
+
+    @property
+    def state_observation_delta_indices(self) -> list[int] | None:
+        """State window -J..+J for the temporal jitter (images stay at the current frame)."""
+        j = self.state_temporal_jitter
+        return list(range(-j, j + 1)) if j > 0 else None
 
     @property
     def action_delta_indices(self) -> list[int]:

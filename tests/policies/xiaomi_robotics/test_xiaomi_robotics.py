@@ -112,8 +112,9 @@ def tiny_vlm(tmp_path_factory):
     return build_tiny_qwen3vl(tmp_path_factory.mktemp("xr1") / "vlm")
 
 
-def _policy(vlm, tmp_path, action_dim, n_cams, weights=None):
-    rel = list(range(28)) if action_dim == 28 else [-1] * 64 + list(range(14, 28))
+def _policy(vlm, tmp_path, action_dim, n_cams, weights=None, rel=None, **config_kwargs):
+    if rel is None:
+        rel = list(range(28)) if action_dim == 28 else [-1] * 64 + list(range(14, 28))
     stats = tmp_path / f"stats_{action_dim}.json"
     stats.write_text(
         json.dumps(
@@ -144,6 +145,7 @@ def _policy(vlm, tmp_path, action_dim, n_cams, weights=None):
         stats_path=str(stats),
         pretrained_weights_path=weights,
         view_names=[f"View {i}" for i in range(n_cams)],
+        **config_kwargs,
     )
     return XiaomiRoboticsPolicy(config)
 
@@ -214,6 +216,51 @@ def test_xr1_width_78_loads_60_wide_checkpoint_and_reloads(tiny_vlm, tmp_path):
     torch.manual_seed(0)
     chunk = policy.predict_action_chunk(batch)
     assert chunk.shape == (2, 30, 78) and torch.isfinite(chunk).all()
+    policy.save_pretrained(tmp_path / "ckpt")
+    reloaded = XiaomiRoboticsPolicy.from_pretrained(tmp_path / "ckpt", strict=True)
+    torch.manual_seed(0)
+    torch.testing.assert_close(reloaded.predict_action_chunk(batch), chunk)
+
+
+@pytest.mark.parametrize("drop", [1.0, 0.5])
+def test_xr1_state_dropout_with_absolute_hands(tiny_vlm, tmp_path, drop):
+    """No-state (drop 1.0) and state-dropout (0.5) variants: released-format weights load without `state_null`,
+    the null vector trains, checkpoints round-trip, and only the 1.0 variant ignores the state at inference."""
+    source = _policy(tiny_vlm, tmp_path, 78, 1, rel=[-1] * 78).model
+    buffers = dict(source.named_buffers())
+    module = {
+        "model." + ("vlm.model." + k[4:] if k.startswith("vlm.") else k): v
+        for k, v in source.state_dict().items()
+        if k not in buffers
+    }
+    weights = tmp_path / "model_states.pt"
+    torch.save({"module": module}, weights)
+    policy = _policy(
+        tiny_vlm,
+        tmp_path,
+        78,
+        1,
+        weights=str(weights),
+        rel=[-1] * 78,
+        state_drop_prob=drop,
+        state_noise_std=0.05,
+    )
+    assert policy.model.state_null is not None
+
+    policy.train()
+    torch.manual_seed(1)  # drop 0.5: at least one of the 3 samples is dropped with this seed
+    loss, _ = policy.forward(_batch(1, 78))
+    loss.backward()
+    assert policy.model.state_null.grad is not None and policy.model.state_null.grad.abs().sum() > 0
+
+    batch = _batch(1, 78, bsz=2)
+    other = {**batch, "observation.state": batch["observation.state"] * -1}
+    torch.manual_seed(0)
+    chunk = policy.predict_action_chunk(batch)
+    torch.manual_seed(0)
+    changed = not torch.allclose(policy.predict_action_chunk(other), chunk)
+    assert changed == (drop < 1.0)
+
     policy.save_pretrained(tmp_path / "ckpt")
     reloaded = XiaomiRoboticsPolicy.from_pretrained(tmp_path / "ckpt", strict=True)
     torch.manual_seed(0)

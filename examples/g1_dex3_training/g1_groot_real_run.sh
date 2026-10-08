@@ -1,5 +1,5 @@
 #!/bin/bash
-# Real-robot run of the HE GR00T (official recipe) with its best open-loop inference setting, noise scale 0
+# Real-robot run of the HE GR00T (official recipe) with its reference setting: noise scale 0 and a 0.3 s chunk blend
 # (zero-noise flow sampling: err 0.149 -> 0.131, seam 0.140 -> 0.091; 2026-10-01, see
 # docs/research/2026-09-30-official-retraining-handover.md). RTC stays off (GR00T RTC drifts, err ~0.50).
 # Run from the workstation, each step in its own terminal, in this order; the PC2 steps go over `ssh -t pc2_222`.
@@ -12,15 +12,17 @@
 #   g1_groot_real_run.sh stop                    # stop the workstation server
 #
 # e.g. g1_groot_real_run.sh stream run20_he_groot_official_laptop_t0 "close a laptop g1"
-# Env: MODEL (checkpoint dir), GPU, PORT, NOISE_SCALE (default 0.5; 0 = runs 20-21; empty = unscaled sampling), CAM_FPS (default 30),
+# Env: MODEL (checkpoint dir), GPU, PORT, NOISE_SCALE (default 0; empty = unscaled sampling), BLEND_S (streamer
+#      --chunk-blend-s, default 0.3; 0 = runs 20-21), CAM_FPS (default 30),
 #      POLICY_FPS (50 for the G1 WBT models; needs the PC2 streamer copy with --policy-fps),
 #      POLICY_SUBDIR (default pretrained_model), BACKBONE_DTYPE (default bfloat16, GR00T only; empty for others).
 set -e
 MODEL=${MODEL:-/mnt/data/jihun/g1_models/he_groot_sonic78sonicstate_ho5_official_full}
-# NOISE_SCALE 0.5 keeps some sample variety so the policy can escape a stall (user decision 2026-10-02; open loop seam
-# 0.103 vs 0.091 at 0; not yet run on the robot). NOISE_SCALE=0 reproduces the passed runs 20-21. If stalls become a
-# major problem: raise the noise only while the arm is stalled (impl log 10, option 4; not implemented).
-GPU=${GPU:-1}; PORT=${PORT:-5560}; NOISE_SCALE=${NOISE_SCALE-0.5}
+# Robot 2026-10-08 (docs/research/2026-09-29-issue-groot-jerky-predictions.md): noise 0 + blend 0.3 s removed the chunk
+# seams (runs 24-27, jerk p95 214-276 vs 315-514 without blend); blend 0.5 s similar (run 28); noise 0.5 was jerky inside
+# the chunks (run 29, jerk p95 669), so the default is back to 0. At noise 0 the arm can stall after ~15 s; if that
+# becomes the main problem, raise the noise only while the arm is stalled (impl log 10, option 4; not implemented).
+GPU=${GPU:-1}; PORT=${PORT:-5560}; NOISE_SCALE=${NOISE_SCALE-0}; BLEND_S=${BLEND_S-0.3}
 POLICY_SUBDIR=${POLICY_SUBDIR:-pretrained_model}  # pretrained_model_ema for Pi0.5
 BACKBONE_DTYPE=${BACKBONE_DTYPE-bfloat16}  # GR00T only; set empty (BACKBONE_DTYPE=) for other policies
 CAM_FPS=${CAM_FPS:-30}  # camera publish rate; capture is 30 Hz, so 30 is the max (server default 10)
@@ -56,10 +58,11 @@ stream)
   RUN=${2:?run name, e.g. run20_he_groot_official_laptop_t0}; TASK=${3:-close a laptop g1}; shift $(($# < 3 ? $# : 3))
   ssh -t pc2_222 "cd ~/g1_sonic_eval/code && ../.venv/bin/python -u sonic_policy_streamer.py \
     --policy-server tcp://$WS:$PORT --images zmq --camera-host localhost --task '$TASK' \
-    --start planner --end planner --duration-s 30 --replan-s 0.4 --max-token-step 0.1 \
+    --start planner --end planner --duration-s 30 --replan-s 0.4 --max-token-step 0.1 ${BLEND_S:+--chunk-blend-s $BLEND_S} \
     ${POLICY_FPS:+--policy-fps $POLICY_FPS} --log ../runs/$RUN.npz $* 2>&1 | tee ../runs/$RUN.log" ;;
 stop)
-  systemctl --user stop $UNIT ;;
+  # a stopped transient unit stays "failed" (non-zero exit) and blocks the next start under the same name
+  systemctl --user stop $UNIT; systemctl --user reset-failed $UNIT 2>/dev/null || true ;;
 *)
   sed -n 2,15p "$0"; exit 1 ;;
 esac
