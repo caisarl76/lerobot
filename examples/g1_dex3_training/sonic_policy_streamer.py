@@ -869,7 +869,9 @@ def main():
             episode_end = f"watchdog: {reason}"
             print(f"[streamer] {episode_end}: ending episode", flush=True)
             break
-        if t_ep >= next_replan and not worker.busy:
+        # slot is None: the previous result was consumed at the top of this tick (a request that finished after
+        # that check is taken next tick instead of being overwritten unaccepted)
+        if t_ep >= next_replan and slot is None and not worker.busy:
             # rows of the current chunk played by now; rows that play during inference stay frozen
             lat = latencies[-1] if latencies else a.replan_s / 2
             rtc = rtc_args(a.rtc, last_accepted, t_ep, chunk_t0, lat, images.fps)
