@@ -659,3 +659,23 @@ Hands vs stored, p95 (rad): XR-1 1.27–1.44, A 0.16–0.64, B 0.28–0.62. Wris
 - **B is in between:** no watchdog stop, hands no longer drift, palm p95 ≈ GR00T's (7.5–41 cm, mean 22.6 vs 24.3),
   open loop close to the original XR-1. Keeping a little state brings part of the drift back on 91 and 102.
 - Next: A with `--chunk-blend-s 0.3` in sim (it removed Psi0's seams and cut its jerk) before any robot run.
+
+### XR-1 A with chunk blend 0.3 s (2026-10-08)
+
+Same sim settings plus `--chunk-blend-s 0.3` (`OFF_xr1Ab_t0_*`):
+
+| Ep   | A palm p50 / p95 | A + blend palm p50 / p95 | Arm jerk p95, A → A + blend | Arm speed p95 | Slew-limited ticks | Watchdog |
+| ---- | ---------------- | ------------------------ | --------------------------- | ------------- | ------------------ | -------- |
+| 91   | 5.0 / 16.8       | 5.1 / 15.4               | 911 → 173                   | 1.38          | 5 % → 0            | –        |
+| 102  | 6.6 / 11.3       | 6.7 / 10.9               | 581 → 200                   | 1.35          | 2 % → 0            | –        |
+| 1208 | 2.5 / 13.4       | 2.4 / 14.1               | 546 → 220                   | 0.80          | 6 % → 0            | 8.6 s → none |
+| 1219 | 2.6 / 11.8       | 2.4 / 13.4               | 603 → 180                   | 1.28          | 4 % → 0            | 7.7 s → none |
+| 1293 | 1.9 / 5.4        | 2.0 / 5.6                | 475 → 104                   | 1.53          | 1 % → 0            | –        |
+| 1300 | 2.1 / 5.4        | 2.1 / 5.7                | 597 → 122                   | 1.54          | 1 % → 0            | –        |
+
+- **Blending fixes A's abrupt motion:** no watchdog stop, every episode runs to the end, arm jerk p95 104–220 (the
+  lowest of all models; GR00T 343–840, Psi0 with blend 195–894), chunk seams gone (token seam 0.006–0.012 = the
+  normal step), the token slew limit never active. Accuracy is unchanged (palm p95 5.6–15.4 cm, still the best).
+- **XR-1 A + blend 0.3 s is the strongest sim candidate for the robot** (noise 0, slew 0.05 for the first runs).
+  Its workstation copy fits GPU 1 (XR-1 78D: 9.8 GB, 0.27 s per chunk); the server needs a code tree with
+  `state_drop_prob` (branch `feat/g1-xr1-state-drop`) to load it.
