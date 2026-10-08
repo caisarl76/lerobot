@@ -135,9 +135,21 @@ open-loop predictions are already jerky. See the open issue
 
 ## Known issues
 
-- **Open: GR00T predictions are jerky although the dataset replays smoothly** (possibly undertraining: batch 4, 40K
-  steps ≈ 9 % of one pass over HE), see
-  [`2026-09-29-issue-groot-jerky-predictions.md`](./2026-09-29-issue-groot-jerky-predictions.md).
+- **Resolved for inference (2026-10-08): GR00T jerky motion.** The jumps came from switching chunks in one tick;
+  noise scale 0 plus `--chunk-blend-s 0.3` is smooth on the robot (runs 24-28), and `g1_groot_real_run.sh` defaults to
+  it. See [`2026-09-29-issue-groot-jerky-predictions.md`](./2026-09-29-issue-groot-jerky-predictions.md).
+- **Open, for future research: the HE GR00T closes the laptop only part way** ("close a laptop g1", runs 20-29).
+  - With the smooth setting the arm moves for ~15 s, then stops and stays still to the end of the 30 s episode (mean
+    arm speed per 5 s window drops to ~0.01 rad/s in runs 24, 26, 27, 28); the episode length is not the limit.
+  - Noise scale 0.5 keeps the arm moving longer (~20 s, run 29) but is jerky inside the chunks, so it is not a fix.
+  - Leading hypothesis (user, 2026-10-08): **the visual difference between the HE recordings and the current
+    inference scene.** The camera geometry matches (D435i 640×480 = HE `egocentric`, see "Head camera"), so the gap
+    would be in appearance: room, lighting, table, laptop model and its position, background. A policy that no longer
+    recognises the scene would stall in a "done-looking" pose instead of finishing.
+  - Ways to test it: (1) put HE frames of the same task next to live D435i frames (and compare image statistics);
+    (2) open loop, feed the recorded robot-run frames to the policy and compare its chunks with those for HE frames
+    of the same phase; (3) rearrange the scene closer to HE (laptop model/pose, table, light) and rerun;
+    (4) fine-tune on a few robot demonstrations or train with stronger appearance augmentation.
 - H100 GPU 7: NVIDIA's sim host segfaults during the TensorRT build (twice, ~4 min after start); GPU 6 works.
 - The VPN to H100 stalls intermittently (SSH up to 15 s); copying a 12.6 GB checkpoint took 0.5–2 h.
 - `sonic_official_sim_eval.sh` relaunches forever after a sim-host crash and hangs if the streamer dies early.
