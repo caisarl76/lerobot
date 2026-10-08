@@ -275,6 +275,24 @@ Compare with runs 20-21 (same task, no blend): copy the logs from `~/g1_sonic_ev
 `robot_run_smoothness.py <HE dataset root> run20*.npz run21*.npz run24*.npz` (seam / step, arm speed p95, arm jerk p95,
 1-2 Hz share), plus whether the task still succeeds.
 
+**Robot result (2026-10-08, run 24):** the blend works on the G1. Same task and setting as runs 20-21 (HE GR00T
+official, noise scale 0, replan 0.4 s, `--max-token-step 0.1`, planner start/end), plus `--chunk-blend-s 0.3`. Server
+on workstation GPU 0, port 5561; inference median 0.22 s (73 chunks); the slew limit never fired.
+`robot_run_smoothness.py`:
+
+| Run | Blend | Token seam / step | Hands seam / step | Arm speed p95 (rad/s) | Arm jerk p95 | 1-2 Hz share |
+| --- | --- | --- | --- | --- | --- | --- |
+| 20 | 0 | 0.107 / 0.005 | 0.045 / 0.002 | 0.99 | 514 | 7.4 % |
+| 21 | 0 | 0.074 / 0.005 | 0.037 / 0.002 | 0.70 | 315 | 7.1 % |
+| **24** | **0.3 s** | **0.004 / 0.005** | **0.003 / 0.004** | 0.82 | **272** | 10.5 % |
+
+- The chunk seams are gone: the jump at a switch is now the size of a normal tick (tokens 0.004 vs 0.074-0.107).
+  Arm jerk p95 is lower (272 vs 315-514). The user saw smooth movement.
+- Task: the laptop closed part of the way, not fully.
+- The 1-2 Hz share went up (10.5 vs ~7 %); the blend turns each switch into a 0.3 s ramp, which sits in that band.
+  Worth watching over more runs.
+
+
 ## Next steps
 
 - [x] Compare the training pipeline with Isaac-GR00T (section above); processor fallback fixed on this branch.
