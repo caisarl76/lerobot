@@ -140,7 +140,7 @@ seam = jump at the chunk switch. Zero noise (`temp:0`) was best or equal for eve
 
 ## Closed-loop sim, 50 Hz end to end (2026-10-06)
 
-Official SONIC sim on h100*174 (`HOST=h100_174 sonic_official_sim_eval.sh`, code copy `sonic_roundtrip_20260923/code_wbt`,
+Official SONIC sim on h100_174 (`SIM_HOST=h100_174 HF_CACHE=/mnt/data01/jhkim/huggingface sonic_official_sim_eval.sh`, code copy `sonic_roundtrip_20260923/code_wbt`,
 run dirs `WBT*\*`). Policy server + streamer in dataset-image mode at the dataset's 50 Hz, held-out episode 27,
 `--start planner --max-token-step 0.05`, noise scale 0.5, table 25 cm unless noted. All runs completed: 465 of the 475
 episode frames were scored, with no rejected or stale chunks (chunk time median 0.19 s for GR00T, 0.27 s for Pi0.5).
