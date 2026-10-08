@@ -167,6 +167,29 @@ episode frames were scored, with no rejected or stale chunks (chunk time median 
 - The table made no difference (it was not the cause of the error).
 - Results scored against the commanded joints are kept as `stream_eval.wbccmd.json` in each run dir.
 
+## Real robot, first runs (2026-10-08)
+
+Workstation GPU 0, port 5561 (the XR-1 no-state server held GPU 1 / 5560), launcher defaults (noise 0, chunk blend
+0.3 s), `POLICY_FPS=50`, `--max-token-step 0.05`, planner start/end, 30 s, task "pick drink bottle from the table and
+handover". Logs: `pc2_222:~/g1_sonic_eval/runs/run3{3..6}_wbt_*`. Smoothness by `robot_run_smoothness.py` (dataset std):
+
+| Run | Model    | Duration | Token seam / step | Arm speed p95 | Jerk p95 | Step-limited ticks | Outcome (user)                                  |
+| --- | -------- | -------- | ----------------- | ------------- | -------- | ------------------ | ----------------------------------------------- |
+| 33  | GR00T he | 30 s     | 0.015 / 0.014     | 1.62 rad/s    | 309      | 0 %                | reached and picked the bottle, handover posture |
+| 34  | GR00T he | 30 s     | 0.012 / 0.013     | 1.17 rad/s    | 239      | 0 %                | (same session)                                  |
+| 35  | GR00T he | 30 s     | 0.011 / 0.014     | 1.50 rad/s    | 250      | 0 %                | (same session)                                  |
+| 36  | Pi0.5 he | 0.4 s    | – / 0.065         | 6.91 rad/s    | 1998     | 39 %               | watchdog stop: right arm joint at 6.2 rad/s     |
+
+- **GR00T he works on the robot:** it reaches the bottle, picks it up and goes to the handover posture. Its smoothness
+  matches the HE GR00T with noise 0 + blend (runs 24–27, jerk p95 214–276).
+- **Pi0.5 he made an abrupt first move.** The right hand starts closed on the robot, in the planner stance and
+  therefore at episode start, but open in all 43 recordings. Pi0.5's second chunk (~0.3 s) snapped the right hand open
+  by 1.67 rad in one tick and moved the arm hard, so the watchdog ended the episode. The recordings themselves contain
+  instant hand switches (up to 1.78 rad per frame, teleop trigger). GR00T he kept the hand closed at first and then
+  performed normally.
+- After the watchdog stop, the streamer exited with `terminate called without an active exception`. The normal exits
+  of runs 33–35 don't show it. Harmless here (the robot was already back in planner mode); still to fix.
+
 Check progress:
 
 ```bash
