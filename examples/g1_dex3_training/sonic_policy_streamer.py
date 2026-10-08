@@ -183,6 +183,17 @@ def rtc_prefix(last_raw, offset: int | None):
     return last_raw[:, max(0, offset) :]
 
 
+def rtc_args(
+    enabled: bool, last_accepted: bool, t_ep: float, chunk_t0: float, latency_s: float, fps: float
+) -> tuple:
+    """(offset, delay) for the next --rtc request, or () for a plain one. The policy keeps its last returned chunk as
+    the prefix source, so RTC is only valid when that chunk was the one accepted and now playing: after a rejected,
+    failed or timed-out request the next request is plain."""
+    if not (enabled and last_accepted):
+        return ()
+    return round((t_ep - chunk_t0) * fps), math.ceil(latency_s * fps)
+
+
 def dataset_obs(ds, k: int, n: int, image_keys: list[str]) -> tuple[list[np.ndarray], list[dict], str]:
     """Last n dataset frames up to k (oldest first): states, images (HWC uint8), task. For offline diagnostics."""
     items = [ds[max(k - i, 0)] for i in reversed(range(n))]
@@ -310,7 +321,20 @@ class ChunkPolicy:
         prev = rtc_prefix(getattr(self, "last_raw", None), offset)
         if prev is None:
             return self.chunk(states, images, task)
-        return self.chunk(states, images, task, prev_chunk_left_over=prev, inference_delay=delay)
+        if self.policy.config.type == "pi05" and self.policy.config.rtc_config is None:
+            # Pi0.5's guided RTC only runs with an RTC processor (as openloop_smooth.py enables it)
+            from lerobot.policies.rtc.configuration_rtc import RTCConfig
+
+            self.policy.config.rtc_config = RTCConfig()
+            self.policy.init_rtc_processor()
+        return self.chunk(
+            states,
+            images,
+            task,
+            prev_chunk_left_over=prev,
+            inference_delay=delay,
+            execution_horizon=prev.shape[1],
+        )
 
 
 class LiveImages:
@@ -816,10 +840,12 @@ def main():
 
     latencies, slot, slot_t = [], None, 0.0
     next_replan, last_chunk_t, chunk_t0 = a.replan_s, 0.0, 0.0
+    last_accepted = True  # the first chunk is playing
     episode_end = "completed"
     for i in ticks(int(duration / TICK)):
         t_ep = i * TICK
         if slot is not None and slot["done"].is_set():
+            last_accepted = "error" not in slot
             if "error" in slot:  # keep streaming the last good chunk; stop if it goes stale
                 print(f"[streamer] {slot['error']}", flush=True)
             else:
@@ -844,10 +870,9 @@ def main():
             print(f"[streamer] {episode_end}: ending episode", flush=True)
             break
         if t_ep >= next_replan and not worker.busy:
-            rtc = ()
-            if a.rtc:  # rows of the current chunk played by now; rows that play during inference stay frozen
-                lat = latencies[-1] if latencies else a.replan_s / 2
-                rtc = (round((t_ep - chunk_t0) * images.fps), math.ceil(lat * images.fps))
+            # rows of the current chunk played by now; rows that play during inference stay frozen
+            lat = latencies[-1] if latencies else a.replan_s / 2
+            rtc = rtc_args(a.rtc, last_accepted, t_ep, chunk_t0, lat, images.fps)
             slot, slot_t = worker.submit(infer, t_ep, robot_states(t_ep), *rtc), t_ep
             next_replan = t_ep + a.replan_s
         k = min(int(t_ep * images.fps), images.n - 1)

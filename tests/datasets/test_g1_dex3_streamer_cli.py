@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parents[2] / "examples" / "g1_dex3_training"))
-from sonic_policy_streamer import measured_ref, rtc_prefix
+from sonic_policy_streamer import measured_ref, rtc_args, rtc_prefix
 from sonic_targets import NOMINAL_BODY
 
 HERE = Path(__file__).parents[2] / "examples" / "g1_dex3_training"
@@ -30,6 +30,13 @@ class StreamerCliTests(unittest.TestCase):
         tail = rtc_prefix(last, 12)
         self.assertEqual(tail.shape, (1, 28, 3))
         self.assertEqual(tail[0, 0, 0], last[0, 12, 0])  # row 12 of the old chunk is row 0 of the new one
+
+    def test_rtc_args_only_after_an_accepted_chunk(self):
+        self.assertEqual(rtc_args(True, True, 1.2, 0.8, 0.22, 30), (12, 7))
+        self.assertEqual(
+            rtc_args(True, False, 1.2, 0.8, 0.22, 30), ()
+        )  # last request rejected: plain request
+        self.assertEqual(rtc_args(False, True, 1.2, 0.8, 0.22, 30), ())  # --rtc off
 
     def test_measured_ref_layout(self):
         body = np.arange(29, dtype=np.float32) / 100
