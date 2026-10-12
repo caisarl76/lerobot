@@ -354,14 +354,18 @@ class LiveImages:
         sock.setsockopt(zmq.CONFLATE, 1)
         sock.setsockopt_string(zmq.SUBSCRIBE, "")
         sock.connect(f"tcp://{host}:{port}")
-        threading.Thread(target=self._recv, args=(sock,), daemon=True).start()
+        self.stop = threading.Event()
+        self.thread = threading.Thread(target=self._recv, args=(sock,), daemon=True)
+        self.thread.start()
 
     def _recv(self, sock):
         import base64
 
         import cv2
 
-        while True:
+        while not self.stop.is_set():
+            if not sock.poll(100):
+                continue
             msg = json.loads(sock.recv_string())
             decoded = {
                 name: cv2.imdecode(np.frombuffer(base64.b64decode(b64), np.uint8), cv2.IMREAD_COLOR)
@@ -369,6 +373,13 @@ class LiveImages:
             }
             with self.lock:
                 self.latest.update(decoded)
+        sock.close(linger=0)
+
+    def close(self):
+        """Stop the receiver thread before the process exits: a daemon thread still inside OpenCV or libzmq at
+        interpreter shutdown can abort the process ("terminate called without an active exception", robot run36)."""
+        self.stop.set()
+        self.thread.join(timeout=1.0)
 
     def frame(self, t: float, wait_s: float = 10.0) -> tuple[int, dict, None, str]:
         import cv2
@@ -904,6 +915,8 @@ def main():
         )
     if a.gate_dir:
         write_done(a.gate_dir, episode_end)
+    if isinstance(images, LiveImages):
+        images.close()
 
 
 if __name__ == "__main__":
