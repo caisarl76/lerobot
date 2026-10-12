@@ -539,6 +539,14 @@ def main():
         "the HE/Unitree models, 50 for the G1 WBT models); --images dataset uses the dataset's rate",
     )
     p.add_argument(
+        "--hold-rest-s",
+        type=float,
+        default=0.0,
+        help="hold the rest pose (POSE mode, hands open unless --startup-tokens sets them) this long before the first "
+        "observation, so the policy starts from open hands like the recordings (planner mode keeps the hands closed); "
+        "e.g. 1.5 for the G1 WBT models",
+    )
+    p.add_argument(
         "--rtc",
         action="store_true",
         help="real-time chunking in closed loop: each new chunk is generated from the unplayed tail of the current "
@@ -846,6 +854,11 @@ def main():
     else:
         backend = SonicBackend(a, pub, state, record, images.fps, startup)
     backend.start()
+    # Optional hold on the rest pose (hands open unless a startup path sets them) before the first observation: in
+    # planner mode the deploy keeps the Dex3 hands closed, so without it the policy's first input shows a fist although
+    # the recordings start with open hands (G1 WBT run36: the first chunks snapped the right hand open with a hard arm move).
+    for _ in ticks(int(a.hold_rest_s * 50)):
+        backend.wait_tick()
     # First chunk: keep the 50 Hz stream on the rest pose (which the robot already holds) while it is computed,
     # instead of pausing the deploy's input (0.16 s on H100 locally, ~0.28 s from the robot PC over Wi-Fi).
     slot = worker.submit(infer, 0.0, robot_states(0.0))
