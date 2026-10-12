@@ -708,8 +708,10 @@ with the launcher's `--chunk-blend-s 0.3` plus `--max-token-step 0.05`, planner 
 | run30 | close a laptop g1               | yes       | **success**: reached, touched the lid's top, closed it, returned to the initial pose | 1.41 | 256 | 26 % |
 | run31 | close a laptop g1               | yes       | fail: reached, then small motions to the end (stall)                          | 0.47          | 155          | 8 %    |
 | run32 | close a laptop g1               | yes       | **success**, but both arms swayed ~2 s after closing                          | 2.22          | 334          | 41 %   |
-| run38 | push the red block away         | zero-shot | **bad result**                                                                | –             | –            | –      |
-| run39 | place the bottle on the plate   | zero-shot | **bad result**                                                                | –             | –            | –      |
+| run38 | push the red block away         | zero-shot | **bad result**: almost still 3–9 s, then active 9–24 s, no push completed     | 1.29          | 332          | 12 %   |
+| run39 | push the red block away         | zero-shot | **bad result**: small wandering motions throughout                            | 0.66          | 223          | 10 %   |
+| run40 | place the bottle on the plate   | zero-shot | **bad result**: stopped by hand mid-episode (log only, no `.npz`)             | –             | –            | –      |
+| run41 | place the bottle on the plate   | zero-shot | **bad result**: froze after the first 3 s (right arm travel 0.13 rad)         | 0.07          | 40           | 14 %   |
 
 - **In-distribution task: 2/3**, the first completions of "close a laptop g1" by any model (GR00T closes it only part
   way, Psi0 run22 stopped short of the lid). Movement is fast and decisive (arm speed p95 1.4–2.2 vs Psi0's 0.25–0.5).
@@ -718,5 +720,7 @@ with the launcher's `--chunk-blend-s 0.3` plus `--max-token-step 0.05`, planner 
   laptop half-close item in `2026-09-29-sonic-real-robot-first-runs.md`).
 - Run32's sway is in the policy output: the token commands changed 5–10× faster than normal for ~2 s after the
   close; the slew limit (0.05) never engaged. Candidates: blend 0.5 s, or a tighter slew cap.
-- **Zero-shot prompts fail** (runs 38–39, user verdict "bad result"): the model does not transfer to new objects or
-  task combinations outside HE. Logs not yet analysed (PC2 was unreachable afterwards).
+- **Zero-shot prompts fail** (runs 38–41, user verdict "bad result"): the model does not transfer to new objects or
+  task combinations outside HE. For the block it moves without purpose (wandering, no completed push), for the bottle it
+  freezes; motion stays smooth (no slew limiting, no watchdog stop). Zero-shot accuracy is not the project's goal (HE
+  pretraining is meant to cut the own-data episodes needed in fine-tuning), so this is a baseline, not a blocker.
