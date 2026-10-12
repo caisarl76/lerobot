@@ -167,6 +167,23 @@ episode frames were scored, with no rejected or stale chunks (chunk time median 
 - The table made no difference (it was not the cause of the error).
 - Results scored against the commanded joints are kept as `stream_eval.wbccmd.json` in each run dir.
 
+### Sim with the robot settings (2026-10-12)
+
+Same harness, noise 0 + `--chunk-blend-s 0.3` (the launcher defaults since 10-08), held-out episodes 27 and 35,
+`code_wbt` updated to the merged branch. The merged scorer marks runs covering < 98 % of the episode as invalid; episode
+27 covers 465 of 475 frames (97.9 %) as in the earlier runs, so it was rescored with the threshold at 97 %
+(`stream_eval_cov97.json`).
+
+| Run             | Palm err p50 / p95 | p95 left / right | Wrist err p50 | Tilt max |
+| --------------- | ------------------ | ---------------- | ------------- | -------- |
+| GR00T he, ep 27 | 4.2 / 9.9 cm       | 9.8 / 11.3 cm    | 8°            | 7.8°     |
+| GR00T he, ep 35 | 7.8 / 10.0 cm      | 10.0 / 9.9 cm    | 25°           | 7.7°     |
+| Psi0 he, ep 27  | 4.0 / 12.3 cm      | 10.4 / 17.3 cm   | 8°            | 9.0°     |
+| Psi0 he, ep 35  | 3.9 / 13.9 cm      | 11.8 / 23.4 cm   | 9°            | 7.8°     |
+
+- With these settings, Psi0 he improves (p95 20.3 → 12–14 cm on ep 27) and is level with GR00T he. GR00T he stays
+  about the same on ep 27 but is worse on ep 35 (median 7.8 cm, wrist 25°). Psi0 he is worth a robot trial.
+
 ## Real robot, first runs (2026-10-08)
 
 Workstation GPU 0, port 5561 (the XR-1 no-state server held GPU 1 / 5560), launcher defaults (noise 0, chunk blend
@@ -189,8 +206,13 @@ handover". Logs: `pc2_222:~/g1_sonic_eval/runs/run3{3..6}_wbt_*`. Smoothness by 
   such instant hand switches too (up to 1.78 rad per frame, teleop trigger). In run37, from the same closed-hand start,
   Pi0.5 he succeeded at pick and handover, as smoothly as GR00T he; it still switched the hand by up to 1.64 rad in one
   tick, but without a fast arm move. So the abrupt start is intermittent.
-- After the watchdog stop, the streamer exited with `terminate called without an active exception`. The normal exits
-  of runs 33–35 don't show it. Harmless here (the robot was already back in planner mode); still to fix.
+- After the watchdog stop, the streamer exited with `terminate called without an active exception` (harmless; the
+  robot was already back in planner mode). It did not reproduce on the workstation in 12 stops; the likely cause is
+  the camera receiver thread still inside OpenCV/libzmq at interpreter exit on PC2. Since 10-12 the streamer stops and
+  joins that thread before exiting (73750ab2).
+- **Closed hand at the start (fixed as an option, 10-12):** in planner mode the deploy keeps the Dex3 hands closed and
+  ignores streamed hand targets, so the policy's first observation showed a fist. `--hold-rest-s 1.5` holds the rest
+  pose with open hands in POSE mode before the first observation, like the recordings (343028d2). Not yet robot-tested.
 
 Check progress:
 
