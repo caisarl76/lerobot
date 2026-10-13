@@ -5,6 +5,7 @@ DecoupledBackend: 31D joint targets (wbc_common.pack_joint_message) to decoupled
 
 The streamer drives either one the same way:
     start()                 gates and mode switches, until the robot holds the rest pose
+                            (SonicBackend: connect() once + take_over() per episode, for --trials sessions)
     wait_tick()             one tick on the rest pose while the first chunk is computed
     begin(chunk, joints)    lead-in from the rest pose to the first chunk (time base 0)
     set_chunk(chunk, joints, t0, blend_s, now)   a newly arrived chunk
@@ -122,13 +123,18 @@ GATE_PROMPTS = {
 }
 
 
-def gate(name: str, gate_dir: Path | None) -> None:
+def gate(name: str, gate_dir: Path | None, prefix: str = "", consume: bool = False) -> None:
+    """Wait for the operator (Enter) or, with gate_dir, for the flag file `name` (deleted once seen if consume:
+    per-trial gates such as settled.3 are written again for every trial)."""
     if gate_dir is None:
-        input(f"[streamer] {GATE_PROMPTS.get(name, name)}: ")
+        input(f"[streamer] {prefix}{GATE_PROMPTS.get(name.split('.')[0], name)}: ")
         return
-    print(f"[streamer] waiting for {gate_dir / name}", flush=True)
-    while not (gate_dir / name).exists():
+    path = gate_dir / name
+    print(f"[streamer] waiting for {path}", flush=True)
+    while not path.exists():
         time.sleep(0.05)
+    if consume:
+        path.unlink()
 
 
 def load_startup(path: Path) -> dict:
@@ -179,12 +185,24 @@ class SonicBackend:
             self.send(toks[j] + f * (toks[j + 1] - toks[j]), hands[j] + f * (hands[j + 1] - hands[j]), phase)
 
     def start(self):
-        a, startup = self.a, self.startup
-        gate("deploy_ready", a.gate_dir)
+        self.connect()
+        self.take_over()
+
+    def connect(self):
+        """Once per process: start control in PLANNER mode."""
+        gate("deploy_ready", self.a.gate_dir)
         time.sleep(0.5)  # let the deploy's SUB connect to our PUB before the first command
         self.pub.send(command_message(start=True, planner=True))
         print("[streamer] command: start control, PLANNER mode", flush=True)
-        gate("settled", a.gate_dir)
+
+    def take_over(self, trial: int | None = None, n_trials: int | None = None):
+        """Per episode: wait until the operator has the robot in position (planner mode), then hand over to POSE
+        mode. --trials sessions repeat this after each finish() --end planner hand-back."""
+        a, startup = self.a, self.startup
+        if trial is None:
+            gate("settled", a.gate_dir)
+        else:
+            gate(f"settled.{trial}", a.gate_dir, f"trial {trial + 1}/{n_trials}: ", consume=True)
         wait_state(self.state)
         if (
             a.handoff_blend_s > 0
