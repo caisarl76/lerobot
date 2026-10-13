@@ -35,6 +35,8 @@ DEFAULT_FAILURE_REASONS = (
     "other",
 )
 SAFETY_STOP = "safety stop (watchdog)"
+# every trial of a session shares these (a resumed session must not change them)
+SESSION_KEYS = ("task", "action_space", "policy_server", "policy_path")
 
 
 def parse_reasons(text: str | None) -> list[str]:
@@ -125,6 +127,16 @@ def stop_requested(gate_dir: Path | None, trial: int) -> bool:
 def next_trial(session_dir: Path) -> int:
     path = Path(session_dir) / "results.jsonl"
     return len(path.read_text().splitlines()) if path.exists() else 0
+
+
+def session_mismatch(first: dict, args: dict) -> list[str]:
+    """The SESSION_KEYS where `args` differs from `first` (the session's trial 0 args)."""
+    return [k for k in SESSION_KEYS if first.get(k) != args.get(k)]
+
+
+def first_trial_args(session_dir: Path) -> dict | None:
+    path = Path(session_dir) / "trial_000.npz"
+    return json.loads(str(np.load(path)["args"])) if path.exists() else None
 
 
 def _save_npz(path: Path, compress: bool = True, **arrays) -> None:

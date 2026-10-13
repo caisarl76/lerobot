@@ -19,7 +19,7 @@ ARGS = {"task": "pick the bottle", "action_space": "sonic78", "policy_server": "
         "failure_reasons": None, "trials": 3}  # fmt: skip
 
 
-def trial(session, i, t0, n_episode, verdict, reason=""):
+def trial(session, i, t0, n_episode, verdict, reason="", args=ARGS, cam=lambda t: True):
     """10 handoff ticks, n_episode episode ticks, 10 blend-out ticks at 50 Hz; camera at 30 Hz from t0 - 0.5 s.
     state[:, 0] and token[:, 0] hold the tick's wall time; each JPEG is a flat grey of value 10 * (index % 20)."""
     n = 20 + n_episode
@@ -37,10 +37,11 @@ def trial(session, i, t0, n_episode, verdict, reason=""):
     frames = [
         (t, "egocentric", cv2.imencode(".jpg", np.full((48, 64, 3), 10 * (k % 20), np.uint8))[1].tobytes())
         for k, t in enumerate(t_cam)
+        if cam(t - t0)
     ]
     extra = {
         "episode_end": "operator stop",
-        "args": json.dumps(ARGS),
+        "args": json.dumps(args),
         "verdict": verdict,
         "reason": reason,
         "note": "",
@@ -60,7 +61,9 @@ def test_convert_two_episodes_and_a_skipped_trial(tmp_path):
     trial(session, 1, 2000.0, 0, "fail", "stalled / froze")  # never reached the episode phase
     wall2, _ = trial(session, 2, 3000.0, 45, "fail", "grasp failed / missed")
     meta = convert(session, tmp_path / "dataset", "local/test_eval", ["reach", "grasp"], fps=30)
-    assert meta["skipped"] == [{"trial": 1, "why": "no episode ticks"}]
+    assert [(s["trial"], s["verdict"], s["reason"], s["why"]) for s in meta["skipped"]] == [
+        (1, "fail", "stalled / froze", "no episode ticks")
+    ]
     assert [(e["trial"], e["verdict"]) for e in meta["episodes"].values()] == [(0, "success"), (2, "fail")]
     assert meta["subtasks"] == ["reach", "grasp"] and meta["model"] == "tcp://ws:5560"
     assert json.loads((tmp_path / "dataset/meta/eval_session.json").read_text()) == meta
@@ -80,6 +83,38 @@ def test_convert_two_episodes_and_a_skipped_trial(tmp_path):
     grey = item["observation.images.egocentric"].float().mean().item() * 255
     assert grey == pytest.approx(10 * (k % 20), abs=8)  # flat grey through the video codec
     assert item["task"] == "pick the bottle"
+
+
+def test_skipped_no_camera_trial_keeps_its_verdict(tmp_path, capsys):
+    session = tmp_path / "raw"
+    trial(session, 0, 1000.0, 30, "success")
+    trial(session, 1, 2000.0, 30, "success")
+    trial(session, 2, 3000.0, 30, "fail", "dropped the object", cam=lambda t: False)
+    meta = convert(session, tmp_path / "dataset", "local/x", ["reach"])
+    line = json.loads((session / "results.jsonl").read_text().splitlines()[2])
+    assert meta["skipped"] == [{**line, "why": "no camera frames"}]
+    assert "success 2/3" in capsys.readouterr().out
+
+
+def test_mixed_session_settings_are_rejected(tmp_path):
+    session = tmp_path / "raw"
+    trial(session, 0, 1000.0, 30, "success")
+    laptop = {**ARGS, "task": "close the laptop", "action_space": "joint31"}
+    trial(session, 1, 2000.0, 30, "success", args=laptop)
+    with pytest.raises(ValueError, match="trial 1: task, action_space"):
+        convert(session, tmp_path / "dataset", "local/x", ["reach"])
+
+
+def test_camera_gaps_at_episode_boundaries_warn(tmp_path, capsys):
+    session = tmp_path / "raw"
+    trial(session, 0, 1000.0, 30, "success", cam=lambda t: t < -0.1)  # frozen before wall_start
+    trial(session, 1, 2000.0, 30, "success", cam=lambda t: t > 0.4)  # starts late
+    trial(session, 2, 3000.0, 30, "success", cam=lambda t: t < 0.3)  # stops early
+    convert(session, tmp_path / "dataset", "local/x", ["reach"])
+    out = capsys.readouterr().out
+    assert "trial 0 egocentric: camera gap" in out and "at -0.1" in out  # the shown JPEG's age counts
+    assert "trial 1 egocentric: camera gap" in out and "at 0.00 s" in out
+    assert "trial 2 egocentric: camera gap" in out
 
 
 def test_refuses_existing_output_and_missing_frames(tmp_path):

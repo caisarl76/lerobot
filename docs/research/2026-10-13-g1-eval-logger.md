@@ -30,7 +30,7 @@ Operator keys:
 - Per trial: Enter when the robot is in position, Enter to stop the trial, then `s` (success), `f` (fail), or `r` (redo, the trial is discarded and run again).
 - After `f`: the failure reason number from the menu (after a watchdog stop, Enter takes "safety stop (watchdog)"), then a free-text note (Enter to skip).
 
-Each finished trial is written at once. A crash or Ctrl-C keeps the finished trials; the same command continues at the next trial (`results.jsonl` line count = next trial number).
+Each finished trial is written at once. A crash or Ctrl-C keeps the finished trials; the same command continues at the next trial (`results.jsonl` line count = next trial number). A resume with another task, action space or policy (server/path) than trial 1 is refused before the robot moves.
 
 ## 3. Pull and convert
 
@@ -41,7 +41,7 @@ uv run python eval_session_to_lerobot.py --session-dir $SESSIONS/s01_.../raw --o
     --subtasks "reach,grasp,..."
 ```
 
-`--subtasks` is the task's ordered subtask list (the VLM labels against it). Options: `--repo-id` (default `local/<out dir name>`), `--fps` (30), `--overwrite`. One episode per kept trial over the policy-controlled phase; trials that never reached it are listed under `skipped`.
+`--subtasks` is the task's ordered subtask list (the VLM labels against it). Options: `--repo-id` (default `local/<out dir name>`), `--fps` (30), `--overwrite`. One episode per kept trial over the policy-controlled phase; trials that never reached it (or have no camera frames) are listed under `skipped` with their full `results.jsonl` line plus `why`, so their verdicts still count. Trials with differing task/action space/policy are rejected; camera gaps over 0.2 s, including at the episode start and end, are printed as warnings.
 
 ## 4. Label and review (dataset visualizer, branch feat/eval-labels)
 

@@ -67,9 +67,11 @@ if TYPE_CHECKING or _zmq_available:
 try:
     from .eval_session import (
         ask_verdict,
+        first_trial_args,
         gate_verdict,
         next_trial,
         parse_reasons,
+        session_mismatch,
         start_trial_input,
         stop_requested,
         summarize,
@@ -98,9 +100,11 @@ try:
 except ImportError:
     from eval_session import (
         ask_verdict,
+        first_trial_args,
         gate_verdict,
         next_trial,
         parse_reasons,
+        session_mismatch,
         start_trial_input,
         stop_requested,
         summarize,
@@ -742,6 +746,11 @@ def main():
         if a.images != "zmq" or a.backend != "sonic" or a.end != "planner" or a.handoff_blend_s <= 0:
             p.error("--trials needs --images zmq, --backend sonic, --end planner and --handoff-blend-s > 0")
         parse_reasons(a.failure_reasons)  # fail before the robot moves
+        first = first_trial_args(a.session_dir)
+        if first is not None and (bad := session_mismatch(first, vars(a))):
+            p.error(
+                f"{a.session_dir}: trial 1 used another {', '.join(bad)}; resume with the same or a new --session-dir"
+            )
     if a.start == "planner" and (a.startup_tokens or a.handoff_blend_s <= 0):
         p.error(
             "--start planner excludes --startup-tokens and needs --handoff-blend-s > 0 (it reads the planner token)"

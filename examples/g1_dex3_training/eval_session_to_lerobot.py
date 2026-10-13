@@ -1,7 +1,8 @@
 """Convert an evaluation session of sonic_policy_streamer.py --trials (pulled from PC2) to a LeRobot v3.0 dataset.
 
 One episode per kept trial (results.jsonl order) over the policy-controlled phase, wall_start..wall_stop (the first /
-last "episode" tick); trials that never reached it are skipped and listed under "skipped". Frame k is at
+last "episode" tick); trials that never reached it (or have no camera frames) are skipped and listed under
+"skipped" with their full results.jsonl line plus "why", so the verdict still counts. Frame k is at
 wall_start + k / fps and takes the latest camera JPEG and the latest 50 Hz log tick at or before that time:
   observation.images.<stream>  the head camera as received (the JPEGs hold RGB data, so no colour conversion)
   observation.state (28)       measured arms + Dex3 hands (sonic_targets.ACTION_NAMES order)
@@ -23,7 +24,7 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-from eval_session import load_frames, parse_reasons, summarize
+from eval_session import load_frames, parse_reasons, session_mismatch, summarize
 from sonic_targets import ACTION_NAMES
 
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
@@ -58,15 +59,19 @@ def convert(session_dir: Path, out: Path, repo_id: str, subtasks: list[str], fps
                 raise FileNotFoundError(f"missing {path.name} for trial {line['trial']}")
         trials.append((line, np.load(base.with_suffix(".npz")), load_frames(Path(f"{base}_frames.npz"))))
     args = json.loads(str(trials[0][1]["args"]))
+    for line, log, _ in trials[1:]:
+        if bad := session_mismatch(args, json.loads(str(log["args"]))):
+            raise ValueError(f"trial {line['trial']}: {', '.join(bad)} differ from trial 0 (a mixed session)")
     action_space = args.get("action_space", "sonic78")
     skipped, kept = [], []
     for line, log, frames in trials:
         if not np.isfinite(line["wall_start"]):
             print(f"[convert] trial {line['trial']}: no episode ticks, skipped")
-            skipped.append({"trial": line["trial"], "why": "no episode ticks"})
+            # NaN wall times become null: strict JSON readers (the visualizer's API) reject NaN
+            skipped.append({**line, "wall_start": None, "wall_stop": None, "why": "no episode ticks"})
         elif not len(frames[2]):
             print(f"[convert] trial {line['trial']}: no camera frames, skipped")
-            skipped.append({"trial": line["trial"], "why": "no camera frames"})
+            skipped.append({**line, "why": "no camera frames"})
         else:
             kept.append((line, log, frames))
     if not kept:
@@ -105,11 +110,14 @@ def convert(session_dir: Path, out: Path, repo_id: str, subtasks: list[str], fps
         for c in cameras:
             sel = np.flatnonzero(names == c)
             t_c = t_recv[sel]
-            inside = t_c[(t_c >= line["wall_start"]) & (t_c <= line["wall_stop"])]
-            for gap_at, gap in zip(inside[:-1], np.diff(inside), strict=True):
+            ws, we = line["wall_start"], line["wall_stop"]
+            # the JPEG shown at wall_start (or wall_start itself if none came before), those inside, then wall_stop
+            before = t_c[t_c <= ws][-1:]
+            times = np.concatenate([before if len(before) else [ws], t_c[(t_c > ws) & (t_c <= we)], [we]])
+            for gap_at, gap in zip(times[:-1], np.diff(times), strict=True):
                 if gap > MAX_CAMERA_GAP_S:
                     print(
-                        f"[convert] trial {line['trial']} {c}: camera gap {gap:.2f} s at {gap_at - line['wall_start']:.2f} s"
+                        f"[convert] trial {line['trial']} {c}: camera gap {gap:.2f} s at {gap_at - ws:.2f} s"
                     )
             per_cam[c] = sel[frame_rows(t_c, at)]
         for k in range(n):
