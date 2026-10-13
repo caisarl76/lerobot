@@ -74,14 +74,28 @@ def ask_verdict(reasons: list[str], episode_end: str, ask=input) -> dict | None:
 def gate_verdict(gate_dir: Path, trial: int, reasons: list[str]) -> dict | None:
     path = Path(gate_dir) / f"verdict.{trial}"
     print(f"[eval] waiting for {path}", flush=True)
-    while not path.exists():
+    while True:
         time.sleep(0.05)
-    v = json.loads(path.read_text())
-    path.unlink()
-    if v["verdict"] == "redo":
-        return None
-    reason = reasons[int(v["reason"]) - 1] if v["verdict"] == "fail" else ""
-    return {"verdict": v["verdict"], "reason": reason, "note": v.get("note", "")}
+        try:
+            v = json.loads(path.read_text())
+        except (FileNotFoundError, json.JSONDecodeError):
+            continue  # absent, or the writer is between create and write: keep waiting
+        try:
+            if not isinstance(v, dict) or v.get("verdict") not in ("success", "fail", "redo"):
+                raise ValueError('"verdict" must be success, fail or redo')
+            if v["verdict"] == "fail" and not (
+                str(v.get("reason", "")).isdigit() and 1 <= int(v["reason"]) <= len(reasons)
+            ):
+                raise ValueError(f'a fail needs "reason" as a number 1..{len(reasons)}')
+        except ValueError as e:
+            print(f"[eval] {path}: {e}; fix the file", flush=True)
+            path.unlink(missing_ok=True)
+            continue
+        path.unlink()
+        if v["verdict"] == "redo":
+            return None
+        reason = reasons[int(v["reason"]) - 1] if v["verdict"] == "fail" else ""
+        return {"verdict": v["verdict"], "reason": reason, "note": v.get("note", "")}
 
 
 def start_trial_input(gate_dir: Path | None, trial: int) -> None:

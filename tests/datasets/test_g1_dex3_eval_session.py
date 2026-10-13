@@ -91,3 +91,39 @@ def test_write_trial_files_resume_and_summary(tmp_path):
     assert es.next_trial(tmp_path / "s") == 2  # a restarted session continues at trial 2
     assert not list((tmp_path / "s").glob("*.tmp*"))
     assert es.summarize(tmp_path / "s") == "success 1/2; y: 1"
+
+
+def _gate_after(tmp_path, first, second, trial=3, delay=0.2):
+    """Run gate_verdict while a thread writes `first` now and `second` after `delay` seconds."""
+    import threading
+    import time
+
+    path = tmp_path / f"verdict.{trial}"
+    path.write_text(first)
+    threading.Timer(delay, lambda: path.write_text(second)).start()
+    t0 = time.time()
+    got = es.gate_verdict(tmp_path, trial, ["a", "b"])
+    return got, time.time() - t0
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        {"verdict": "fail", "reason": 0},
+        {"verdict": "fail", "reason": 3},
+        {"verdict": "fail"},
+        {"verdict": "s"},
+    ],
+)
+def test_gate_verdict_rejects_invalid_files_and_keeps_waiting(tmp_path, bad):
+    good = json.dumps({"verdict": "fail", "reason": 1})
+    got, waited = _gate_after(tmp_path, json.dumps(bad), good)
+    assert got == {"verdict": "fail", "reason": "a", "note": ""}
+    assert waited >= 0.15
+
+
+def test_gate_verdict_does_not_consume_a_half_written_file(tmp_path):
+    good = json.dumps({"verdict": "success"})
+    got, waited = _gate_after(tmp_path, "", good)
+    assert got == {"verdict": "success", "reason": "", "note": ""}
+    assert waited >= 0.15
