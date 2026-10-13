@@ -9,6 +9,12 @@
 #   g1_groot_real_run.sh camera                  # PC2: D435i head camera, 640x480, stream "egocentric"
 #   g1_groot_real_run.sh stream RUN [TASK] [extra streamer args...]
 #                                                # PC2: streamer; Enter at "Init Done", Enter once in position
+#   g1_groot_real_run.sh session SESSION [TASK] [extra streamer args...]
+#                                                # PC2: evaluation session (TRIALS, default 10; MAX_S per-trial cap,
+#                                                # default 120): Enter at "Init Done", then per trial Enter in position,
+#                                                # Enter to stop, s / f (+ reason, note) / r
+#   g1_groot_real_run.sh pull SESSION            # copy the session from PC2 to $SESSIONS/SESSION/raw
+#   g1_groot_real_run.sh sync                    # copy the streamer files to PC2 (~/g1_sonic_eval/code)
 #   g1_groot_real_run.sh stop                    # stop the workstation server
 #
 # e.g. g1_groot_real_run.sh stream run20_he_groot_official_laptop_t0 "close a laptop g1"
@@ -60,9 +66,24 @@ stream)
     --policy-server tcp://$WS:$PORT --images zmq --camera-host localhost --task '$TASK' \
     --start planner --end planner --duration-s 30 --replan-s 0.4 --max-token-step 0.1 ${BLEND_S:+--chunk-blend-s $BLEND_S} \
     ${POLICY_FPS:+--policy-fps $POLICY_FPS} --log ../runs/$RUN.npz $* 2>&1 | tee ../runs/$RUN.log" ;;
+session)
+  SESSION=${2:?session name, e.g. s01_he_groot_laptop}; TASK=${3:-close a laptop g1}; shift $(($# < 3 ? $# : 3))
+  ssh -t pc2_222 "mkdir -p ~/g1_sonic_eval/sessions && cd ~/g1_sonic_eval/code && ../.venv/bin/python -u sonic_policy_streamer.py \
+    --policy-server tcp://$WS:$PORT --images zmq --camera-host localhost --task '$TASK' \
+    --start planner --end planner --duration-s ${MAX_S:-120} --replan-s 0.4 --max-token-step 0.1 ${BLEND_S:+--chunk-blend-s $BLEND_S} \
+    ${POLICY_FPS:+--policy-fps $POLICY_FPS} --trials ${TRIALS:-10} --session-dir ../sessions/$SESSION $* \
+    2>&1 | tee -a ../sessions/$SESSION.log" ;;
+pull)
+  SESSION=${2:?session name}; DEST=${SESSIONS:-/mnt/data/jihun/g1_eval_sessions}/$SESSION
+  mkdir -p "$DEST"
+  rsync -a "pc2_222:g1_sonic_eval/sessions/$SESSION/" "$DEST/raw/"
+  rsync -a "pc2_222:g1_sonic_eval/sessions/$SESSION.log" "$DEST/"
+  echo "$DEST/raw" ;;
+sync)
+  scp sonic_policy_streamer.py stream_backends.py eval_session.py pc2_222:g1_sonic_eval/code/ ;;
 stop)
   # a stopped transient unit stays "failed" (non-zero exit) and blocks the next start under the same name
   systemctl --user stop $UNIT; systemctl --user reset-failed $UNIT 2>/dev/null || true ;;
 *)
-  sed -n 2,15p "$0"; exit 1 ;;
+  sed -n 2,24p "$0"; exit 1 ;;
 esac
