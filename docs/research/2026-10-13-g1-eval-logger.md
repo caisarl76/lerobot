@@ -9,7 +9,7 @@ Run the launcher commands from `examples/g1_dex3_training/` on the workstation.
 ## 1. Start
 
 ```bash
-./g1_groot_real_run.sh sync      # once per code change: copies sonic_policy_streamer.py, stream_backends.py, eval_session.py to PC2
+./g1_groot_real_run.sh sync      # once per code change: copies sonic_policy_streamer.py, stream_backends.py, eval_session.py, sonic_targets.py, wbc_common.py, sonic_token_stream.py to PC2
 ./g1_groot_real_run.sh server    # workstation policy server; wait for "ready on port"
 ./g1_groot_real_run.sh deploy    # PC2 NVIDIA SONIC deploy; wait for "Init Done"
 ./g1_groot_real_run.sh camera    # PC2 D435i head camera
@@ -22,7 +22,7 @@ TRIALS=10 ./g1_groot_real_run.sh session s01_<model>_<task> "<task text>"
 ```
 
 `TRIALS` defaults to 10, `MAX_S` (per-trial cap) to 120. Extra streamer args go after the task text, e.g.
-`--failure-reasons "a,b,c"` replaces the default failure menu (default: `eval_session.DEFAULT_FAILURE_REASONS`).
+`--failure-reasons "a,b,c"` replaces the default failure menu (default: `eval_session.DEFAULT_FAILURE_REASONS`). The remote shell re-splits the arguments, so reasons containing spaces need nested quoting: `--failure-reasons "'grasp failed,dropped it'"`.
 
 Operator keys:
 
@@ -35,7 +35,8 @@ Each finished trial is written at once. A crash or Ctrl-C keeps the finished tri
 ## 3. Pull and convert
 
 ```bash
-./g1_groot_real_run.sh pull s01_<model>_<task>       # PC2 -> $SESSIONS/s01_.../raw (default SESSIONS=/mnt/data/jihun/g1_eval_sessions)
+export SESSIONS=/mnt/data/jihun/g1_eval_sessions   # only defaulted inside the launcher
+./g1_groot_real_run.sh pull s01_<model>_<task>       # PC2 -> $SESSIONS/s01_.../raw
 uv run python eval_session_to_lerobot.py --session-dir $SESSIONS/s01_.../raw --out $SESSIONS/s01_.../dataset \
     --subtasks "reach,grasp,..."
 ```
@@ -47,7 +48,7 @@ uv run python eval_session_to_lerobot.py --session-dir $SESSIONS/s01_.../raw --o
 1. Start the backend and UI as in the visualizer's `docs/local-setup.md` (backend with a configured VLM endpoint).
 2. `/annotate` -> prepare the dataset directory (local path) -> open the draft -> **Evaluation** panel.
 3. The panel header shows the session summary: success rate, per-reason counts, disagreements (VLM verdict differs from the operator), labelled, reviewed. There is no separate dataset view.
-4. **Run VLM labels** (all episodes) labels every episode except those whose label was saved by a human; labelling an explicit episode list overwrites human labels. Non-JSON VLM replies are reported per episode with the raw text; other episodes are unaffected.
+4. **Run VLM labels** (bulk) labels only episodes that have no eval label yet (checked again right before each write, so a label saved during the run is never overwritten); to relabel an episode use an explicit episode list (API `episode_indices`). Per-episode failures (e.g. a non-JSON reply, with the raw reply) and skips are listed in the job result: shown in the panel after a run and persisted in `EXPORT_ROOT/jobs/<id>.json`. Raw replies are also snapshotted in `meta/annotation_predictions/` when at least one episode was labelled. Other episodes are unaffected.
 5. Per episode: check the subtask segments on the timeline, set the failed subtask, move the player and **Set to playhead** (uses the episode-relative player time) for the failure frame, **Save label** (source becomes `human`), then **Mark reviewed**. Changing the label afterwards makes the episode unreviewed again.
 
 Backend HTTP API (all take `local_path=<dataset>`): `GET /api/eval/episodes/{i}`, `POST /api/eval/episodes/{i}/label`, `POST /api/eval/label` (job; poll `/api/annotation/jobs/{id}`), `GET|POST /api/episodes/{i}/review`.
@@ -65,13 +66,15 @@ $SESSIONS/s01_.../
                             model, prompt_version
 ```
 
+Labels and reviews live in the visualizer workspace draft (`EXPORT_ROOT/drafts/<job>/`, which `/annotate` prepare copies the dataset into) and reach a dataset via **Save dataset**. A re-convert with `--overwrite` does not touch them.
+
 The VLM's subtask starts are stored as `subtask` atoms of the visualizer draft (not in `eval_labels.json`); the operator's verdict is never overwritten.
 
 ## 6. Limits
 
-- Label accuracy is about 0.5 s: the VLM sees 2 fps, at most 64 frames per episode.
+- Label accuracy is about 0.5 s (2 fps) for trials up to 32 s; longer trials are capped at 64 frames (e.g. ~1.9 s spacing at 120 s).
 - The VLM is shown the operator's verdict, so its verdict is a consistency check, not an independent one.
-- The VLM job needs the VLM endpoint from `/annotate`'s configuration; without it each episode fails with the connection error.
+- The VLM job needs the VLM endpoint from `/annotate`'s configuration; without it each episode fails with the endpoint error.
 
 ## 7. Checks
 

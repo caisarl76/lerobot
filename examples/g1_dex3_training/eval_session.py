@@ -127,10 +127,10 @@ def next_trial(session_dir: Path) -> int:
     return len(path.read_text().splitlines()) if path.exists() else 0
 
 
-def _save_npz(path: Path, **arrays) -> None:
+def _save_npz(path: Path, compress: bool = True, **arrays) -> None:
     tmp = path.with_name(path.name + ".tmp")
     with open(tmp, "wb") as f:
-        np.savez_compressed(f, **arrays)
+        (np.savez_compressed if compress else np.savez)(f, **arrays)
     os.replace(tmp, path)  # atomic: a crash never leaves a half-written trial
 
 
@@ -157,6 +157,7 @@ def write_trial(
     blobs = [b for _, _, b in frames]
     _save_npz(
         session_dir / f"{base}_frames.npz",
+        compress=False,  # JPEG bytes are already compressed
         jpeg=np.frombuffer(b"".join(blobs), np.uint8),
         offsets=np.cumsum([0] + [len(b) for b in blobs]).astype(np.int64),
         t_recv=np.array([t for t, _, _ in frames], np.float64),

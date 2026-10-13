@@ -924,6 +924,9 @@ def main():
         if trial is None:
             backend.start()
         else:
+            # flush first too: an Enter typed after the last verdict answer (double Enter at the note prompt, or during
+            # the save) would otherwise pass this trial's "in position" gate at once
+            start_trial_input(a.gate_dir, trial)
             backend.take_over(trial, a.trials)
             start_trial_input(a.gate_dir, trial)
         # Optional hold on the rest pose (hands open unless a startup path sets them) before the first observation: in
@@ -1015,6 +1018,7 @@ def main():
                 print(f"[eval] trial {trial + 1} discarded: redo", flush=True)
                 continue
             extra = {"episode_end": episode_end, "args": json.dumps(vars(a), default=str), **verdict}
+            print(f"[eval] saving trial {trial + 1}...", flush=True)
             write_trial(a.session_dir, trial, log, extra, frames)
             print(
                 f"[eval] trial {trial + 1}/{a.trials} saved: {verdict['verdict']} {verdict['reason']}".rstrip(),

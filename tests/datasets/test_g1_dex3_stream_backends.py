@@ -219,6 +219,23 @@ class SonicBackendTests(unittest.TestCase):
         self.assertEqual(phases.count("planner token"), 100)
         self.assertEqual(phases.count("episode"), 2)
 
+    def test_take_over_resets_the_slew_limit_between_trials(self):
+        pub, rec, state = FakePub(), Recorder(), FakeState()
+        a = SimpleNamespace(
+            handoff_blend_s=0.2, start="planner", end="planner", max_token_step=0.05, action_space="sonic78"
+        )
+        with backend_env() as a.gate_dir:
+            (a.gate_dir / "settled.0").touch()
+            (a.gate_dir / "settled.1").touch()
+            b = SonicBackend(a, pub, state, rec, 30, None)
+            b.connect()
+            b.take_over(0, 2)
+            n = len(rec.rows)
+            state.latest = lambda: {**FakeState.latest(state), "token_state": np.full(64, 1.0)}
+            b.take_over(1, 2)
+        first = next(r for r in rec.rows[n:] if r.phase == "planner token")
+        np.testing.assert_allclose(first.token, 1.0)
+
 
 if __name__ == "__main__":
     unittest.main()

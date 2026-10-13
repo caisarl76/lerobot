@@ -80,7 +80,7 @@ pull)
   rsync -a "pc2_222:g1_sonic_eval/sessions/$SESSION.log" "$DEST/"
   echo "$DEST/raw" ;;
 sync)
-  scp sonic_policy_streamer.py stream_backends.py eval_session.py pc2_222:g1_sonic_eval/code/ ;;
+  scp sonic_policy_streamer.py stream_backends.py eval_session.py sonic_targets.py wbc_common.py sonic_token_stream.py pc2_222:g1_sonic_eval/code/ ;;
 stop)
   # a stopped transient unit stays "failed" (non-zero exit) and blocks the next start under the same name
   systemctl --user stop $UNIT; systemctl --user reset-failed $UNIT 2>/dev/null || true ;;

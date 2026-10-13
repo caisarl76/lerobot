@@ -154,6 +154,13 @@ def main():
     if not subtasks:
         p.error("--subtasks is empty")
     if a.overwrite and a.out.exists():
+        out, sess = a.out.resolve(), a.session_dir.resolve()
+        if out == sess or out in sess.parents:
+            p.error(
+                "--out is the session directory or one of its parents; refusing to delete the raw session"
+            )
+        if not (sess / "results.jsonl").exists():
+            p.error(f"{a.session_dir} has no results.jsonl; refusing --overwrite")
         shutil.rmtree(a.out)
     convert(a.session_dir, a.out, a.repo_id or f"local/{a.out.name}", subtasks, a.fps)
 

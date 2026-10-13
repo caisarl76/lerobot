@@ -1,6 +1,7 @@
 """eval_session_to_lerobot.py: a --trials session becomes a LeRobot v3.0 dataset with meta/eval_session.json."""
 
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -90,3 +91,16 @@ def test_refuses_existing_output_and_missing_frames(tmp_path):
     (session / "trial_000_frames.npz").unlink()
     with pytest.raises(FileNotFoundError, match="trial_000_frames.npz"):
         convert(session, tmp_path / "other", "local/x", ["reach"])
+
+
+def test_overwrite_never_deletes_the_raw_session(tmp_path):
+    session = tmp_path / "raw" / "s01"
+    trial(session, 0, 1000.0, 30, "success")
+    script = Path(__file__).parents[2] / "examples" / "g1_dex3_training" / "eval_session_to_lerobot.py"
+    r = subprocess.run(
+        [sys.executable, str(script), "--session-dir", str(session), "--out", str(tmp_path / "raw"),
+         "--subtasks", "reach", "--overwrite"],
+        capture_output=True, text=True,
+    )  # fmt: skip
+    assert r.returncode != 0 and "refusing" in r.stderr
+    assert (session / "results.jsonl").exists()

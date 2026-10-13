@@ -199,6 +199,7 @@ class SonicBackend:
         """Per episode: wait until the operator has the robot in position (planner mode), then hand over to POSE
         mode. --trials sessions repeat this after each finish() --end planner hand-back."""
         a, startup = self.a, self.startup
+        self.last_sent = None  # no slew limit against the previous trial's last token
         if trial is None:
             gate("settled", a.gate_dir)
         else:
