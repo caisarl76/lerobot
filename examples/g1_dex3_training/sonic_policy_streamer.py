@@ -343,13 +343,15 @@ class LiveImages:
     one base64 JPEG per camera), returned as the policy's image keys at their training size. A camera named like a
     key is used as is; otherwise --stereo-camera is split into left/right halves (the Unitree datasets'
     cam_left_high / cam_right_high). The server JPEG-encodes RGB arrays without conversion, so decoding without
-    conversion gives RGB back. A receiver thread owns the socket; frame() only reads the latest images."""
+    conversion gives RGB back. A receiver thread owns the socket; frame() only reads the latest images.
+    start_recording() / stop_recording() keep the received JPEG bytes (no re-encoding) for --trials sessions."""
 
     fps, n = 30, 10**9
 
     def __init__(self, ctx, host: str, port: int, keys: list[str], shapes: dict, stereo: str, task: str):
         self.keys, self.shapes, self.stereo, self.task = keys, shapes, stereo, task
         self.latest, self.lock = {}, threading.Lock()
+        self.recording: list[tuple[float, str, bytes]] | None = None  # --trials: JPEGs as received
         sock = ctx.socket(zmq.SUB)
         sock.setsockopt(zmq.CONFLATE, 1)
         sock.setsockopt_string(zmq.SUBSCRIBE, "")
@@ -367,9 +369,14 @@ class LiveImages:
             if not sock.poll(100):
                 continue
             msg = json.loads(sock.recv_string())
+            t = time.time()
+            raw = {name: base64.b64decode(b64) for name, b64 in msg.get("images", {}).items()}
+            recording = self.recording  # one read: the main thread swaps the list
+            if recording is not None:
+                recording.extend((t, name, jpg) for name, jpg in raw.items())
             decoded = {
-                name: cv2.imdecode(np.frombuffer(base64.b64decode(b64), np.uint8), cv2.IMREAD_COLOR)
-                for name, b64 in msg.get("images", {}).items()
+                name: cv2.imdecode(np.frombuffer(jpg, np.uint8), cv2.IMREAD_COLOR)
+                for name, jpg in raw.items()
             }
             with self.lock:
                 self.latest.update(decoded)
@@ -380,6 +387,14 @@ class LiveImages:
         interpreter shutdown can abort the process ("terminate called without an active exception", robot run36)."""
         self.stop.set()
         self.thread.join(timeout=1.0)
+
+    def start_recording(self) -> None:
+        self.recording = []
+
+    def stop_recording(self) -> list[tuple[float, str, bytes]]:
+        """(receive time, stream name, JPEG bytes) of every image since start_recording(); [] if not recording."""
+        recording, self.recording = self.recording, None
+        return recording or []
 
     def frame(self, t: float, wait_s: float = 10.0) -> tuple[int, dict, None, str]:
         import cv2
