@@ -55,6 +55,10 @@ class StreamerCliTests(unittest.TestCase):
               "--backend", "decoupled"], "--synthetic-waist needs"),
             (["--dataset-root", "d", "--episode", "0"], "exactly one of"),
             (["--backend", "decoupled", "--dex3-right-order", "swap", "--replay", "--dataset-root", "d", "--episode", "0"], "excludes --dex3-right-order"),
+            (["--trials", "2", "--policy-server", "tcp://x:1", "--images", "zmq", "--task", "t", "--duration-s", "5"],
+             "--trials needs --session-dir"),
+            (["--trials", "2", "--session-dir", "s", "--policy-server", "tcp://x:1", "--dataset-root", "d",
+              "--episode", "0"], "--trials needs --images zmq"),
         ]  # fmt: skip
         for args, text in cases:
             r = cli(*args)
