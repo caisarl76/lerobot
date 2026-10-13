@@ -16,7 +16,7 @@ pytest.importorskip("msgpack")
 
 HERE = Path(__file__).parents[2] / "examples" / "g1_dex3_training"
 sys.path.insert(0, str(HERE))
-from sonic_policy_streamer import LiveImages
+from sonic_policy_streamer import LiveImages  # noqa: E402
 
 
 def free_port() -> int:
