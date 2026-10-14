@@ -266,8 +266,16 @@ GR00T base trained on 20 episodes (`wbt_groot_wbt20_base_full`, runs 78–82, GP
 **3.5 of 5** (one partial success). Logs only for run78 (right arm 63°, left hand range 0.30) and run82 (70°, 0.38);
 runs 79–81 were stopped early.
 
+GR00T he trained on 20 episodes (`wbt_groot_wbt20_he_full`), first evaluation session `s01_wbt20_groot_he_handover`
+(`g1_groot_real_run.sh session`, 5 trials, 30 s cap, every trial saved; copy in
+`/mnt/data/jihun/g1_eval_sessions/s01_wbt20_groot_he_handover`): **3 of 5**. Failures: "dropped the object" (trial 2),
+"grasp failed / missed" (trial 5). The first attempt at trial 2 was a watchdog stop (arm joint 11 at 6.9 rad/s) and
+was redone.
+
 - **Pi0.5 (user scores):** base 20 0/3, he 20 3/5, base 41 1/5, he 41 3/5 (runs 73–77; 1/2 in runs 36–37 without
   `--hold-rest-s`).
+- **GR00T (user scores):** base 20 3.5/5, he 20 3/5; base 41 and he 41 next. Unlike Pi0.5, GR00T base 20 is not
+  worse than he 20.
   HE init at 20 episodes beats base init at 41.
 - **Runs 61, 64, 68, 69, 73–76 and 79–81 left no `.npz`** (use `g1_groot_real_run.sh session` from now on: Enter ends a trial and each trial is saved with its verdict): each log ends at "POSE mode", written ~20 s after the previous run ended,
   so the streamer was stopped early (likely Ctrl-C, which also kills `tee`) and the log was not saved.
