@@ -93,11 +93,14 @@ All in `examples/g1_dex3_training/` unless noted.
 
 From the existing MuJoCo backend A replays (`REPLAY=1`) of held-out episodes 27 and 35:
 
-- **Grasping hand**: the hand whose Dex3 targets close (cross 50 % of their range) first.
-- **Bottle nominal position**: that hand's palm position at the close frame, projected to the table top, stored
-  relative to the table (x from the near edge, y from the torso line). Mean of the two episodes.
-- **Handover zone**: sphere of radius 8 cm around the grasping palm's position at the episode's last frame, stored
-  relative to the pelvis at that frame. Mean of the two episodes.
+- **Grasping hand**: the hand whose Dex3 targets close (cross 50 % of their range) first. **Close frame**: that
+  crossing. **Release frame**: the first frame after the close frame where the same hand's targets reopen past 50 %.
+- **Bottle nominal position**: the grasping palm at the close frame, offset along the palm normal (from `wrist_R`,
+  already in `REC_KEYS`) by r + palm half-thickness (the bottle sits in front of the palm, not at it), projected to
+  the table top, stored relative to the table (x from the near edge, y from the torso line). Mean of the two episodes.
+- **Handover zone**: sphere of radius 8 cm around the grasping palm at the release frame (not the last frame, which
+  is after the release with the arm retracting), stored relative to the pelvis at that frame. Mean of the two
+  episodes. The zone is defined on the palm and tested on the palm (below), so no palm-to-bottle offset enters it.
 - The JSON keeps both per-episode values and the run IDs, so it can be recomputed.
 
 ### Judge rules
@@ -107,8 +110,11 @@ index_0 / middle_0 link origins (as `sim_scene.py`). Reach distance = palm to th
 `r + 4 cm` (7.3 cm), checked in test 3 against the grasp frames of the replays.
 
 - **lifted**: bottle bottom >= 10 cm above the table top.
-- **success** (early, ends the trial): lifted and bottle centre inside the handover zone continuously for 1.0 s, robot
-  not fallen.
+- **success** (early, ends the trial): continuously for 1.0 s, the bottle is lifted, the grasping palm is inside the
+  handover zone, and the palm is within the reach distance of the bottle (so the bottle is carried, not left behind);
+  robot not fallen.
+- **Latched**: the first early verdict is final. Anything after it (e.g. a drop while the robot hands back to the
+  planner) does not change the verdict.
 - **early fails** (end the trial at once), with the `eval_session.DEFAULT_FAILURE_REASONS` index:
   - 5 "collision (table, knocked over)": before any lift, the bottle tilts > 60 deg or leaves the table top.
   - 3 "dropped the object": after a lift, the bottle is on the floor.
@@ -133,7 +139,8 @@ flagged in the summary, not re-judged.
 
 ## Data flow per trial
 
-1. `reset_trial(seed + i)`: robot joints and root to the deploy's standing pose, velocities zero; bottle at its nominal
+1. The host deletes `ended.{i}` and `stop.{i}` left from a crash or an earlier run (as `start_trial_input` clears
+   `stop.{i}`), so a stale file cannot finalize the trial. Then `reset_trial(seed + i)`: robot joints and root to the deploy's standing pose, velocities zero; bottle at its nominal
    position + uniform +-3 cm in x and y.
 2. The deploy holds planner standing; after 5 s settled, the host writes `settled.i`.
 3. The streamer blends to POSE, holds rest, then streams the policy at 50 Hz on the head image and the 28-D state, up
@@ -161,9 +168,11 @@ start at `next_trial(SESSION_DIR)`.
 
 0. **Real-time factor**: the deploy and the streamer run on wall clock at 50 Hz; `Scene.pace` only waits when the sim
    is ahead and cannot slow the deploy. With DDS running and the camera rendering at 30 Hz, robot standing in planner
-   mode for 60 s: sim time / wall time >= 1.0 for every 1 s window. If this fails on the 3060 the closed loop is
-   invalid here; stop and move to the H100 before anything else.
-1. **Judge unit check** (`test_handover_success.py`): lift, carry, hold in zone -> success; lift then floor -> 3
+   mode for 60 s, two measurements: (a) pacing off: real-time factor >= 1.2 over every 1 s window (headroom for
+   jitter); (b) pacing on: the sim never lags wall clock by more than 20 ms (one deploy tick). If either fails on the
+   3060 the closed loop is invalid here; stop and move to the H100 before anything else.
+1. **Judge unit check** (`test_handover_success.py`): lift, carry, hold in zone -> success; success then drop ->
+   still success (latched); palm in zone but bottle left on the table -> not success; lift then floor -> 3
    (early); lift then back on table -> 3 (final); never near -> 1; near, never lifted -> 2; tipped before lift -> 5;
    lifted, held outside the zone to the end -> 4; lifted, dipped to 5 cm, ended -> 6; `watchdog: ...` -> 7;
    `no valid chunk` -> redo.
@@ -171,8 +180,10 @@ start at `next_trial(SESSION_DIR)`.
    Pass: every run valid; recorded-action palm error |Isaac - MuJoCo| <= 1.0 cm at p50 and <= 2.0 cm at p95 per
    episode; mean max tilt <= MuJoCo + 2 deg (G1-style balance). G0 and G2 do not apply (G0 compares A with stored A,
    G2 compares backend C with A).
-3. **Task config and reach threshold**: derive `tasks/handover_bottle.json` from the replays; in the Isaac replays the
-   grasping palm passes the reach distance at the close frame.
+3. **Task config and reach threshold**: derive `tasks/handover_bottle.json` from the replays. Because the bottle is
+   placed by the palm-normal offset, not at the palm, this is a real check: in Isaac replays with the bottle at its
+   nominal position, the grasping palm passes the reach distance at the close frame, and the palm is inside the zone
+   at the release frame.
 4. **Reset stability**: 10 consecutive `reset_trial` calls with the policy idle (planner standing): no fall, and the
    planner's heading and position (odometry) do not cause the robot to step or turn after the teleport. If they do,
    use the fallback below.
