@@ -291,9 +291,10 @@ All 8 cells, user scores (bottle position varied per trial; noise 0, blend 0.3, 
 
 - **Pi0.5 (user scores):** base 20 0/3, he 20 3/5, base 41 1/5, he 41 3/5 (runs 73–77; 1/2 in runs 36–37 without
   `--hold-rest-s`).
-- **GR00T (user scores):** base 20 3.5/5, he 20 3/5, base 41 4/5, he 41 5/5. HE init helps Pi0.5 clearly (0/3 → 3/5
-  at 20 episodes) but not GR00T at 20 episodes; GR00T he 41 is the best cell. 5 trials per cell, so differences of
-  one trial are within noise.
+- **GR00T (user scores):** base 20 3.5/5, he 20 3/5, base 41 4/5, he 41 5/5.
+- **Conclusion (user, 2026-10-14): HE pretraining helps.** Pi0.5: base → he 0/3 → 3/5 at 20 episodes and 1/5 → 3/5
+  at 41. GR00T: base → he 4/5 → 5/5 at 41 episodes (the best cell); at 20 episodes the two are level (3.5/5 vs 3/5).
+  These are 5 trials per cell.
   HE init at 20 episodes beats base init at 41.
 - **Runs 61, 64, 68, 69, 73–76 and 79–81 left no `.npz`** (use `g1_groot_real_run.sh session` from now on: Enter ends a trial and each trial is saved with its verdict): each log ends at "POSE mode", written ~20 s after the previous run ended,
   so the streamer was stopped early (likely Ctrl-C, which also kills `tee`) and the log was not saved.
