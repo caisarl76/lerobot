@@ -1,4 +1,5 @@
-"""Stream a LeRobot SONIC-token policy (78D = token 64 + Dex3 hands 14, 30 Hz) to NVIDIA's g1_deploy_onnx_ref.
+"""Stream a LeRobot SONIC-token policy (78D = token 64 + Dex3 hands 14, 30 Hz; --policy-fps 50 for 50 Hz policies)
+to NVIDIA's g1_deploy_onnx_ref.
 --action-space joint28 instead takes a 28D arm + Dex3 hand joint policy and encodes each chunk to tokens here
 (sonic_targets.joint_chunk_to_sonic, the official encoder on CPU, speed limits off as in sonic78_nolimit).
 
@@ -25,6 +26,13 @@ while this process keeps all real-time work, so a VPN hiccup only delays a chunk
 tokens; --replay streams recorded actions; every joint run logs a 50 Hz joint_ref (the target after resampling,
 blending and lead-in), computed alongside A's unchanged token path. Each backend's startup, per-tick send and
 shutdown live in stream_backends.py; this file keeps the CLI, the policy / replay input, inference and the watchdogs.
+
+Evaluation sessions (--trials N --session-dir DIR): one process runs N operator-judged trials. Per trial the operator
+puts the robot in position (planner mode) and presses Enter, the policy runs until the operator presses Enter again
+(or --duration-s, or a watchdog stop), the robot hands back to the planner, and the terminal asks for
+success / fail (+ reason from --failure-reasons, + note) / redo. Each kept trial is written at once (eval_session.py:
+the 50 Hz log, the head-camera JPEGs as received, results.jsonl); a restart with the same --session-dir continues at
+the next trial. eval_session_to_lerobot.py turns the session into a LeRobot dataset.
 """
 
 from __future__ import annotations
@@ -57,6 +65,18 @@ if TYPE_CHECKING or _zmq_available:
     import zmq
 
 try:
+    from .eval_session import (
+        ask_verdict,
+        first_trial_args,
+        gate_verdict,
+        next_trial,
+        parse_reasons,
+        session_mismatch,
+        start_trial_input,
+        stop_requested,
+        summarize,
+        write_trial,
+    )
     from .sonic_targets import SonicEncoder, joint_chunk_to_sonic, load_joint_limits
     from .stream_backends import (
         RIGHT_ORDER,
@@ -78,6 +98,18 @@ try:
         write_done,
     )
 except ImportError:
+    from eval_session import (
+        ask_verdict,
+        first_trial_args,
+        gate_verdict,
+        next_trial,
+        parse_reasons,
+        session_mismatch,
+        start_trial_input,
+        stop_requested,
+        summarize,
+        write_trial,
+    )
     from sonic_targets import SonicEncoder, joint_chunk_to_sonic, load_joint_limits
     from stream_backends import (
         RIGHT_ORDER,
@@ -342,32 +374,58 @@ class LiveImages:
     one base64 JPEG per camera), returned as the policy's image keys at their training size. A camera named like a
     key is used as is; otherwise --stereo-camera is split into left/right halves (the Unitree datasets'
     cam_left_high / cam_right_high). The server JPEG-encodes RGB arrays without conversion, so decoding without
-    conversion gives RGB back. A receiver thread owns the socket; frame() only reads the latest images."""
+    conversion gives RGB back. A receiver thread owns the socket; frame() only reads the latest images.
+    start_recording() / stop_recording() keep the received JPEG bytes (no re-encoding) for --trials sessions."""
 
     fps, n = 30, 10**9
 
     def __init__(self, ctx, host: str, port: int, keys: list[str], shapes: dict, stereo: str, task: str):
         self.keys, self.shapes, self.stereo, self.task = keys, shapes, stereo, task
         self.latest, self.lock = {}, threading.Lock()
+        self.recording: list[tuple[float, str, bytes]] | None = None  # --trials: JPEGs as received
         sock = ctx.socket(zmq.SUB)
         sock.setsockopt(zmq.CONFLATE, 1)
         sock.setsockopt_string(zmq.SUBSCRIBE, "")
         sock.connect(f"tcp://{host}:{port}")
-        threading.Thread(target=self._recv, args=(sock,), daemon=True).start()
+        self.stop = threading.Event()
+        self.thread = threading.Thread(target=self._recv, args=(sock,), daemon=True)
+        self.thread.start()
 
     def _recv(self, sock):
         import base64
 
         import cv2
 
-        while True:
+        while not self.stop.is_set():
+            if not sock.poll(100):
+                continue
             msg = json.loads(sock.recv_string())
+            t = time.time()
+            raw = {name: base64.b64decode(b64) for name, b64 in msg.get("images", {}).items()}
+            recording = self.recording  # one read: the main thread swaps the list
+            if recording is not None:
+                recording.extend((t, name, jpg) for name, jpg in raw.items())
             decoded = {
-                name: cv2.imdecode(np.frombuffer(base64.b64decode(b64), np.uint8), cv2.IMREAD_COLOR)
-                for name, b64 in msg.get("images", {}).items()
+                name: cv2.imdecode(np.frombuffer(jpg, np.uint8), cv2.IMREAD_COLOR)
+                for name, jpg in raw.items()
             }
             with self.lock:
                 self.latest.update(decoded)
+        sock.close(linger=0)
+
+    def close(self):
+        """Stop the receiver thread before the process exits: a daemon thread still inside OpenCV or libzmq at
+        interpreter shutdown can abort the process ("terminate called without an active exception", robot run36)."""
+        self.stop.set()
+        self.thread.join(timeout=1.0)
+
+    def start_recording(self) -> None:
+        self.recording = []
+
+    def stop_recording(self) -> list[tuple[float, str, bytes]]:
+        """(receive time, stream name, JPEG bytes) of every image since start_recording(); [] if not recording."""
+        recording, self.recording = self.recording, None
+        return recording or []
 
     def frame(self, t: float, wait_s: float = 10.0) -> tuple[int, dict, None, str]:
         import cv2
@@ -520,6 +578,21 @@ def main():
     p.add_argument("--task", help="instruction text (required with --images zmq; overrides the episode's)")
     p.add_argument("--replan-s", type=float, default=0.4)
     p.add_argument(
+        "--policy-fps",
+        type=float,
+        default=30.0,
+        help="--images zmq: frame rate the policy was trained at, i.e. of its chunks and observation history (30 for "
+        "the HE/Unitree models, 50 for the G1 WBT models); --images dataset uses the dataset's rate",
+    )
+    p.add_argument(
+        "--hold-rest-s",
+        type=float,
+        default=0.0,
+        help="hold the rest pose (POSE mode, hands open unless --startup-tokens sets them) this long before the first "
+        "observation, so the policy starts from open hands like the recordings (planner mode keeps the hands closed); "
+        "e.g. 1.5 for the G1 WBT models",
+    )
+    p.add_argument(
         "--rtc",
         action="store_true",
         help="real-time chunking in closed loop: each new chunk is generated from the unplayed tail of the current "
@@ -546,6 +619,19 @@ def main():
     p.add_argument("--duration-s", type=float, help="default: the episode's length")
     p.add_argument("--gate-dir", type=Path, help="sim: wait for flag files instead of Enter")
     p.add_argument("--log", type=Path, help="write a per-tick .npz log")
+    p.add_argument(
+        "--trials",
+        type=int,
+        help="evaluation session: run this many operator-judged trials in one process (needs --session-dir; "
+        "--duration-s becomes the per-trial cap; Enter stops a trial)",
+    )
+    p.add_argument(
+        "--session-dir", type=Path, help="--trials: directory for the trial files and results.jsonl"
+    )
+    p.add_argument(
+        "--failure-reasons",
+        help="--trials: comma-separated failure menu (default: eval_session.DEFAULT_FAILURE_REASONS)",
+    )
     p.add_argument(
         "--max-chunk-age-s",
         type=float,
@@ -654,6 +740,17 @@ def main():
     for name in ("encoder-model", "observation-config", "robot-xml"):
         p.add_argument(f"--{name}", type=Path, help="--action-space joint28: as for prepare_sonic_dataset.py")
     a = p.parse_args()
+    if a.trials is not None:
+        if a.trials < 1 or a.session_dir is None or a.log:
+            p.error("--trials needs --session-dir and a count >= 1 (it replaces --log)")
+        if a.images != "zmq" or a.backend != "sonic" or a.end != "planner" or a.handoff_blend_s <= 0:
+            p.error("--trials needs --images zmq, --backend sonic, --end planner and --handoff-blend-s > 0")
+        parse_reasons(a.failure_reasons)  # fail before the robot moves
+        first = first_trial_args(a.session_dir)
+        if first is not None and (bad := session_mismatch(first, vars(a))):
+            p.error(
+                f"{a.session_dir}: trial 1 used another {', '.join(bad)}; resume with the same or a new --session-dir"
+            )
     if a.start == "planner" and (a.startup_tokens or a.handoff_blend_s <= 0):
         p.error(
             "--start planner excludes --startup-tokens and needs --handoff-blend-s > 0 (it reads the planner token)"
@@ -709,6 +806,7 @@ def main():
         images = LiveImages(
             ctx, a.camera_host, a.camera_port, policy.image_keys, policy.shapes, a.stereo_camera, a.task
         )
+        images.fps = a.policy_fps
     else:
         images = DatasetImages(a.dataset_root, a.episode, policy.image_keys)
     replay = None
@@ -825,76 +923,132 @@ def main():
         backend = DecoupledBackend(a, pub, state, record, images.fps)
     else:
         backend = SonicBackend(a, pub, state, record, images.fps, startup)
-    backend.start()
-    # First chunk: keep the 50 Hz stream on the rest pose (which the robot already holds) while it is computed,
-    # instead of pausing the deploy's input (0.16 s on H100 locally, ~0.28 s from the robot PC over Wi-Fi).
-    slot = worker.submit(infer, 0.0, robot_states(0.0))
-    for _ in ticks(10**9):
-        if slot["done"].is_set():
-            break
-        backend.wait_tick()
-    if "error" in slot:
-        raise RuntimeError(slot["error"])
-    _, first, first_j = slot["result"]
-    backend.begin(first, first_j)
 
-    latencies, slot, slot_t = [], None, 0.0
-    next_replan, last_chunk_t, chunk_t0 = a.replan_s, 0.0, 0.0
-    last_accepted = True  # the first chunk is playing
-    episode_end = "completed"
-    for i in ticks(int(duration / TICK)):
-        t_ep = i * TICK
-        if slot is not None and slot["done"].is_set():
-            last_accepted = "error" not in slot
-            if "error" in slot:  # keep streaming the last good chunk; stop if it goes stale
-                print(f"[streamer] {slot['error']}", flush=True)
-            else:
-                k_c, chunk, joints = slot["result"]
-                t0 = chunk_t0_of(k_c) if replay is not None else slot_t
-                backend.set_chunk(chunk, joints, t0, a.chunk_blend_s, t_ep)
-                last_chunk_t, chunk_t0 = t_ep, t0
-                latencies.append(slot["latency"])
-            slot = None
-        if t_ep - last_chunk_t > a.max_chunk_age_s:
-            episode_end = f"no valid chunk for {a.max_chunk_age_s:g} s"
-            print(f"[streamer] {episode_end}: ending episode", flush=True)
-            break
-        state.latest()
-        if state.age() > a.max_state_age_s:  # never plan or stream on frozen joints
-            episode_end = f"robot state {state.age():.2f} s old"
-            print(f"[streamer] {episode_end}: ending episode", flush=True)
-            break
-        reason = arm_watchdog()
-        if reason:
-            episode_end = f"watchdog: {reason}"
-            print(f"[streamer] {episode_end}: ending episode", flush=True)
-            break
-        # slot is None: the previous result was consumed at the top of this tick (a request that finished after
-        # that check is taken next tick instead of being overwritten unaccepted)
-        if t_ep >= next_replan and slot is None and not worker.busy:
-            # rows of the current chunk played by now; rows that play during inference stay frozen
-            lat = latencies[-1] if latencies else a.replan_s / 2
-            rtc = rtc_args(a.rtc, last_accepted, t_ep, chunk_t0, lat, images.fps)
-            slot, slot_t = worker.submit(infer, t_ep, robot_states(t_ep), *rtc), t_ep
-            next_replan = t_ep + a.replan_s
-        k = min(int(t_ep * images.fps), images.n - 1)
-        backend.episode_tick(t_ep, k, chunk_t0)
-    if latencies:
-        print(
-            f"[streamer] chunk inference s: median {np.median(latencies):.2f}, max {max(latencies):.2f}, n {len(latencies)}",
-            flush=True,
-        )
-    backend.finish()
-    if a.log:
-        np.savez_compressed(
-            a.log,
-            **{k: np.asarray(v) for k, v in log.items()},
-            episode=-1 if a.episode is None else a.episode,
-            episode_end=episode_end,
-            args=json.dumps(vars(a), default=str),  # the exact settings of this run
-        )
-    if a.gate_dir:
-        write_done(a.gate_dir, episode_end)
+    def run_episode(trial: int | None) -> tuple[str, list]:
+        """One episode. In a --trials session (trial is not None) it takes the robot over from the planner, records
+        the head camera and ends early when the operator asks. Returns how it ended and the recorded frames."""
+        history.clear()
+        for rows in log.values():
+            rows.clear()
+        if trial is None:
+            backend.start()
+        else:
+            # flush first too: an Enter typed after the last verdict answer (double Enter at the note prompt, or during
+            # the save) would otherwise pass this trial's "in position" gate at once
+            start_trial_input(a.gate_dir, trial)
+            backend.take_over(trial, a.trials)
+            start_trial_input(a.gate_dir, trial)
+        # Optional hold on the rest pose (hands open unless a startup path sets them) before the first observation: in
+        # planner mode the deploy keeps the Dex3 hands closed, so without it the policy's first input shows a fist although
+        # the recordings start with open hands (G1 WBT run36: the first chunks snapped the right hand open with a hard arm move).
+        for _ in ticks(int(a.hold_rest_s * 50)):
+            backend.wait_tick()
+        if trial is not None:
+            images.start_recording()
+        # First chunk: keep the 50 Hz stream on the rest pose (which the robot already holds) while it is computed,
+        # instead of pausing the deploy's input (0.16 s on H100 locally, ~0.28 s from the robot PC over Wi-Fi).
+        slot = worker.submit(infer, 0.0, robot_states(0.0))
+        for _ in ticks(10**9):
+            if slot["done"].is_set():
+                break
+            backend.wait_tick()
+        if "error" in slot:
+            raise RuntimeError(slot["error"])
+        _, first, first_j = slot["result"]
+        backend.begin(first, first_j)
+
+        latencies, slot, slot_t = [], None, 0.0
+        next_replan, last_chunk_t, chunk_t0 = a.replan_s, 0.0, 0.0
+        last_accepted = True  # the first chunk is playing
+        episode_end = "completed"
+        for i in ticks(int(duration / TICK)):
+            t_ep = i * TICK
+            if trial is not None and stop_requested(a.gate_dir, trial):
+                episode_end = "operator stop"
+                print(f"[streamer] {episode_end}: ending episode", flush=True)
+                break
+            if slot is not None and slot["done"].is_set():
+                last_accepted = "error" not in slot
+                if "error" in slot:  # keep streaming the last good chunk; stop if it goes stale
+                    print(f"[streamer] {slot['error']}", flush=True)
+                else:
+                    k_c, chunk, joints = slot["result"]
+                    t0 = chunk_t0_of(k_c) if replay is not None else slot_t
+                    backend.set_chunk(chunk, joints, t0, a.chunk_blend_s, t_ep)
+                    last_chunk_t, chunk_t0 = t_ep, t0
+                    latencies.append(slot["latency"])
+                slot = None
+            if t_ep - last_chunk_t > a.max_chunk_age_s:
+                episode_end = f"no valid chunk for {a.max_chunk_age_s:g} s"
+                print(f"[streamer] {episode_end}: ending episode", flush=True)
+                break
+            state.latest()
+            if state.age() > a.max_state_age_s:  # never plan or stream on frozen joints
+                episode_end = f"robot state {state.age():.2f} s old"
+                print(f"[streamer] {episode_end}: ending episode", flush=True)
+                break
+            reason = arm_watchdog()
+            if reason:
+                episode_end = f"watchdog: {reason}"
+                print(f"[streamer] {episode_end}: ending episode", flush=True)
+                break
+            # slot is None: the previous result was consumed at the top of this tick (a request that finished after
+            # that check is taken next tick instead of being overwritten unaccepted)
+            if t_ep >= next_replan and slot is None and not worker.busy:
+                # rows of the current chunk played by now; rows that play during inference stay frozen
+                lat = latencies[-1] if latencies else a.replan_s / 2
+                rtc = rtc_args(a.rtc, last_accepted, t_ep, chunk_t0, lat, images.fps)
+                slot, slot_t = worker.submit(infer, t_ep, robot_states(t_ep), *rtc), t_ep
+                next_replan = t_ep + a.replan_s
+            k = min(int(t_ep * images.fps), images.n - 1)
+            backend.episode_tick(t_ep, k, chunk_t0)
+        frames = images.stop_recording() if trial is not None else []
+        if latencies:
+            print(
+                f"[streamer] chunk inference s: median {np.median(latencies):.2f}, max {max(latencies):.2f}, n {len(latencies)}",
+                flush=True,
+            )
+        backend.finish()
+        return episode_end, frames
+
+    if a.trials:
+        reasons = parse_reasons(a.failure_reasons)
+        backend.connect()
+        trial = next_trial(a.session_dir)
+        if trial:
+            print(f"[eval] {a.session_dir} has {trial} trials: continuing with trial {trial + 1}", flush=True)
+        while trial < a.trials:
+            episode_end, frames = run_episode(trial)
+            print(f"[eval] trial {trial + 1}/{a.trials} ended: {episode_end}", flush=True)
+            verdict = (
+                gate_verdict(a.gate_dir, trial, reasons) if a.gate_dir else ask_verdict(reasons, episode_end)
+            )
+            if verdict is None:
+                print(f"[eval] trial {trial + 1} discarded: redo", flush=True)
+                continue
+            extra = {"episode_end": episode_end, "args": json.dumps(vars(a), default=str), **verdict}
+            print(f"[eval] saving trial {trial + 1}...", flush=True)
+            write_trial(a.session_dir, trial, log, extra, frames)
+            print(
+                f"[eval] trial {trial + 1}/{a.trials} saved: {verdict['verdict']} {verdict['reason']}".rstrip(),
+                flush=True,
+            )
+            trial += 1
+        print(f"[eval] session {a.session_dir}: {summarize(a.session_dir)}", flush=True)
+    else:
+        episode_end, _ = run_episode(None)
+        if a.log:
+            np.savez_compressed(
+                a.log,
+                **{k: np.asarray(v) for k, v in log.items()},
+                episode=-1 if a.episode is None else a.episode,
+                episode_end=episode_end,
+                args=json.dumps(vars(a), default=str),  # the exact settings of this run
+            )
+        if a.gate_dir:
+            write_done(a.gate_dir, episode_end)
+    if isinstance(images, LiveImages):
+        images.close()
 
 
 if __name__ == "__main__":

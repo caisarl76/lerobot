@@ -315,6 +315,26 @@ terminal scope including tmux (2026-10-01 18:29 and 18:47 KST). Run one at a tim
 systemd-run --user --unit=openloop-eval -p MemoryMax=32G -p MemorySwapMax=0 -E PATH="$PATH" -E HOME="$HOME" <script>
 ```
 
+## Psi0 at GR00T's sample budget (2026-10-02)
+
+User decision: Psi0 is trained at GR00T's official sample budget, 640K samples (batch 32 x 20K updates, 0.38 epoch
+over HE). The other policies keep their official recipes; their sample counts are not matched (user, 2026-10-02). All
+official Psi0 runs (batch 16 x 8 accumulation x 320K micro-steps = 5.12M samples, ~2 days each), HE and Unitree, were
+stopped before any checkpoint; logs kept as `*.log.stopped-for-matched640k`. The Psi0/XR-1 session manages the
+replacements.
+
+- Changed from `*_official_full`: `steps=40000` (micro-batches: 40K x 16 = 640K samples = 5K updates),
+  `save_freq=40000`, `policy.scheduler_warmup_steps=1000`. Psi0's cosine preset decays over `steps`.
+- HE runs are queued on H100 GPU 0, after HE MolmoAct2, in container `jihun-lerobot-psi0-gpu0-20261001`, queue
+  `/run-output/psi0_xr1/queue_gpu0.txt`: `psi0_sonic78sonicstate_ho5_matched640k` (~05:10 to ~10:40 UTC), then
+  `psi0_joint28_ho5_matched640k` (~10:40 to ~16:30 UTC).
+  - The user cleared GPU 3: the 78D run that had started there at 04:25 UTC was stopped at step 3.3K, before any
+    checkpoint (`*.log.stopped-gpu3`), and restarts from scratch on GPU 0.
+- Unitree `psi0_sonic78sonicstate_ho5_matched640k` and `psi0_joint28_ho5_matched640k`: `h100_174` GPUs 5 and 6,
+  started ~04:30 UTC, ~8.5 h.
+- The `gpu0c` watcher releases `queue_official/gpu0_after_psi0.txt` (FastWAM) when
+  `psi0_joint28_ho5_matched640k.exit` exists, ~16:30 UTC.
+
 ## Incident 2026-10-01: containers lost their GPU
 
 Around 2026-10-01 03:30 UTC both training containers lost GPU access: `nvidia-smi` in them gives

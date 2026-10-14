@@ -194,6 +194,48 @@ class SonicBackendTests(unittest.TestCase):
         np.testing.assert_allclose(poses[-1][1], planner, atol=1e-6)  # handback ends on the planner token
         np.testing.assert_allclose(poses[-1][3], 0, atol=1e-6)
 
+    def test_two_trials_connect_once_and_take_over_per_trial(self):
+        pub, rec, state = FakePub(), Recorder(), FakeState()
+        a = SimpleNamespace(
+            handoff_blend_s=0.2, start="planner", end="planner", max_token_step=0.0, action_space="sonic78"
+        )
+        chunk = ramp(40, 78, 0.5)
+        with backend_env() as a.gate_dir:
+            (a.gate_dir / "settled.0").touch()
+            (a.gate_dir / "settled.1").touch()
+            b = SonicBackend(a, pub, state, rec, 30, None)
+            b.connect()
+            for trial in (0, 1):
+                b.take_over(trial, 2)
+                self.assertFalse((a.gate_dir / f"settled.{trial}").exists())  # consumed
+                b.begin(chunk, None)
+                b.episode_tick(0.02, 0, 0.0)
+                b.finish()
+        msgs = [decode(m) for m in pub.sent]
+        commands = [m[1:] for m in msgs if m[0] == "command"]
+        # one start in PLANNER mode; per trial: POSE mode, then back to PLANNER
+        self.assertEqual(commands, [(1, 1), (1, 0), (1, 1), (1, 0), (1, 1)])
+        phases = [r.phase for r in rec.rows]
+        self.assertEqual(phases.count("planner token"), 100)
+        self.assertEqual(phases.count("episode"), 2)
+
+    def test_take_over_resets_the_slew_limit_between_trials(self):
+        pub, rec, state = FakePub(), Recorder(), FakeState()
+        a = SimpleNamespace(
+            handoff_blend_s=0.2, start="planner", end="planner", max_token_step=0.05, action_space="sonic78"
+        )
+        with backend_env() as a.gate_dir:
+            (a.gate_dir / "settled.0").touch()
+            (a.gate_dir / "settled.1").touch()
+            b = SonicBackend(a, pub, state, rec, 30, None)
+            b.connect()
+            b.take_over(0, 2)
+            n = len(rec.rows)
+            state.latest = lambda: {**FakeState.latest(state), "token_state": np.full(64, 1.0)}
+            b.take_over(1, 2)
+        first = next(r for r in rec.rows[n:] if r.phase == "planner token")
+        np.testing.assert_allclose(first.token, 1.0)
+
 
 if __name__ == "__main__":
     unittest.main()
