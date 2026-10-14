@@ -277,10 +277,23 @@ GR00T base trained on 41 episodes (`wbt_groot_base_full`), session `s02_wbt_groo
 robot use of the wall-clock watchdog fix 71413403: no watchdog stops): **4 of 5**; the failure was "grasp failed /
 missed" (trial 4).
 
+GR00T he trained on 41 episodes (`wbt_groot_he_full`), session `s03_wbt_groot_he_handover`: **5 of 5**, no watchdog
+stops.
+
+All 8 cells, user scores (bottle position varied per trial; noise 0, blend 0.3, slew 0.05, `--hold-rest-s 1.5`):
+
+| Policy | Init | 20 episodes | 41 episodes |
+| ------ | ---- | ----------- | ----------- |
+| Pi0.5  | base | 0/3         | 1/5         |
+| Pi0.5  | he   | 3/5         | 3/5         |
+| GR00T  | base | 3.5/5       | 4/5         |
+| GR00T  | he   | 3/5         | 5/5         |
+
 - **Pi0.5 (user scores):** base 20 0/3, he 20 3/5, base 41 1/5, he 41 3/5 (runs 73–77; 1/2 in runs 36–37 without
   `--hold-rest-s`).
-- **GR00T (user scores):** base 20 3.5/5, he 20 3/5, base 41 4/5; he 41 next. Unlike Pi0.5, GR00T base 20 is not
-  worse than he 20.
+- **GR00T (user scores):** base 20 3.5/5, he 20 3/5, base 41 4/5, he 41 5/5. HE init helps Pi0.5 clearly (0/3 → 3/5
+  at 20 episodes) but not GR00T at 20 episodes; GR00T he 41 is the best cell. 5 trials per cell, so differences of
+  one trial are within noise.
   HE init at 20 episodes beats base init at 41.
 - **Runs 61, 64, 68, 69, 73–76 and 79–81 left no `.npz`** (use `g1_groot_real_run.sh session` from now on: Enter ends a trial and each trial is saved with its verdict): each log ends at "POSE mode", written ~20 s after the previous run ended,
   so the streamer was stopped early (likely Ctrl-C, which also kills `tee`) and the log was not saved.
