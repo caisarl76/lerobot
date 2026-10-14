@@ -212,7 +212,95 @@ handover". Logs: `pc2_222:~/g1_sonic_eval/runs/run3{3..6}_wbt_*`. Smoothness by 
   joins that thread before exiting (73750ab2).
 - **Closed hand at the start (fixed as an option, 10-12):** in planner mode the deploy keeps the Dex3 hands closed and
   ignores streamed hand targets, so the policy's first observation showed a fist. `--hold-rest-s 1.5` holds the rest
-  pose with open hands in POSE mode before the first observation, like the recordings (343028d2). Not yet robot-tested.
+  pose with open hands in POSE mode before the first observation, like the recordings (343028d2). Robot-tested in
+  runs 57–62 (below): it held the rest pose for 1.5 s before the first chunk, as intended.
+
+## Real robot, 20-episode cells (2026-10-14)
+
+Same settings as above plus `--hold-rest-s 1.5`. First cell: Pi0.5 base trained on 20 episodes
+(`wbt_pi05_wbt20_base_full`, EMA, bf16).
+
+| Run | Server GPU | Duration | Chunk latency | Arm speed p95 | Jerk p95 | Right arm max move | Outcome (user)                                                                                 |
+| --- | ---------- | -------- | ------------- | ------------- | -------- | ------------------ | ---------------------------------------------------------------------------------------------- |
+| 57  | 0          | 1 s      | > 0.6 s       | –             | –        | –                  | invalid: "no valid chunk for 1 s"                                                              |
+| 58  | 0          | 1 s      | > 0.6 s       | –             | –        | –                  | invalid: same                                                                                  |
+| 59  | 0          | 1 s      | > 0.6 s       | –             | –        | –                  | invalid: same                                                                                  |
+| 60  | 1          | 30 s     | 0.30 s        | 0.52 rad/s    | 202      | 50°                | reached toward the bottle but not close enough, closed the grip on nothing                     |
+| 61  | 1          | –        | –             | –             | –        | –                  | no `.npz` (log ends at POSE mode: streamer killed or crashed)                                  |
+| 62  | 1          | 30 s     | 0.30 s        | 0.66 rad/s    | 214      | 62°                | reached the bottle (slightly far), grasped it in an unstable grip, rotated the wrist, no release |
+
+Run 37 (Pi0.5 he, 41 episodes, success) for comparison: arm speed p95 0.99 rad/s, jerk 242, right arm 90°.
+
+- **Runs 57–59 are not trials.** Workstation GPU 0 also drives the desktop (gnome-shell and Chrome at ~30 % each)
+  and an unrelated `dimos_dev` process. Chunks took > 0.6 s against the 0.4 s replan, so the second chunk missed the
+  1 s chunk-age limit. On the idle GPU 1 the same server answers in 0.28 s (workstation) / 0.30 s (PC2). Run robot
+  servers on GPU 1, and check that the streamer's `policy ready: X s per chunk` is below 0.4.
+Second cell, Pi0.5 he trained on the same 20 episodes (`wbt_pi05_wbt20_he_full`), GPU 1, the bottle placed differently
+in each run. User score: **3 of 5** (per-run outcomes not itemized; run64 left no `.npz`, like run61).
+
+| Run | Duration | Chunk latency | Arm speed p95 | Jerk p95 | Right arm max move | Left hand range |
+| --- | -------- | ------------- | ------------- | -------- | ------------------ | --------------- |
+| 63  | 30 s     | 0.30 s        | 0.93 rad/s    | 201      | 81°                | 1.43            |
+| 64  | –        | –             | –             | –        | –                  | –               |
+| 65  | 30 s     | 0.30 s        | 0.83 rad/s    | 239      | 96°                | 0.12            |
+| 66  | 30 s     | 0.30 s        | 1.01 rad/s    | 206      | 82°                | 1.45            |
+| 67  | 30 s     | 0.30 s        | 0.98 rad/s    | 224      | 79°                | 1.43            |
+
+Third cell, Pi0.5 base trained on 41 episodes (`wbt_pi05_base_full`), GPU 1 (0.30 s per chunk), bottle position varied.
+User score: **1 of 5** (runs 68–72; runs 68 and 69 left no `.npz`).
+
+| Run | Duration | Arm speed p95 | Jerk p95 | Right arm max move | Left hand range |
+| --- | -------- | ------------- | -------- | ------------------ | --------------- |
+| 70  | 30 s     | 0.69 rad/s    | 228      | 64°                | 0.68            |
+| 71  | 30 s     | 0.84 rad/s    | 237      | 61°                | 0.81            |
+| 72  | 30 s     | 0.80 rad/s    | 235      | 74°                | 1.41            |
+
+- **HE pretraining helps at 20 episodes:** Pi0.5 he 20 scores 3/5 where Pi0.5 base 20 scores 0/3 (user counts run61
+  as a trial). With HE init the arm reaches as far as the 41-episode HE model (79–96° vs 90°), and in 3 runs the left hand
+  works through its full range for the handover (1.43–1.45 vs 1.65 in run 37); base 20 never did (0.14–0.16).
+Fourth cell, Pi0.5 he 41 re-tested with `--hold-rest-s 1.5` (runs 73–77, GPU 1, 0.28 s per chunk), bottle position
+varied: user score **3 of 5**. Only run77 saved an `.npz` (30 s, right arm 81°, left hand range 1.44); runs 73–76 each
+reached POSE mode ~30 s after the previous one, so they were stopped early by hand.
+
+GR00T base trained on 20 episodes (`wbt_groot_wbt20_base_full`, runs 78–82, GPU 1, 0.19 s per chunk): user score
+**3.5 of 5** (one partial success). Logs only for run78 (right arm 63°, left hand range 0.30) and run82 (70°, 0.38);
+runs 79–81 were stopped early.
+
+GR00T he trained on 20 episodes (`wbt_groot_wbt20_he_full`), first evaluation session `s01_wbt20_groot_he_handover`
+(`g1_groot_real_run.sh session`, 5 trials, 30 s cap, every trial saved; copy in
+`/mnt/data/jihun/g1_eval_sessions/s01_wbt20_groot_he_handover`): **3 of 5**. Failures: "dropped the object" (trial 2),
+"grasp failed / missed" (trial 5). The first attempt at trial 2 was a watchdog stop (arm joint 11 at 6.9 rad/s) and
+was redone; it was probably a false stop: before 71413403 the watchdog timed the first episode ticks by `t_ep`, which
+the 1 s blend-in shares, and read 3–4× too fast (run48 replayed: 6.6 → 2.9 rad/s). Sessions from s02 on use the fix.
+
+GR00T base trained on 41 episodes (`wbt_groot_base_full`), session `s02_wbt_groot_base_handover` (5 trials, first
+robot use of the wall-clock watchdog fix 71413403: no watchdog stops): **4 of 5**; the failure was "grasp failed /
+missed" (trial 4).
+
+GR00T he trained on 41 episodes (`wbt_groot_he_full`), session `s03_wbt_groot_he_handover`: **5 of 5**, no watchdog
+stops.
+
+All 8 cells, user scores (bottle position varied per trial; noise 0, blend 0.3, slew 0.05, `--hold-rest-s 1.5`):
+
+| Policy | Init | 20 episodes | 41 episodes |
+| ------ | ---- | ----------- | ----------- |
+| Pi0.5  | base | 0/3         | 1/5         |
+| Pi0.5  | he   | 3/5         | 3/5         |
+| GR00T  | base | 3.5/5       | 4/5         |
+| GR00T  | he   | 3/5         | 5/5         |
+
+- **Pi0.5 (user scores):** base 20 0/3, he 20 3/5, base 41 1/5, he 41 3/5 (runs 73–77; 1/2 in runs 36–37 without
+  `--hold-rest-s`).
+- **GR00T (user scores):** base 20 3.5/5, he 20 3/5, base 41 4/5, he 41 5/5.
+- **Conclusion (user, 2026-10-14): HE pretraining helps.** Pi0.5: base → he 0/3 → 3/5 at 20 episodes and 1/5 → 3/5
+  at 41. GR00T: base → he 4/5 → 5/5 at 41 episodes (the best cell); at 20 episodes the two are level (3.5/5 vs 3/5).
+  These are 5 trials per cell.
+  HE init at 20 episodes beats base init at 41.
+- **Runs 61, 64, 68, 69, 73–76 and 79–81 left no `.npz`** (use `g1_groot_real_run.sh session` from now on: Enter ends a trial and each trial is saved with its verdict): each log ends at "POSE mode", written ~20 s after the previous run ended,
+  so the streamer was stopped early (likely Ctrl-C, which also kills `tee`) and the log was not saved.
+- **Pi0.5 base 20 is smooth but falls short:** it reaches less far than the 41-episode HE model (right arm 50–62°
+  vs 90°), grasps at best unstably, and never releases for the handover (left hand range 0.14–0.16 vs 1.65 in run 37).
+  Score (user): 0 of 3 (runs 60–62).
 
 Check progress:
 

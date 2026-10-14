@@ -6,6 +6,10 @@ Two steps, so nothing has to be installed on the hosts:
            checkpoints/last/pretrained_model/train_config.json
     docker run --rm -i -v /mnt/data01/jhkim/model_weight/g1_dex3_20260922:/run-output:ro \
       --entrypoint /run-output/environment/venv/bin/python 4cbe2a3f7fc6 - collect h100 < model_registry.py > h100.jsonl
+  upload   (same container, plus -e HF_TOKEN): every finished full run (exit 0, not a smoke test) to a private
+           repo <org>/g1-<dataset>-<run> with its model card and launch config; repos that already hold weights
+           are skipped, so it can be re-run. Optional run names limit it to those runs.
+    ... collect h100 ... -> ... upload h100 mncai [run ...]
   render   (on the workstation): merge the hosts' JSON lines with the local model copies into a table
     python model_registry.py render --local /mnt/data/jihun/g1_models --out docs/research/g1-model-registry \
       h100.jsonl h100_174.jsonl
@@ -44,10 +48,27 @@ COLUMNS = (
     "weights",
     "config",
     "workstation_copy",
+    "hf_repo",
 )
+GROUP_SLUGS = {
+    "humanoid_everyday_g1_20260923": "he",
+    "unitree": "unitree",
+    "combined_261009": "combined",
+    "g1_wbt_handover_20261002": "wbt-handover",
+    "g1_wbt_dex_261009": "wbt-dex",
+}
 
 
-def collect(host: str) -> None:
+def repo_id(record: dict, org: str = "mncai") -> str:
+    return f"{org}/g1-{GROUP_SLUGS.get(record['group'], record['group'])}-{record['run']}".replace("_", "-")
+
+
+def uploadable(record: dict) -> bool:
+    # exit "" marks a copied run folder (its exit file stayed on the training host)
+    return record["exit"] == "0" and "smoke" not in record["run"]
+
+
+def records(host: str):
     for run in sorted(p for pattern in RUN_GLOBS for p in glob.glob(pattern)):
         run = Path(run)
         model = run / "checkpoints" / "last" / "pretrained_model"
@@ -88,7 +109,69 @@ def collect(host: str) -> None:
             if config_file.is_file()
             else "",
         }
+        yield record
+
+
+def collect(host: str) -> None:
+    for record in records(host):
         print(json.dumps(record))
+
+
+def model_card(record: dict, ema: bool = False) -> str:
+    rows = "\n".join(f"| {k} | `{record[k]}` |" for k in COLUMNS if k in record and k != "workstation_copy")
+    return f"""---
+library_name: lerobot
+pipeline_tag: robotics
+tags: [robotics, lerobot, unitree-g1, dex3, {record["policy"]}]
+---
+
+# {record["run"]} ({record["group"]})
+
+Unitree G1 + Dex3 `{record["policy"]}` policy, LeRobot `pretrained_model` checkpoint (final step {record["final_step"]}).
+Trained with the G1 Dex3 pipeline in `examples/g1_dex3_training/` of our LeRobot fork; `train_config.json` has the
+full training config and `launch_config.json` the launcher entry. Samples = micro-batch × steps.
+{"The EMA weights of the same step are in `ema/` (load that subfolder for deployment)." if ema else ""}
+
+| Field | Value |
+| --- | --- |
+{rows}
+"""
+
+
+def upload(host: str, org: str, only: list[str]) -> None:
+    from huggingface_hub import HfApi
+
+    api = HfApi()
+    for record in records(host):
+        if not uploadable(record) or (only and record["run"] not in only):
+            continue
+        repo = repo_id(record, org)
+        api.create_repo(repo, private=True, exist_ok=True)
+        model = record["weights"].replace("/mnt/data01/jhkim/model_weight/g1_dex3_20260922", "/run-output")
+        ema = Path(model).with_name("pretrained_model_ema")
+        ema_todo = ema.is_dir() and not api.file_exists(repo, "ema/model.safetensors")
+        model_todo = not api.file_exists(repo, "model.safetensors")
+        if not (model_todo or ema_todo):
+            print(f"skip {repo} (weights already uploaded)", flush=True)
+            continue
+        api.upload_file(
+            path_or_fileobj=model_card(record, ema.is_dir()).encode(), path_in_repo="README.md", repo_id=repo
+        )
+        if ema_todo:
+            api.upload_folder(folder_path=ema, path_in_repo="ema", repo_id=repo, commit_message="EMA weights")
+            print(f"done {repo} ema", flush=True)
+        if not model_todo:
+            continue
+        if record["config"]:
+            config = record["config"].replace(
+                "/mnt/data01/jhkim/model_weight/g1_dex3_20260922", "/run-output"
+            )
+            api.upload_file(path_or_fileobj=config, path_in_repo="launch_config.json", repo_id=repo)
+        # weights last: model.safetensors on the Hub marks a finished upload
+        api.upload_folder(
+            folder_path=model, repo_id=repo, commit_message=f"{record['run']} step {record['final_step']}"
+        )
+        print(f"done {repo} {record['weights_gb']} GB", flush=True)
 
 
 def local_copies(roots: list[str]) -> dict[tuple[str, str], list[str]]:
@@ -111,6 +194,7 @@ def render(paths: list[str], local: list[str], out: str) -> None:
     copies = local_copies(local)
     for r in records:
         r["workstation_copy"] = " ".join(copies.get((r["run"], r["dataset"]), []))
+        r["hf_repo"] = f"https://huggingface.co/{repo_id(r)}" if uploadable(r) else ""
     records.sort(key=lambda r: (r["group"], r["policy"] or "", r["run"], r["host"]))
     with open(f"{out}.csv", "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=COLUMNS)
@@ -129,14 +213,15 @@ def render(paths: list[str], local: list[str], out: str) -> None:
             f"## {group}",
             "",
             "| Run | Policy | Action | Samples (micro-batch × steps, accum) | Excl. eps | Final | Exit "
-            "| Finished (UTC) | GB | Host | Workstation copy |",
-            "|" + " --- |" * 11,
+            "| Finished (UTC) | GB | Host | Workstation copy | Hub |",
+            "|" + " --- |" * 12,
         ]
         for r in (r for r in records if r["group"] == group):
             lines.append(
                 f"| `{r['run']}` | {r['policy']} | {r['action']} | {r['samples']:,} ({r['batch']} × {r['steps']}, "
                 f"accum {r['accum']}) | {r['excluded_eps']} | {r['final_step']} | {r['exit'] or '–'} | {r['finished_utc']} "
-                f"| {r['weights_gb']} | {r['host']} | {'yes' if r['workstation_copy'] else ''} |"
+                f"| {r['weights_gb']} | {r['host']} | {'yes' if r['workstation_copy'] else ''} "
+                f"| {repo_id(r) if r['hf_repo'] else ''} |"
             )
         lines.append("")
     matched = {(r["run"], r["dataset"]) for r in records}
@@ -156,6 +241,8 @@ def render(paths: list[str], local: list[str], out: str) -> None:
 if __name__ == "__main__":
     if len(sys.argv) >= 3 and sys.argv[1] == "collect":
         collect(sys.argv[2])
+    elif len(sys.argv) >= 4 and sys.argv[1] == "upload":
+        upload(sys.argv[2], sys.argv[3], sys.argv[4:])
     elif len(sys.argv) >= 2 and sys.argv[1] == "render":
         args = sys.argv[2:]
         local = [args[i + 1] for i, a in enumerate(args) if a == "--local"]
