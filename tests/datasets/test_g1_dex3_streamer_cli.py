@@ -55,11 +55,31 @@ class StreamerCliTests(unittest.TestCase):
               "--backend", "decoupled"], "--synthetic-waist needs"),
             (["--dataset-root", "d", "--episode", "0"], "exactly one of"),
             (["--backend", "decoupled", "--dex3-right-order", "swap", "--replay", "--dataset-root", "d", "--episode", "0"], "excludes --dex3-right-order"),
+            (["--trials", "2", "--policy-server", "tcp://x:1", "--images", "zmq", "--task", "t", "--duration-s", "5"],
+             "--trials needs --session-dir"),
+            (["--trials", "2", "--session-dir", "s", "--policy-server", "tcp://x:1", "--dataset-root", "d",
+              "--episode", "0"], "--trials needs --images zmq"),
         ]  # fmt: skip
         for args, text in cases:
             r = cli(*args)
             self.assertEqual(r.returncode, 2, args)
             self.assertIn(text, r.stderr, args)
+
+    def test_resume_refuses_other_session_settings(self):
+        import json
+        import tempfile
+
+        from eval_session import write_trial
+
+        with tempfile.TemporaryDirectory() as session:
+            log = {"wall": [0.0], "phase": ["episode"]}
+            extra = {"episode_end": "operator stop", "verdict": "success", "reason": "", "note": "",
+                     "args": json.dumps({"task": "pick bottle", "action_space": "joint28", "policy_server": "tcp://x:1"})}  # fmt: skip
+            write_trial(Path(session), 0, log, extra, [])
+            r = cli("--trials", "2", "--session-dir", session, "--policy-server", "tcp://x:1", "--images", "zmq",
+                    "--task", "close laptop", "--duration-s", "5", "--action-space", "joint31")  # fmt: skip
+            self.assertEqual(r.returncode, 2)
+            self.assertIn("trial 1 used another task, action_space", r.stderr)
 
 
 if __name__ == "__main__":
