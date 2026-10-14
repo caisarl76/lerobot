@@ -62,6 +62,8 @@ def convert(session_dir: Path, out: Path, repo_id: str, subtasks: list[str], fps
     for line, log, _ in trials[1:]:
         if bad := session_mismatch(args, json.loads(str(log["args"]))):
             raise ValueError(f"trial {line['trial']}: {', '.join(bad)} differ from trial 0 (a mixed session)")
+    if len(models := {line.get("model") for line, _, _ in trials} - {None}) > 1:
+        raise ValueError(f"trials were served by different models {sorted(models)} (a mixed session)")
     action_space = args.get("action_space", "sonic78")
     skipped, kept = [], []
     for line, log, frames in trials:
@@ -130,14 +132,15 @@ def convert(session_dir: Path, out: Path, repo_id: str, subtasks: list[str], fps
         ds.save_episode()
         episodes[str(ep)] = {
             k: line[k]
-            for k in ("trial", "verdict", "reason", "note", "episode_end", "wall_start", "wall_stop")
+            for k in ("trial", "verdict", "reason", "note", "episode_end", "wall_start", "wall_stop", "model")
+            if k in line
         }
     ds.finalize()
     meta = {
         "task": args["task"],
         "subtasks": subtasks,
         "failure_reasons": parse_reasons(args.get("failure_reasons")),
-        "model": args.get("policy_server") or args.get("policy_path"),
+        "model": next(iter(models), None) or args.get("policy_server") or args.get("policy_path"),
         "streamer_args": args,
         "date": datetime.fromtimestamp(kept[0][0]["wall_start"]).date().isoformat(),
         "fps": fps,

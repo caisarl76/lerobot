@@ -181,6 +181,7 @@ def write_trial(
         "wall_start": wall_start,
         "wall_stop": wall_stop,
         "frames": len(frames),
+        "model": extra.get("model") or None,
     }
     with open(session_dir / "results.jsonl", "a") as f:
         f.write(json.dumps(line) + "\n")

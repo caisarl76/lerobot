@@ -470,6 +470,7 @@ class RemotePolicy:
         self._close()  # the inference thread opens its own socket (ZMQ sockets are not thread-safe)
         self.image_keys, self.n_obs = info["image_keys"], int(info["n_obs"])
         self.shapes = {k: tuple(v) for k, v in info["shapes"].items()}
+        self.model = info.get("model")  # the served checkpoint (None from a server that predates the field)
 
     def _ask(self, req: dict) -> dict:
         import msgpack
@@ -1018,6 +1019,20 @@ def main():
         if trial:
             print(f"[eval] {a.session_dir} has {trial} trials: continuing with trial {trial + 1}", flush=True)
         while trial < a.trials:
+            # the checkpoint serving this trial, asked anew each trial: a model swapped behind the same port must
+            # not continue a session (a fresh RemotePolicy uses its own socket, apart from the inference thread's)
+            model = (
+                RemotePolicy(a.policy_server, a.policy_timeout_s).model if a.policy_server else a.policy_path
+            )
+            first = (
+                json.loads(Path(a.session_dir, "results.jsonl").read_text().splitlines()[0]).get("model")
+                if trial
+                else None
+            )
+            if first and model != first:
+                raise SystemExit(
+                    f"[eval] the policy server now serves {model}, trial 1 used {first}: use a new --session-dir"
+                )
             episode_end, frames = run_episode(trial)
             print(f"[eval] trial {trial + 1}/{a.trials} ended: {episode_end}", flush=True)
             verdict = (
@@ -1026,7 +1041,12 @@ def main():
             if verdict is None:
                 print(f"[eval] trial {trial + 1} discarded: redo", flush=True)
                 continue
-            extra = {"episode_end": episode_end, "args": json.dumps(vars(a), default=str), **verdict}
+            extra = {
+                "episode_end": episode_end,
+                "args": json.dumps(vars(a), default=str),
+                "model": model or "",
+                **verdict,
+            }
             print(f"[eval] saving trial {trial + 1}...", flush=True)
             write_trial(a.session_dir, trial, log, extra, frames)
             print(

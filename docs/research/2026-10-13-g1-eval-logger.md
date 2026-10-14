@@ -30,7 +30,7 @@ Operator keys:
 - Per trial: Enter when the robot is in position, Enter to stop the trial, then `s` (success), `f` (fail), or `r` (redo, the trial is discarded and run again).
 - After `f`: the failure reason number from the menu (after a watchdog stop, Enter takes "safety stop (watchdog)"), then a free-text note (Enter to skip).
 
-Each finished trial is written at once. A crash or Ctrl-C keeps the finished trials; the same command continues at the next trial (`results.jsonl` line count = next trial number). A resume with another task, action space or policy (server/path) than trial 1 is refused before the robot moves.
+Each finished trial is written at once. A crash or Ctrl-C keeps the finished trials; the same command continues at the next trial (`results.jsonl` line count = next trial number). A resume with another task, action space or policy (server/path) than trial 1 is refused before the robot moves. Each trial records the checkpoint that served it (`model`, asked from the policy server's `info` at the trial start; servers started before 2026-10-14 do not report it, so restart them). A different checkpoint behind the same port than trial 1's ends the session before the next takeover: use a new session name per model.
 
 ## 3. Pull and convert
 
@@ -61,7 +61,7 @@ $SESSIONS/s01_.../
   s01_....log streamer log
   dataset/    LeRobot v3.0 dataset
     meta/eval_session.json  task, subtasks, failure_reasons, model, date, fps, streamer_args,
-                            episodes{<ep>: trial, verdict, reason, note, episode_end, wall_start, wall_stop}, skipped
+                            episodes{<ep>: trial, verdict, reason, note, episode_end, wall_start, wall_stop, model}, skipped
     meta/eval_labels.json   per episode: vlm_verdict, failed_subtask, failure_frame, rationale, source (vlm|human),
                             model, prompt_version
 ```
