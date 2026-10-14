@@ -246,10 +246,21 @@ in each run. User score: **3 of 5** (per-run outcomes not itemized; run64 left n
 | 66  | 30 s     | 0.30 s        | 1.01 rad/s    | 206      | 82°                | 1.45            |
 | 67  | 30 s     | 0.30 s        | 0.98 rad/s    | 224      | 79°                | 1.43            |
 
+Third cell, Pi0.5 base trained on 41 episodes (`wbt_pi05_base_full`), GPU 1 (0.30 s per chunk), bottle position varied.
+User score: **1 of 5** (runs 68–72; runs 68 and 69 left no `.npz`).
+
+| Run | Duration | Arm speed p95 | Jerk p95 | Right arm max move | Left hand range |
+| --- | -------- | ------------- | -------- | ------------------ | --------------- |
+| 70  | 30 s     | 0.69 rad/s    | 228      | 64°                | 0.68            |
+| 71  | 30 s     | 0.84 rad/s    | 237      | 61°                | 0.81            |
+| 72  | 30 s     | 0.80 rad/s    | 235      | 74°                | 1.41            |
+
 - **HE pretraining helps at 20 episodes:** Pi0.5 he 20 scores 3/5 where Pi0.5 base 20 scores 0/3 (user counts run61
   as a trial). With HE init the arm reaches as far as the 41-episode HE model (79–96° vs 90°), and in 3 runs the left hand
   works through its full range for the handover (1.43–1.45 vs 1.65 in run 37); base 20 never did (0.14–0.16).
-- **Runs 61 and 64 left no `.npz`:** each log ends at "POSE mode", written ~20 s after the previous run ended,
+- **Pi0.5 so far (user scores):** base 20 0/3, he 20 3/5, base 41 1/5, he 41 1/2 (runs 36–37, before `--hold-rest-s`).
+  HE init at 20 episodes beats base init at 41.
+- **Runs 61, 64, 68 and 69 left no `.npz`:** each log ends at "POSE mode", written ~20 s after the previous run ended,
   so the streamer was stopped early (likely Ctrl-C, which also kills `tee`) and the log was not saved.
 - **Pi0.5 base 20 is smooth but falls short:** it reaches less far than the 41-episode HE model (right arm 50–62°
   vs 90°), grasps at best unstably, and never releases for the handover (left hand range 0.14–0.16 vs 1.65 in run 37).
