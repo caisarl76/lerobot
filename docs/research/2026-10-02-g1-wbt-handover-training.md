@@ -273,9 +273,13 @@ GR00T he trained on 20 episodes (`wbt_groot_wbt20_he_full`), first evaluation se
 was redone; it was probably a false stop: before 71413403 the watchdog timed the first episode ticks by `t_ep`, which
 the 1 s blend-in shares, and read 3–4× too fast (run48 replayed: 6.6 → 2.9 rad/s). Sessions from s02 on use the fix.
 
+GR00T base trained on 41 episodes (`wbt_groot_base_full`), session `s02_wbt_groot_base_handover` (5 trials, first
+robot use of the wall-clock watchdog fix 71413403: no watchdog stops): **4 of 5**; the failure was "grasp failed /
+missed" (trial 4).
+
 - **Pi0.5 (user scores):** base 20 0/3, he 20 3/5, base 41 1/5, he 41 3/5 (runs 73–77; 1/2 in runs 36–37 without
   `--hold-rest-s`).
-- **GR00T (user scores):** base 20 3.5/5, he 20 3/5; base 41 and he 41 next. Unlike Pi0.5, GR00T base 20 is not
+- **GR00T (user scores):** base 20 3.5/5, he 20 3/5, base 41 4/5; he 41 next. Unlike Pi0.5, GR00T base 20 is not
   worse than he 20.
   HE init at 20 episodes beats base init at 41.
 - **Runs 61, 64, 68, 69, 73–76 and 79–81 left no `.npz`** (use `g1_groot_real_run.sh session` from now on: Enter ends a trial and each trial is saved with its verdict): each log ends at "POSE mode", written ~20 s after the previous run ended,
