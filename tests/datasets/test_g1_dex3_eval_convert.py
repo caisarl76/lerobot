@@ -19,7 +19,7 @@ ARGS = {"task": "pick the bottle", "action_space": "sonic78", "policy_server": "
         "failure_reasons": None, "trials": 3}  # fmt: skip
 
 
-def trial(session, i, t0, n_episode, verdict, reason="", args=ARGS, cam=lambda t: True):
+def trial(session, i, t0, n_episode, verdict, reason="", args=ARGS, cam=lambda t: True, model=""):
     """10 handoff ticks, n_episode episode ticks, 10 blend-out ticks at 50 Hz; camera at 30 Hz from t0 - 0.5 s.
     state[:, 0] and token[:, 0] hold the tick's wall time; each JPEG is a flat grey of value 10 * (index % 20)."""
     n = 20 + n_episode
@@ -45,6 +45,7 @@ def trial(session, i, t0, n_episode, verdict, reason="", args=ARGS, cam=lambda t
         "verdict": verdict,
         "reason": reason,
         "note": "",
+        "model": model,
     }
     eval_session.write_trial(session, i, log, extra, frames)
     return wall, t_cam
@@ -103,6 +104,18 @@ def test_mixed_session_settings_are_rejected(tmp_path):
     trial(session, 1, 2000.0, 30, "success", args=laptop)
     with pytest.raises(ValueError, match="trial 1: task, action_space"):
         convert(session, tmp_path / "dataset", "local/x", ["reach"])
+
+
+def test_each_episode_records_its_model_and_a_mixed_model_session_is_rejected(tmp_path):
+    session = tmp_path / "raw"
+    trial(session, 0, 1000.0, 30, "success", model="/m/he_full/pretrained_model")
+    trial(session, 1, 2000.0, 30, "fail", "dropped the object", model="/m/he_full/pretrained_model")
+    meta = convert(session, tmp_path / "dataset", "local/x", ["reach"])
+    assert meta["model"] == "/m/he_full/pretrained_model"
+    assert [e["model"] for e in meta["episodes"].values()] == ["/m/he_full/pretrained_model"] * 2
+    trial(session, 2, 3000.0, 30, "success", model="/m/base_full/pretrained_model")
+    with pytest.raises(ValueError, match="different models"):
+        convert(session, tmp_path / "dataset2", "local/x", ["reach"])
 
 
 def test_camera_gaps_at_episode_boundaries_warn(tmp_path, capsys):

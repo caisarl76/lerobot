@@ -75,7 +75,12 @@ def serve_policy(ctx, port, stop):
             continue
         req = msgpack.unpackb(rep.recv(), raw=False)
         if req["op"] == "info":
-            out = {"image_keys": [key], "n_obs": 1, "shapes": {key: [3, 48, 64]}}
+            out = {
+                "image_keys": [key],
+                "n_obs": 1,
+                "shapes": {key: [3, 48, 64]},
+                "model": "/m/fake/pretrained_model",
+            }
         else:
             out = {"chunk": np.zeros((40, 78), np.float32).tobytes(), "shape": [40, 78]}
         rep.send(msgpack.packb(out, use_bin_type=True))
@@ -164,6 +169,7 @@ def test_two_trial_session_against_a_fake_rig(tmp_path):
         (0, "success", "completed"),
         (1, "fail", "operator stop"),
     ]
+    assert [x["model"] for x in lines] == ["/m/fake/pretrained_model"] * 2  # asked from the server each trial
     assert lines[1]["reason"] == eval_session.DEFAULT_FAILURE_REASONS[1] and lines[1]["note"] == "x"
     assert 5.5 < lines[0]["wall_stop"] - lines[0]["wall_start"] < 6.1  # the duration cap
     assert 0.2 < lines[1]["wall_stop"] - lines[1]["wall_start"] < 5.0  # stopped by the operator
