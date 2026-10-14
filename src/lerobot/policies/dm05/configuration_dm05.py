@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import draccus
 import torch
 
 from lerobot.configs import FeatureType, NormalizationMode, PolicyFeature, PreTrainedConfig
@@ -31,6 +32,21 @@ from .core.utils import DM05_STATE_BINS
 
 _BASE_STATE_DIM = 14
 _BASE_ACTION_DIM = 14
+
+
+# ponytail: this branch lacks upstream #4786 (shared torch.dtype draccus codec in configs/policies.py),
+# which DM05's `dtype: torch.dtype` field needs to load/save config.json. Drop once #4786 is merged in.
+@draccus.decode.register(torch.dtype)
+def _decode_dtype(value: Any, path: Any = ()) -> torch.dtype:
+    dtype = getattr(torch, str(value).removeprefix("torch."), None)
+    if not isinstance(dtype, torch.dtype):
+        raise ValueError(f"Invalid dtype {value!r}: expected a torch dtype name.")
+    return dtype
+
+
+@draccus.encode.register(torch.dtype)
+def _encode_dtype(value: torch.dtype, declared_type: Any = None) -> str:
+    return str(value).removeprefix("torch.")
 
 
 @PreTrainedConfig.register_subclass("dm05")
@@ -55,6 +71,9 @@ class DM05Config(PreTrainedConfig):
 
     max_state_dim: int = 32
     max_action_dim: int = 32
+    # Resize the core action width to max_action_dim and re-initialise the action in/out projections
+    # when loading a checkpoint of another width. Matching-width checkpoints load unchanged.
+    adapt_action_projections: bool = False
     image_resolution: tuple[int, int] = (448, 448)
     empty_cameras: int = 0
     add_state: bool = True
@@ -210,6 +229,8 @@ class DM05Config(PreTrainedConfig):
                 f"Action dimension {action_shape[-1]} exceeds max_action_dim {self.max_action_dim}."
             )
         core_action_dim = self.core_config.get("action_dim") if isinstance(self.core_config, dict) else None
+        if self.adapt_action_projections and core_action_dim is not None:
+            self.core_config["action_dim"] = core_action_dim = self.max_action_dim
         self._validate_core_action_dim(core_action_dim)
 
         if self.use_relative_actions:

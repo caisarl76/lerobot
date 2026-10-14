@@ -149,6 +149,11 @@ class LaWAMConfig(PreTrainedConfig):
     flow_noise_s: float = 0.999
     flow_token_independent_noise: bool = False
     flow_use_action_positional_embeddings: bool = True
+    # Cross-embodiment fine-tuning: checkpoint tensors under these state-dict key prefixes may
+    # differ in shape from the model (e.g. a wider `flow_action_dim`); they keep their fresh
+    # initialisation instead of loading. A mismatch outside these prefixes still raises.
+    # e.g. ["model.policy_backend.flow.action_encoder", "model.policy_backend.flow.action_decoder"]
+    reinit_modules: list[str] | None = None
 
     clip_normalized_actions: bool = False
     pre_snap_gripper_action: bool = False

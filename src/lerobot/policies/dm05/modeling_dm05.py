@@ -28,14 +28,18 @@ from typing import Any, Unpack, cast
 import torch
 import torch.nn.functional as torch_nn_functional
 from huggingface_hub import snapshot_download
+from safetensors import safe_open
+from safetensors.torch import load_file
 from torch import Tensor
 
 from lerobot.configs import PreTrainedConfig
 from lerobot.utils.constants import ACTION
+from lerobot.utils.device_utils import resolve_safetensors_device
 from lerobot.utils.import_utils import require_package
 
 from ..common.vla_utils import pad_vector
 from ..pretrained import ActionSelectKwargs, PreTrainedPolicy, T
+from ..utils import log_model_loading_keys
 from .configuration_dm05 import DM05Config
 from .core.adapter import (
     flatten_feature_names,
@@ -45,6 +49,15 @@ from .core.utils import build_action_prefix_mask, validate_action_prefill_pair
 from .processor_dm05 import MODEL_INPUT_PREFIX
 
 logger = logging.getLogger(__name__)
+
+# Tensors whose shape depends on the core action width (see `adapt_action_projections`).
+_ACTION_PROJECTION_KEYS = tuple(
+    f"model.model.{layer}.{param}"
+    for layer in ("action_in_proj", "action_out_proj")
+    for param in ("weight", "bias")
+)
+# Saved checkpoints drop this alias of the tied lm_head (see `DM05Policy._save_pretrained`).
+_TIED_EMBEDDING_KEY = "model.model.vlm.model.language_model.embed_tokens.weight"
 
 
 def setup_compiled_suffix(config: Any, model: Any) -> bool:
@@ -376,6 +389,37 @@ class DM05Policy(PreTrainedPolicy):
             **kwargs,
         )
         return policy
+
+    @classmethod
+    def _load_as_safetensor(cls, model: T, model_file: str, map_location: str, strict: bool) -> T:
+        """Load weights, re-initialising the action projections when the checkpoint width differs."""
+        if not getattr(model.config, "adapt_action_projections", False):
+            return super()._load_as_safetensor(model, model_file, map_location, strict)
+        current = model.state_dict()
+        with safe_open(model_file, framework="pt", device="cpu") as checkpoint:
+            source_dim = checkpoint.get_slice(_ACTION_PROJECTION_KEYS[0]).get_shape()[1]
+        target_dim = current[_ACTION_PROJECTION_KEYS[0]].shape[1]
+        if source_dim == target_dim:
+            return super()._load_as_safetensor(model, model_file, map_location, strict)
+
+        state_dict = load_file(model_file, device=resolve_safetensors_device(map_location))
+        # The input bias keeps its shape but belongs to the same projection, so reset it too.
+        for key in _ACTION_PROJECTION_KEYS:
+            state_dict[key] = current[key]
+        logger.warning(
+            "DM05 action dimension %s -> %s: re-initialised %s",
+            source_dim,
+            target_dim,
+            ", ".join(_ACTION_PROJECTION_KEYS),
+        )
+        missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=False)
+        missing_keys = [key for key in missing_keys if key != _TIED_EMBEDDING_KEY]
+        if strict and (missing_keys or unexpected_keys):
+            raise RuntimeError(
+                f"DM05 load: missing keys {missing_keys}, unexpected keys {list(unexpected_keys)}."
+            )
+        log_model_loading_keys(missing_keys, unexpected_keys)
+        return model
 
     def reset(self):
         """Reset the rollout action queue."""
