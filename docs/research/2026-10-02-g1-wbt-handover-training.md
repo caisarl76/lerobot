@@ -212,7 +212,32 @@ handover". Logs: `pc2_222:~/g1_sonic_eval/runs/run3{3..6}_wbt_*`. Smoothness by 
   joins that thread before exiting (73750ab2).
 - **Closed hand at the start (fixed as an option, 10-12):** in planner mode the deploy keeps the Dex3 hands closed and
   ignores streamed hand targets, so the policy's first observation showed a fist. `--hold-rest-s 1.5` holds the rest
-  pose with open hands in POSE mode before the first observation, like the recordings (343028d2). Not yet robot-tested.
+  pose with open hands in POSE mode before the first observation, like the recordings (343028d2). Robot-tested in
+  runs 57–62 (below): it held the rest pose for 1.5 s before the first chunk, as intended.
+
+## Real robot, 20-episode cells (2026-10-14)
+
+Same settings as above plus `--hold-rest-s 1.5`. First cell: Pi0.5 base trained on 20 episodes
+(`wbt_pi05_wbt20_base_full`, EMA, bf16).
+
+| Run | Server GPU | Duration | Chunk latency | Arm speed p95 | Jerk p95 | Right arm max move | Outcome (user)                                                                                 |
+| --- | ---------- | -------- | ------------- | ------------- | -------- | ------------------ | ---------------------------------------------------------------------------------------------- |
+| 57  | 0          | 1 s      | > 0.6 s       | –             | –        | –                  | invalid: "no valid chunk for 1 s"                                                              |
+| 58  | 0          | 1 s      | > 0.6 s       | –             | –        | –                  | invalid: same                                                                                  |
+| 59  | 0          | 1 s      | > 0.6 s       | –             | –        | –                  | invalid: same                                                                                  |
+| 60  | 1          | 30 s     | 0.30 s        | 0.52 rad/s    | 202      | 50°                | reached toward the bottle but not close enough, closed the grip on nothing                     |
+| 61  | 1          | –        | –             | –             | –        | –                  | no `.npz` (log ends at POSE mode: streamer killed or crashed)                                  |
+| 62  | 1          | 30 s     | 0.30 s        | 0.66 rad/s    | 214      | 62°                | reached the bottle (slightly far), grasped it in an unstable grip, rotated the wrist, no release |
+
+Run 37 (Pi0.5 he, 41 episodes, success) for comparison: arm speed p95 0.99 rad/s, jerk 242, right arm 90°.
+
+- **Runs 57–59 are not trials.** Workstation GPU 0 also drives the desktop (gnome-shell and Chrome at ~30 % each)
+  and an unrelated `dimos_dev` process. Chunks took > 0.6 s against the 0.4 s replan, so the second chunk missed the
+  1 s chunk-age limit. On the idle GPU 1 the same server answers in 0.28 s (workstation) / 0.30 s (PC2). Run robot
+  servers on GPU 1, and check that the streamer's `policy ready: X s per chunk` is below 0.4.
+- **Pi0.5 base 20 is smooth but falls short:** it reaches less far than the 41-episode HE model (right arm 50–62°
+  vs 90°), grasps at best unstably, and never releases for the handover (left hand range 0.14–0.16 vs 1.65 in run 37).
+  Score: 0 of 2 valid trials.
 
 Check progress:
 
