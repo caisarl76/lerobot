@@ -293,9 +293,9 @@ All 8 cells, user scores (bottle position varied per trial; noise 0, blend 0.3, 
 - **Pi0.5 (user scores):** base 20 0/3, he 20 3/5, base 41 1/5, he 41 3/5 (runs 73–77; 1/2 in runs 36–37 without
   `--hold-rest-s`).
 - **GR00T (user scores):** base 20 3.5/5, he 20 2/5 (3/5 before the review correction), base 41 4/5, he 41 5/5.
-- **Conclusion (user, 2026-10-14): HE pretraining helps.** Pi0.5: base → he 0/3 → 3/5 at 20 episodes and 1/5 → 3/5
+- **Conclusion (user, 2026-10-14): HE pretraining helps, but a larger test batch is needed for a clear conclusion.** Pi0.5: base → he 0/3 → 3/5 at 20 episodes and 1/5 → 3/5
   at 41. GR00T: base → he 4/5 → 5/5 at 41 episodes (the best cell). At 20 episodes GR00T base is ahead (3.5/5 vs 2/5,
-  after the s01 trial 3 correction; the conclusion was drawn with 3/5).
+  after the s01 trial 3 correction).
   These are 5 trials per cell.
   HE init at 20 episodes beats base init at 41.
 - **Runs 61, 64, 68, 69, 73–76 and 79–81 left no `.npz`** (use `g1_groot_real_run.sh session` from now on: Enter ends a trial and each trial is saved with its verdict): each log ends at "POSE mode", written ~20 s after the previous run ended,
