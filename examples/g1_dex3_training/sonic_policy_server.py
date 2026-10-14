@@ -4,7 +4,7 @@ work (50 Hz tokens, table startup/shutdown, planner hand-back, safety stops) and
 across a VPN that only allows robot -> H100 (decided 2026-09-27).
 
 Protocol (ZMQ REQ/REP, msgpack):
-  {"op": "info"}  -> {"image_keys": [...], "n_obs": int, "shapes": {key: [C, H, W]}}
+  {"op": "info"}  -> {"image_keys": [...], "n_obs": int, "shapes": {key: [C, H, W]}, "model": policy path}
   {"op": "chunk", "states": [[28 floats]] * n_obs, "images": [{key: jpeg bytes}] * n_obs, "task": str,
    "rtc": {"offset": int, "delay": int} (optional, streamer --rtc)}
                   -> {"chunk": float32 bytes, "shape": [T, 78], "latency_s": float}
@@ -73,7 +73,12 @@ def main():
         req = msgpack.unpackb(sock.recv(), raw=False)
         try:
             if req["op"] == "info":
-                rep = {"image_keys": policy.image_keys, "n_obs": policy.n_obs, "shapes": policy.shapes}
+                rep = {
+                    "image_keys": policy.image_keys,
+                    "n_obs": policy.n_obs,
+                    "shapes": policy.shapes,
+                    "model": a.policy_path,
+                }
             else:
                 started = time.monotonic()
                 images = [{k: decode(v, policy.shapes[k]) for k, v in im.items()} for im in req["images"]]
