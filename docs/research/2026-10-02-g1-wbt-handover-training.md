@@ -235,9 +235,25 @@ Run 37 (Pi0.5 he, 41 episodes, success) for comparison: arm speed p95 0.99 rad/s
   and an unrelated `dimos_dev` process. Chunks took > 0.6 s against the 0.4 s replan, so the second chunk missed the
   1 s chunk-age limit. On the idle GPU 1 the same server answers in 0.28 s (workstation) / 0.30 s (PC2). Run robot
   servers on GPU 1, and check that the streamer's `policy ready: X s per chunk` is below 0.4.
+Second cell, Pi0.5 he trained on the same 20 episodes (`wbt_pi05_wbt20_he_full`), GPU 1, the bottle placed differently
+in each run. User score: **3 of 5** (per-run outcomes not itemized; run64 left no `.npz`, like run61).
+
+| Run | Duration | Chunk latency | Arm speed p95 | Jerk p95 | Right arm max move | Left hand range |
+| --- | -------- | ------------- | ------------- | -------- | ------------------ | --------------- |
+| 63  | 30 s     | 0.30 s        | 0.93 rad/s    | 201      | 81°                | 1.43            |
+| 64  | –        | –             | –             | –        | –                  | –               |
+| 65  | 30 s     | 0.30 s        | 0.83 rad/s    | 239      | 96°                | 0.12            |
+| 66  | 30 s     | 0.30 s        | 1.01 rad/s    | 206      | 82°                | 1.45            |
+| 67  | 30 s     | 0.30 s        | 0.98 rad/s    | 224      | 79°                | 1.43            |
+
+- **HE pretraining helps at 20 episodes:** Pi0.5 he 20 scores 3/5 where Pi0.5 base 20 scores 0/3 (user counts run61
+  as a trial). With HE init the arm reaches as far as the 41-episode HE model (79–96° vs 90°), and in 3 runs the left hand
+  works through its full range for the handover (1.43–1.45 vs 1.65 in run 37); base 20 never did (0.14–0.16).
+- **Runs 61 and 64 left no `.npz`:** each log ends at "POSE mode", written ~20 s after the previous run ended,
+  so the streamer was stopped early (likely Ctrl-C, which also kills `tee`) and the log was not saved.
 - **Pi0.5 base 20 is smooth but falls short:** it reaches less far than the 41-episode HE model (right arm 50–62°
   vs 90°), grasps at best unstably, and never releases for the handover (left hand range 0.14–0.16 vs 1.65 in run 37).
-  Score: 0 of 2 valid trials.
+  Score (user): 0 of 3 (runs 60–62).
 
 Check progress:
 
