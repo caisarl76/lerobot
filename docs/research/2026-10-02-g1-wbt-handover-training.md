@@ -262,10 +262,14 @@ Fourth cell, Pi0.5 he 41 re-tested with `--hold-rest-s 1.5` (runs 73–77, GPU 1
 varied: user score **3 of 5**. Only run77 saved an `.npz` (30 s, right arm 81°, left hand range 1.44); runs 73–76 each
 reached POSE mode ~30 s after the previous one, so they were stopped early by hand.
 
+GR00T base trained on 20 episodes (`wbt_groot_wbt20_base_full`, runs 78–82, GPU 1, 0.19 s per chunk): user score
+**3.5 of 5** (one partial success). Logs only for run78 (right arm 63°, left hand range 0.30) and run82 (70°, 0.38);
+runs 79–81 were stopped early.
+
 - **Pi0.5 (user scores):** base 20 0/3, he 20 3/5, base 41 1/5, he 41 3/5 (runs 73–77; 1/2 in runs 36–37 without
   `--hold-rest-s`).
   HE init at 20 episodes beats base init at 41.
-- **Runs 61, 64, 68, 69 and 73–76 left no `.npz`:** each log ends at "POSE mode", written ~20 s after the previous run ended,
+- **Runs 61, 64, 68, 69, 73–76 and 79–81 left no `.npz`** (use `g1_groot_real_run.sh session` from now on: Enter ends a trial and each trial is saved with its verdict): each log ends at "POSE mode", written ~20 s after the previous run ended,
   so the streamer was stopped early (likely Ctrl-C, which also kills `tee`) and the log was not saved.
 - **Pi0.5 base 20 is smooth but falls short:** it reaches less far than the 41-episode HE model (right arm 50–62°
   vs 90°), grasps at best unstably, and never releases for the handover (left hand range 0.14–0.16 vs 1.65 in run 37).
