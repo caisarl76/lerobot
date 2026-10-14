@@ -321,7 +321,12 @@ class XVLAPolicy(PreTrainedPolicy):
         for key in present_img_keys:
             img = batch[key][:, -1] if batch[key].ndim == 5 else batch[key]
             if self.config.resize_imgs_with_padding is not None:
-                img = resize_with_pad(img, *self.config.resize_imgs_with_padding, pad_value=0.0)
+                if self.config.resize_imgs_mode == "stretch":
+                    img = nn.functional.interpolate(
+                        img, size=tuple(self.config.resize_imgs_with_padding), mode="bicubic", antialias=True
+                    )
+                else:
+                    img = resize_with_pad(img, *self.config.resize_imgs_with_padding, pad_value=0.0)
             images.append(img)
             masks.append(torch.ones(img.size(0), dtype=torch.bool, device=img.device))
 
@@ -341,6 +346,8 @@ class XVLAPolicy(PreTrainedPolicy):
         return stacked_imgs, stacked_masks
 
     def _get_domain_id(self, batch: dict[str, Tensor], batch_size: int, device: torch.device) -> Tensor:
+        if self.config.domain_id is not None:
+            return torch.full((batch_size,), self.config.domain_id, dtype=torch.long, device=device)
         candidate = None
         if self.config.domain_feature_key and self.config.domain_feature_key in batch:
             candidate = batch[self.config.domain_feature_key]
@@ -502,8 +509,21 @@ class XVLAPolicy(PreTrainedPolicy):
             state_dict[embed_key] = state_dict[shared_key]
         elif embed_key in state_dict and shared_key not in state_dict:
             state_dict[shared_key] = state_dict[embed_key]
-        # step 4: load into instance
-        instance.load_state_dict(state_dict, strict=True)
+        # step 4: load into instance. Tensors whose shape depends on the action/state dims (action
+        # encoder/decoder when `max_action_dim`/`max_state_dim` differ from the checkpoint) keep
+        # their fresh initialisation; everything else must load.
+        own = instance.state_dict()
+        reinit = sorted(k for k, v in state_dict.items() if k in own and own[k].shape != v.shape)
+        for k in reinit:
+            logging.warning(
+                f"XVLA: re-initialising {k}: checkpoint {tuple(state_dict[k].shape)} -> model {tuple(own[k].shape)}"
+            )
+            del state_dict[k]
+        missing, unexpected = instance.load_state_dict(state_dict, strict=False)
+        if set(missing) != set(reinit) or unexpected:
+            raise RuntimeError(
+                f"XVLA checkpoint mismatch: missing={sorted(set(missing) - set(reinit))}, unexpected={unexpected}"
+            )
         logging.info("Loaded XVLA checkpoint")
         # step 5: finalize
         # Reapply dtype after loading state dict

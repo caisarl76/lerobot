@@ -18,11 +18,20 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+import torch
+from torch.optim.lr_scheduler import LambdaLR
+
 from lerobot.configs import FeatureType, NormalizationMode, PolicyFeature, PreTrainedConfig
-from lerobot.optim import CosineDecayWithWarmupSchedulerConfig, XVLAAdamWConfig
+from lerobot.optim import (
+    CosineDecayWithWarmupSchedulerConfig,
+    LRSchedulerConfig,
+    OptimizerConfig,
+    XVLAAdamWConfig,
+)
 from lerobot.utils.constants import OBS_IMAGES
 
 # Conditional import for type checking and lazy loading
@@ -123,9 +132,15 @@ class XVLAConfig(PreTrainedConfig):
     max_state_dim: int = 32
     max_action_dim: int = 20  # Maximum action dimension for padding (used by "auto" action mode)
     domain_feature_key: str | None = None
+    # When set, every sample uses this domain id (soft prompt + domain-aware heads), whatever the
+    # preprocessor added. Needed when the processors are loaded from a checkpoint of another domain.
+    domain_id: int | None = None
 
     # Vision preprocessing
     resize_imgs_with_padding: tuple[int, int] | None = None
+    # "pad": keep the aspect ratio and pad (LeRobot default); "stretch": plain bicubic resize to
+    # `resize_imgs_with_padding`, like the original X-VLA dataloader (transforms.Resize((224, 224))).
+    resize_imgs_mode: str = "pad"
     num_image_views: int | None = None
     empty_cameras: int = 0
 
@@ -150,6 +165,15 @@ class XVLAConfig(PreTrainedConfig):
     scheduler_decay_steps: int = 30_000
     scheduler_decay_lr: float = 2.5e-6
 
+    # Original X-VLA fine-tuning schedule (2toINF/X-VLA train.py, `--use_cosine_decay`). 0 keeps the
+    # LeRobot presets above. When > 0: four param groups (vlm, transformer_core, soft_prompts,
+    # action_heads); for the first `official_freeze_steps` scheduler steps only the soft prompts and
+    # action heads train; then every group warms up linearly from 0 over `scheduler_warmup_steps`
+    # and decays with a cosine to `scheduler_decay_lr / optimizer_lr` of its peak at the end of
+    # training. Scheduler steps are micro-batches in LeRobot: multiply by the gradient accumulation.
+    official_freeze_steps: int = 0
+    official_lr_coef: float = 0.1  # LR multiplier of the VLM and soft prompts (`--learning_coef`)
+
     def __post_init__(self) -> None:
         super().__post_init__()
 
@@ -163,6 +187,8 @@ class XVLAConfig(PreTrainedConfig):
             raise ValueError("`num_image_views` must be > 0 when specified.")
         if self.dtype not in ["bfloat16", "float32"]:
             raise ValueError(f"Invalid dtype: {self.dtype}")
+        if self.resize_imgs_mode not in ("pad", "stretch"):
+            raise ValueError(f"Invalid resize_imgs_mode: {self.resize_imgs_mode}")
         self._florence_config_obj: Florence2Config | None = None
 
     def get_florence_config(self) -> Florence2Config:
@@ -226,7 +252,7 @@ class XVLAConfig(PreTrainedConfig):
                         shape=(3, height, width),
                     )
 
-    def get_optimizer_preset(self) -> XVLAAdamWConfig:
+    def get_optimizer_preset(self) -> OptimizerConfig:
         """Return the XVLA-specific optimizer with differential learning rates.
 
         This optimizer applies:
@@ -234,6 +260,15 @@ class XVLAConfig(PreTrainedConfig):
         - Full LR for transformer/action head
         - Configurable LR for soft-prompts (with optional warm-up)
         """
+        if self.official_freeze_steps > 0:
+            return XVLAOfficialAdamWConfig(
+                lr=self.optimizer_lr,
+                betas=self.optimizer_betas,
+                eps=self.optimizer_eps,
+                weight_decay=self.optimizer_weight_decay,
+                grad_clip_norm=self.optimizer_grad_clip_norm,
+                lr_coef=self.official_lr_coef,
+            )
         return XVLAAdamWConfig(
             lr=self.optimizer_lr,
             betas=self.optimizer_betas,
@@ -244,7 +279,13 @@ class XVLAConfig(PreTrainedConfig):
             soft_prompt_warmup_lr_scale=self.optimizer_soft_prompt_warmup_lr_scale,
         )
 
-    def get_scheduler_preset(self) -> CosineDecayWithWarmupSchedulerConfig:
+    def get_scheduler_preset(self) -> LRSchedulerConfig:
+        if self.official_freeze_steps > 0:
+            return XVLAOfficialSchedulerConfig(
+                num_warmup_steps=self.scheduler_warmup_steps,
+                freeze_steps=self.official_freeze_steps,
+                min_lr_ratio=self.scheduler_decay_lr / self.optimizer_lr,
+            )
         return CosineDecayWithWarmupSchedulerConfig(
             peak_lr=self.optimizer_lr,
             decay_lr=self.scheduler_decay_lr,
@@ -263,3 +304,86 @@ class XVLAConfig(PreTrainedConfig):
     @property
     def reward_delta_indices(self) -> list[int] | None:
         return None
+
+
+_XVLA_GROUP_NAMES = ("vlm", "transformer_core", "soft_prompts", "action_heads")
+
+
+def _xvla_group_name(param_name: str) -> str:
+    if ".vlm." in f".{param_name}":
+        return "vlm"
+    if "soft_prompt_hub" in param_name:
+        return "soft_prompts"
+    if "action_encoder" in param_name or "action_decoder" in param_name:
+        return "action_heads"
+    return "transformer_core"
+
+
+@OptimizerConfig.register_subclass("xvla-official-adamw")
+@dataclass
+class XVLAOfficialAdamWConfig(OptimizerConfig):
+    """AdamW with the four named param groups of the original X-VLA `build_optimizer`.
+
+    The VLM and soft prompts peak at `lr * lr_coef`, the transformer core and action heads at `lr`.
+    One weight decay for all groups. The per-group schedule is `XVLAOfficialSchedulerConfig`.
+    """
+
+    lr: float = 1e-4
+    betas: tuple[float, float] = (0.9, 0.95)
+    eps: float = 1e-8
+    weight_decay: float = 0.0
+    grad_clip_norm: float = 1.0
+    lr_coef: float = 0.1
+
+    def build(self, params: Any) -> torch.optim.Optimizer:
+        assert isinstance(params, dict), "xvla-official-adamw needs named parameters."
+        groups: dict[str, list] = {name: [] for name in _XVLA_GROUP_NAMES}
+        for name, p in params.items():
+            if p.requires_grad:
+                groups[_xvla_group_name(name)].append(p)
+        scale = {"vlm": self.lr_coef, "soft_prompts": self.lr_coef}
+        param_groups = [
+            {"name": name, "params": ps, "lr": self.lr * scale.get(name, 1.0)}
+            for name, ps in groups.items()
+            if ps
+        ]
+        return torch.optim.AdamW(
+            param_groups, lr=self.lr, betas=self.betas, eps=self.eps, weight_decay=self.weight_decay
+        )
+
+
+@LRSchedulerConfig.register_subclass("xvla-official")
+@dataclass
+class XVLAOfficialSchedulerConfig(LRSchedulerConfig):
+    """Per-group LR factors of the original X-VLA `update_group_lrs` with `--use_cosine_decay`.
+
+    Steps < freeze_steps: VLM and transformer core at 0, soft prompts and action heads at peak.
+    Afterwards every group: linear warmup from 0 over `num_warmup_steps`, then cosine to
+    `min_lr_ratio` at `num_training_steps`.
+    """
+
+    num_warmup_steps: int = 1000
+    freeze_steps: int = 1000
+    min_lr_ratio: float = 0.1
+
+    def build(self, optimizer: torch.optim.Optimizer, num_training_steps: int) -> LambdaLR:
+        def after_freeze(step: int) -> float:
+            progress = step - self.freeze_steps
+            if progress < self.num_warmup_steps:
+                return progress / max(1, self.num_warmup_steps)
+            remain = max(1, num_training_steps - (self.freeze_steps + self.num_warmup_steps))
+            ratio = 0.5 * (1 + math.cos(math.pi * min(1.0, (progress - self.num_warmup_steps) / remain)))
+            return self.min_lr_ratio + (1 - self.min_lr_ratio) * ratio
+
+        def factor(trains_during_freeze: bool):
+            def fn(step: int) -> float:
+                if step < self.freeze_steps:
+                    return 1.0 if trains_during_freeze else 0.0
+                return after_freeze(step)
+
+            return fn
+
+        return LambdaLR(
+            optimizer,
+            [factor(g.get("name") in ("soft_prompts", "action_heads")) for g in optimizer.param_groups],
+        )
