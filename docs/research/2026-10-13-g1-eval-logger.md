@@ -48,7 +48,7 @@ uv run python eval_session_to_lerobot.py --session-dir $SESSIONS/s01_.../raw --o
 1. Start the backend and UI as in the visualizer's `docs/local-setup.md` (backend with a configured VLM endpoint).
 2. `/annotate` -> prepare the dataset directory (local path) -> open the draft -> **Evaluation** panel.
 3. The panel header shows the session summary: success rate, per-reason counts, disagreements (VLM verdict differs from the operator), labelled, reviewed. There is no separate dataset view.
-4. **Run VLM labels** (bulk) labels only episodes that have no eval label yet (checked again right before each write, so a label saved during the run is never overwritten); to relabel an episode use an explicit episode list (API `episode_indices`). Per-episode failures (e.g. a non-JSON reply, with the raw reply) and skips are listed in the job result: shown in the panel after a run and persisted in `EXPORT_ROOT/jobs/<id>.json`. Raw replies are also snapshotted in `meta/annotation_predictions/` when at least one episode was labelled. Other episodes are unaffected.
+4. **Run VLM labels** (bulk) labels only episodes that have no eval label yet (checked again right before each write, so a label saved during the run is never overwritten); to relabel an episode use an explicit episode list (API `episode_indices`). Per-episode failures (e.g. a non-JSON reply, with the raw reply) and skips are listed in the job result: shown in the panel after a run and persisted in `EXPORT_ROOT/jobs/<id>.json`. Raw replies are also snapshotted in `meta/annotation_predictions/`, even when no episode was labelled. The endpoint is the run's saved `/annotate` VLM setting, else the backend config (`deployment/annotation-h100.json`: `127.0.0.1:34002`, which needs `deployment/annotation-vlm-tunnel.sh` running; without it every episode fails with `APIConnectionError`). Other episodes are unaffected.
 5. Per episode: check the subtask segments on the timeline, set the failed subtask, move the player and **Set to playhead** (uses the episode-relative player time) for the failure frame, **Save label** (source becomes `human`), then **Mark reviewed**. Changing the label afterwards makes the episode unreviewed again.
 
 Backend HTTP API (all take `local_path=<dataset>`): `GET /api/eval/episodes/{i}`, `POST /api/eval/episodes/{i}/label`, `POST /api/eval/label` (job; poll `/api/annotation/jobs/{id}`), `GET|POST /api/episodes/{i}/review`.
@@ -66,7 +66,7 @@ $SESSIONS/s01_.../
                             model, prompt_version
 ```
 
-Labels and reviews live in the visualizer workspace draft (`EXPORT_ROOT/drafts/<job>/`, which `/annotate` prepare copies the dataset into) and reach a dataset via **Save dataset**. A re-convert with `--overwrite` does not touch them.
+Labels and reviews live in the visualizer workspace draft (`EXPORT_ROOT/drafts/<job>/`, which `/annotate` prepare copies the dataset into) and reach a standalone dataset via **Review & export → Export & publish** (Rich annotations, HF repository blank for a local export), which carries `eval_session.json` / `eval_labels.json` and the reviews (renumbered and clipped with the export). A re-convert with `--overwrite` does not touch them.
 
 The VLM's subtask starts are stored as `subtask` atoms of the visualizer draft (not in `eval_labels.json`); the operator's verdict is never overwritten.
 
@@ -82,4 +82,4 @@ End-to-end check (2026-10-13, no VLM): the visualizer backend on a converted fak
 
 Tests in this environment need `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1` (a ROS pytest plugin breaks collection), e.g. `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 uv run pytest tests/... -q`.
 
-First real session (user-run): one short session with `TRIALS=2`; check that Enter stops a trial, the verdict prompt appears after the hand-back, both trials are in `results.jsonl`, and the converted dataset opens in the visualizer.
+First real session (2026-10-14, `s00_test_he_groot_laptop`, HE GR00T, "close a laptop g1", `TRIALS=2 MAX_S=60`): both trials fail "stalled / froze" (laptop half closed); converted to 2 episodes of 60 s; Qwen3.6-27B labelled both as fail in "push the lid down" (frames 274 and 357), agreeing with the operator; both labels saved and reviewed in the browser.
