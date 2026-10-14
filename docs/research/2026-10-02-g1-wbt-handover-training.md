@@ -270,7 +270,8 @@ GR00T he trained on 20 episodes (`wbt_groot_wbt20_he_full`), first evaluation se
 (`g1_groot_real_run.sh session`, 5 trials, 30 s cap, every trial saved; copy in
 `/mnt/data/jihun/g1_eval_sessions/s01_wbt20_groot_he_handover`): **3 of 5**. Failures: "dropped the object" (trial 2),
 "grasp failed / missed" (trial 5). The first attempt at trial 2 was a watchdog stop (arm joint 11 at 6.9 rad/s) and
-was redone.
+was redone; it was probably a false stop: before 71413403 the watchdog timed the first episode ticks by `t_ep`, which
+the 1 s blend-in shares, and read 3–4× too fast (run48 replayed: 6.6 → 2.9 rad/s). Sessions from s02 on use the fix.
 
 - **Pi0.5 (user scores):** base 20 0/3, he 20 3/5, base 41 1/5, he 41 3/5 (runs 73–77; 1/2 in runs 36–37 without
   `--hold-rest-s`).
