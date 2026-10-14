@@ -20,6 +20,7 @@ from stream_backends import (
     LATENT_INITIAL_MOTION_TOKEN,
     DecoupledBackend,
     SonicBackend,
+    max_arm_speed,
     measured_ref,
 )
 from wbc_common import unpack_joint_message
@@ -235,6 +236,17 @@ class SonicBackendTests(unittest.TestCase):
             b.take_over(1, 2)
         first = next(r for r in rec.rows[n:] if r.phase == "planner token")
         np.testing.assert_allclose(first.token, 1.0)
+
+
+class MaxArmSpeedTests(unittest.TestCase):
+    def test_times_by_wall_clock_not_episode_time(self):
+        # G1 run48: blend-in ticks are logged at t_ep 0, so 3 ticks (60 ms) of motion ended 20 ms of t_ep after them
+        s0, s1 = np.zeros(28), np.zeros(28)
+        # 2.4 rad/s on right_wrist_roll over 60 ms; joint 20 is a hand joint, not an arm joint
+        s1[11], s1[20] = 0.144, 5.0
+        self.assertEqual(max_arm_speed(10.0, s0, 10.06, s1)[0], 11)
+        self.assertAlmostEqual(max_arm_speed(10.0, s0, 10.06, s1)[1], 2.4)
+        self.assertIsNone(max_arm_speed(10.0, s0, 10.0, s1))  # same tick: no speed, no division by zero
 
 
 if __name__ == "__main__":

@@ -85,6 +85,7 @@ try:
         DecoupledBackend,
         SonicBackend,
         load_startup,
+        max_arm_speed,
         measured_ref as measured_ref,  # re-exported for the tests
         observation_state,
         ticks,
@@ -118,6 +119,7 @@ except ImportError:
         DecoupledBackend,
         SonicBackend,
         load_startup,
+        max_arm_speed,
         measured_ref as measured_ref,  # re-exported for the tests
         observation_state,
         ticks,
@@ -838,7 +840,7 @@ def main():
         """Replay chunk rows are dataset frames k, k+1, ...: their time base is frame k's time."""
         return k / images.fps
 
-    history = []  # (t_ep, robot state) of recent episode ticks, for policies with n_obs_steps > 1
+    history = []  # (t_ep, robot state, wall time) of recent episode ticks, for policies with n_obs_steps > 1
     log = {
         k: [] for k in ("wall", "t_ep", "phase", "frame", "token", "hands", "chunk_t0", "state", "joint_ref")
     }
@@ -860,20 +862,18 @@ def main():
         ):
             log[key].append(val)  # fmt: skip
         if msg and t_ep >= 0:
-            history.append((t_ep, log["state"][-1]))
+            history.append((t_ep, log["state"][-1], log["wall"][-1]))
             del history[:-200]
 
     def arm_watchdog() -> str | None:
         """Why the episode must end, from the measured arm state of recent ticks; None while it is fine."""
         if len(history) <= ARM_SPEED_TICKS:
             return None
-        (t0, s0), (t1, s1) = history[-1 - ARM_SPEED_TICKS], history[-1]
+        (_, s0, w0), (_, s1, w1) = history[-1 - ARM_SPEED_TICKS], history[-1]
         arm = s1[:14]
-        if a.max_arm_speed > 0 and t1 > t0:
-            speed = np.abs(arm - s0[:14]) / (t1 - t0)
-            j = int(np.argmax(speed))
-            if speed[j] > a.max_arm_speed:
-                return f"arm joint {j} measured at {speed[j]:.1f} rad/s > {a.max_arm_speed:g}"
+        fastest = max_arm_speed(w0, s0, w1, s1) if a.max_arm_speed > 0 else None
+        if fastest and fastest[1] > a.max_arm_speed:
+            return f"arm joint {fastest[0]} measured at {fastest[1]:.1f} rad/s > {a.max_arm_speed:g}"
         outside = np.maximum(ARM_LO - arm, arm - ARM_HI)
         j = int(np.argmax(outside))
         if outside[j] > a.arm_range_margin:
@@ -886,7 +886,7 @@ def main():
         out = []
         for i in reversed(range(policy.n_obs)):
             t = t_ep - i / images.fps
-            earlier = [s for ts, s in history if ts <= t + 1e-9]
+            earlier = [s for ts, s, _ in history if ts <= t + 1e-9]
             out.append(earlier[-1] if earlier else now)
         return out
 

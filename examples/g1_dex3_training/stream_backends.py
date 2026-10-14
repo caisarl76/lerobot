@@ -101,6 +101,19 @@ def measured_ref(msg: dict, action_space: str) -> np.ndarray:
     return ref
 
 
+def max_arm_speed(
+    wall0: float, state0: np.ndarray, wall1: float, state1: np.ndarray
+) -> tuple[int, float] | None:
+    """(arm joint, rad/s) of the fastest of the 14 arm joints between two measured states; None if no time passed.
+    Timed by the wall clock of the ticks, not t_ep: the 1 s blend in is logged at t_ep 0 (G1 run48: 3 ticks of
+    blend-in motion over 20 ms of t_ep read 9.5 rad/s for a true 2.4 rad/s)."""
+    if wall1 <= wall0:
+        return None
+    speed = np.abs(np.asarray(state1[:14]) - np.asarray(state0[:14])) / (wall1 - wall0)
+    j = int(np.argmax(speed))
+    return j, float(speed[j])
+
+
 def ticks(n):
     """Yield 0..n-1 on a 50 Hz grid that starts now (late ticks are caught up by not sleeping)."""
     start = time.monotonic()
