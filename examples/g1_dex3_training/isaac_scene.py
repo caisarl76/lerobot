@@ -3,7 +3,8 @@ g1_29dof_with_hand.urdf (the twin of gear_sonic's MuJoCo model), the optional ta
 camera (D435 mount on torso_link, 640 x 480 at 30 Hz, published like g1_head_camera_server.py as "egocentric").
 
 Torques: tau = tau_ff + kp (q* - q) + kd (dq* - dq) from self.cmd, clipped to gear_sonic's motor effort limits,
-applied in effort mode at dt 0.005 s, as gear_sonic base_sim does. Importing this module has no side effects:
+applied in effort mode at dt 0.005 s, as gear_sonic base_sim does. Physics runs on the CPU (PhysX): on the
+workstation RTX 3060 GPU physics for this single robot ran at 0.49x real time, CPU physics at 1.37x (spec test 0a). Importing this module has no side effects:
 Isaac starts in Scene(...). Runs in the `sonic` conda env (Isaac Sim 5.1, Isaac Lab 2.3.2).
 """
 
@@ -66,7 +67,7 @@ def zero_cmd(n: int) -> dict:
 
 class Scene:
     def __init__(self, out: Path, table_gap_cm: str | None, camera_json: Path = CAMERA_JSON, camera_port: int = 5555,
-                 device: str = "cuda:0", render: bool = True):
+                 device: str = "cpu", render: bool = True):
         from isaaclab.app import AppLauncher
 
         self.app = AppLauncher(headless=True, enable_cameras=True, device=device).app

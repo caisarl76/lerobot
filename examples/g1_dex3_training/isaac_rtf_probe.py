@@ -21,7 +21,7 @@ p = argparse.ArgumentParser()
 p.add_argument("out", type=Path)
 p.add_argument("--seconds", type=float, default=60.0)
 p.add_argument("--stand-z", type=float, default=isc.STAND_Z)
-p.add_argument("--device", default="cuda:0", help="physics device: cuda:0 or cpu")
+p.add_argument("--device", default="cpu", help="physics device: cpu (default, test 0a) or cuda:0")
 p.add_argument("--no-render", action="store_true", help="diagnostic: camera never rendered")
 a = p.parse_args()
 
