@@ -281,7 +281,12 @@ missed" (trial 4).
 GR00T he trained on 41 episodes (`wbt_groot_he_full`), session `s03_wbt_groot_he_handover`: **5 of 5**, no watchdog
 stops.
 
-All 8 cells, user scores (bottle position varied per trial; noise 0, blend 0.3, slew 0.05, `--hold-rest-s 1.5`):
+Psi0 he trained on 41 episodes (`wbt_psi0_he_full`, downloaded from HF, bf16 VLM with `tune_vlm false`, server on
+workstation GPU 1 at 0.29 s per chunk), session `s04_wbt_psi0_he_handover` (2026-10-15): **2 of 5**, no watchdog stops.
+Failures: "dropped the object" (trial 2), "grasp failed / missed" (trials 4 and 5, stopped at 9.4 and 6.9 s). Psi0 base
+was not run.
+
+All 8 GR00T/Pi0.5 cells plus Psi0 he 41, user scores (bottle position varied per trial; noise 0, blend 0.3, slew 0.05, `--hold-rest-s 1.5`):
 
 | Policy | Init | 20 episodes | 41 episodes |
 | ------ | ---- | ----------- | ----------- |
@@ -289,6 +294,7 @@ All 8 cells, user scores (bottle position varied per trial; noise 0, blend 0.3, 
 | Pi0.5  | he   | 3/5         | 3/5         |
 | GR00T  | base | 3.5/5       | 4/5         |
 | GR00T  | he   | 2/5         | 5/5         |
+| Psi0   | he   | not run     | 2/5         |
 
 - **Pi0.5 (user scores):** base 20 0/3, he 20 3/5, base 41 1/5, he 41 3/5 (runs 73–77; 1/2 in runs 36–37 without
   `--hold-rest-s`).
@@ -298,6 +304,8 @@ All 8 cells, user scores (bottle position varied per trial; noise 0, blend 0.3, 
   beats Pi0.5 base 41. GR00T: base → he 4/5 → 5/5 at 41 episodes (the best cell). At 20 episodes GR00T base is ahead
   (3.5/5 vs 2/5, after the s01 trial 3 correction), but with 5 trials per cell one trial flips this comparison, so
   more trials per cell are needed before reading it either way.
+- **Psi0 (user score):** he 41 2/5 (s04, 10-15), below Pi0.5 he 41 (3/5) and GR00T he 41 (5/5); no base cell, so it
+  says nothing about HE init for Psi0.
 - **Runs 61, 64, 68, 69, 73–76 and 79–81 left no `.npz`** (use `g1_groot_real_run.sh session` from now on: Enter ends a trial and each trial is saved with its verdict): each log ends at "POSE mode", written ~20 s after the previous run ended,
   so the streamer was stopped early (likely Ctrl-C, which also kills `tee`) and the log was not saved.
 - **Pi0.5 base 20 is smooth but falls short:** it reaches less far than the 41-episode HE model (right arm 50–62°
