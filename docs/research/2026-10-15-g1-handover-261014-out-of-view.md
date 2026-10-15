@@ -65,6 +65,11 @@ Risks:
 - Final weights: on the Hub as private `mncai/g1-wbt-handover-groot-handover261014-he-full`, and on the
   workstation in `/mnt/data/jihun/g1_models/wbt_groot_handover261014_he_full/pretrained_model`. The sha256 is
   the same on the host, the Hub and the workstation. The intermediate checkpoints exist only on h100_174.
+- **Rerun without ep 0, `groot_handover261015_he_full` (started 10-15 07:25 UTC on h100_174 GPU 7):**
+  - Same config, init (`init/groot_he`, retargeted to the 261014 stats) and 16,000 steps.
+  - Same dataset files on h100_174; ep 0's segment (index 43 of `_261014`) is excluded together with the
+    held-out 27/35. That gives 94 training episodes and 57,284 frames, the same data as `_261015`.
+  - The normalization stats still include ep 0's 828 frames (1.4 %).
 - **TODO (operator):** evaluate against `wbt_groot_he_full` (41 episodes), open-loop on the held-out eps 27/35
   and/or as robot trials; decide whether to use 5k or 16k.
 
@@ -124,7 +129,17 @@ Findings:
 - **Label noise:** eps 0 and 9 had the same empty tail with different labels; resolved on 10-15 by setting ep 0
   to Failed.
 
-## 6. Plan: small Dex3 hand + bottle detector (started 10-15; waiting for labels)
+## 6. Plan: small Dex3 hand + bottle detector (paused 10-15)
+
+**Paused by the user on 10-15.** The 261014 review already covers this data by hand, and the next recordings
+will keep the hand and the bottle in view instead:
+
+- keep bottle placements inside the area where the reach stays in view (as in eps 3–21);
+- hand the bottle over in front of the camera and stop recording right after the release.
+
+Resume the plan only if out-of-view frames show up again, or if a warning during recording is wanted. Everything
+below stays in place: the 457 sampled frames, the Label Studio project (no labels yet; restart it with
+`start_label_studio.sh`) and `hand_detector.py`.
 
 Goal: a reliable per-frame hand/bottle signal on our ego view. Combined with the arm phase from proprioception,
 it should flag the reach and handover-tail exclusions. If it does, it becomes the scorer of the visualizer
