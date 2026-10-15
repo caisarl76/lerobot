@@ -13,9 +13,8 @@ import time
 import traceback
 from pathlib import Path
 
-import numpy as np
-
 import isaac_scene as isc
+import numpy as np
 
 p = argparse.ArgumentParser()
 p.add_argument("out", type=Path)

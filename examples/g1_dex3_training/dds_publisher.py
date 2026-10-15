@@ -13,6 +13,7 @@ Usage (spawned by isaac_scene.Scene): python dds_publisher.py STATE_SHM CMD_SHM 
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import sys
@@ -97,8 +98,9 @@ class Exchange:
         del self.state.a, self.cmd.a  # release the numpy views before closing the buffers
         for b in (self.state, self.cmd):
             b.shm.close()
-            if unlink:
-                b.shm.unlink()
+            if unlink:  # the publisher's resource tracker (Python < 3.13) may have unlinked them at its exit
+                with contextlib.suppress(FileNotFoundError):
+                    b.shm.unlink()
 
 
 def make_obs(s: dict) -> dict:

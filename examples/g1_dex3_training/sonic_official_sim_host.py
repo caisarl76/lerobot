@@ -34,7 +34,7 @@ elif SIM == "mujoco":
     from sim_scene import Scene
 else:
     raise SystemExit(f"SIM must be mujoco or isaac, not {SIM!r}")
-from wbc_common import read_done
+from wbc_common import read_done  # noqa: E402 - after the SIM switch (chdir)
 
 OUT, GATE = Path(sys.argv[1]), Path(sys.argv[2])
 GATE.mkdir(parents=True, exist_ok=True)
@@ -164,6 +164,8 @@ finally:
                  "over_20ms": int((lag_a > 20).sum()), "steps": int(lag_a.size)}  # fmt: skip
         scene.mark(f"lag vs wall clock: {stats}")
         (OUT / "lag.json").write_text(json.dumps(stats))
-    scene.close(reason, detail)
-    if SIM == "isaac":
-        os._exit(1 if reason in ("error", "timeout") else 0)  # Kit can hang at interpreter exit
+    try:
+        scene.close(reason, detail)
+    finally:
+        if SIM == "isaac":  # Kit can hang at interpreter exit, also after an error in close
+            os._exit(1 if reason in ("error", "timeout") else 0)

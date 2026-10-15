@@ -90,3 +90,12 @@ def test_make_obs_splits_hands_after_the_body():
     obs = dp.make_obs(s)
     assert obs["left_hand_q"][0] == dp.NB and obs["right_hand_q"][0] == dp.NB + dp.NH
     assert obs["floating_base_pose"].shape == (7,)
+
+
+def test_owner_close_tolerates_segments_already_unlinked_by_the_child():
+    # Python 3.11: the publisher's resource tracker unlinks the segments it attached when it exits (0b run 5: the
+    # scene's unlink raised FileNotFoundError and the host hung in Kit shutdown instead of os._exit)
+    ex = dp.Exchange()
+    other = dp.Exchange(ex.names)
+    other.close(unlink=True)
+    ex.close(unlink=True)

@@ -12,6 +12,7 @@ import argparse
 import glob
 import hashlib
 import json
+import os
 import sys
 from multiprocessing import Pool
 from pathlib import Path
@@ -30,9 +31,11 @@ from sonic_targets import (
     load_joint_limits,
 )  # noqa: E402
 
-MODEL = Path("/sonic-model")
-SCENE = "/gear_sonic/data/robot_model/model_data/g1/scene_43dof.xml"
-CONVERTER_XML = Path("/gear_sonic_deploy/g1/g1_29dof_with_hand.xml")
+# container mounts (sonic_official_sim_eval.sh); GEAR_ROOT=<GR00T-WholeBodyControl checkout> runs it outside the container
+_G = os.environ.get("GEAR_ROOT")
+MODEL = Path(f"{_G}/gear_sonic_deploy/policy/sonic_v1_1" if _G else "/sonic-model")
+SCENE = f"{_G or ''}/gear_sonic/data/robot_model/model_data/g1/scene_43dof.xml"
+CONVERTER_XML = Path(f"{_G or ''}/gear_sonic_deploy/g1/g1_29dof_with_hand.xml")
 MOTOR_FROM_ISAAC = np.argsort(ISAAC_FROM_MOTOR)
 BODY_NAMES = (
     [

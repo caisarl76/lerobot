@@ -52,7 +52,7 @@ DEX3_MOTORS = [f"{s}_hand_{j}_joint" for s in ("left", "right") for j in DEX3]
 # gear_sonic g1_29dof_with_hand.xml actuator order, which motor_effort_limit_list follows
 MUJOCO_ACTUATORS = BODY[:15] + BODY[15:22] + DEX3_MOTORS[:7] + BODY[22:] + DEX3_MOTORS[7:]
 HAND_PERM = [DEX3_MOTORS.index(n) for n in HANDS]
-assert (NB, NH) == (len(BODY), len(DEX3_MOTORS) // 2), "dds_publisher layout differs from BODY / DEX3_MOTORS"  # bridge order -> dataset order (sim_scene records HANDS)
+assert (len(BODY), len(DEX3_MOTORS) // 2) == (NB, NH), "dds_publisher layout differs from BODY / DEX3_MOTORS"  # bridge order -> dataset order (sim_scene records HANDS)
 CAMERA_KEYS = ("parent", "pos", "rot_wxyz", "width", "height", "fx", "fy", "cx", "cy")
 
 
@@ -112,9 +112,14 @@ class Scene:
             return ImplicitActuatorCfg(joint_names_expr=expr, stiffness=0.0, damping=0.05, armature=0.01,
                                        friction=friction, effort_limit_sim=1000.0, velocity_limit_sim=100.0)  # fmt: skip
 
+        # GROUND_USD: a local copy of Isaac's Grid/default_environment.usd (+ Materials/Textures) for runs without
+        # internet (private network namespace); the default fetches it from NVIDIA's asset server
+        ground_usd = os.environ.get("GROUND_USD")
+        ground_cfg = sim_utils.GroundPlaneCfg(usd_path=ground_usd) if ground_usd else sim_utils.GroundPlaneCfg()
+
         @configclass
         class CfgScene(InteractiveSceneCfg):
-            ground = AssetBaseCfg(prim_path="/World/ground", spawn=sim_utils.GroundPlaneCfg())
+            ground = AssetBaseCfg(prim_path="/World/ground", spawn=ground_cfg)
             light = AssetBaseCfg(prim_path="/World/light", spawn=sim_utils.DomeLightCfg(intensity=2500.0))
             robot = ArticulationCfg(
                 prim_path="{ENV_REGEX_NS}/Robot",
