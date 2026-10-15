@@ -21,6 +21,7 @@
 # Env: MODEL_DIR (checkpoint dir), POLICY_SUBDIR (pretrained_model; pretrained_model_ema for Pi0.5), GPU, PORT,
 #      SERVER_ARGS (default GR00T reference "--backbone-dtype bfloat16 --noise-scale 0"; set empty for other
 #      policies), HF_CACHE (tokenizers / base backbones the checkpoint references; pass HF_TOKEN for private repos),
+#      HF_HUB_OFFLINE=1 (no internet: load everything from MODEL_DIR + HF_CACHE; or use server-wbt-groot),
 #      POLICY_HOST, DEPLOY_HOST, CAMERA_HOST, TASK, SESSION, TRIALS, MAX_S, BLEND_S, OUT_DIR,
 #      CLIENT_ARGS (extra streamer flags, e.g. "--policy-fps 50" for the G1 WBT models), HOST_UID/HOST_GID.
 # Host needs the NVIDIA container toolkit and a driver for CUDA 12.8 (>= 570).
@@ -38,7 +39,7 @@ services:
       - ${HF_CACHE:-~/.cache/huggingface}:/hf
     # USER: the host uid has no passwd entry (torch calls getpass.getuser); TORCH_HOME: keep torch hub weights (ACT's
     # ResNet) in the mounted cache so later starts work offline
-    environment: [HF_TOKEN, USER=lerobot, TORCH_HOME=/hf/torch]
+    environment: [HF_TOKEN, HF_HUB_OFFLINE, USER=lerobot, TORCH_HOME=/hf/torch]
     user: ${HOST_UID:-1000}:${HOST_GID:-1000}
     mem_limit: 32g  # loading an fp32 checkpoint on the CPU first can otherwise exhaust host RAM
     memswap_limit: 32g
