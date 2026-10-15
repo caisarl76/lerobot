@@ -1,6 +1,6 @@
 # G1 Dex3 model registry
 
-Generated 2026-10-15 04:17 UTC by `examples/g1_dex3_training/model_registry.py` (regenerate it after training or deleting runs; the CSV next to this file has the same rows).
+Generated 2026-10-15 10:36 UTC by `examples/g1_dex3_training/model_registry.py` (regenerate it after training or deleting runs; the CSV next to this file has the same rows).
 Paths are host paths under `/mnt/data01/jhkim/model_weight/g1_dex3_20260922` on the named host.
 
 ## combined_261009
@@ -66,6 +66,7 @@ Paths are host paths under `/mnt/data01/jhkim/model_weight/g1_dex3_20260922` on 
 | ------------------------------- | ------ | ------ | ------------------------------------ | --------- | ------ | ---- | ---------------- | ---- | -------- | ---------------- | -------------------------------------------------- |
 | `groot_handover261014_he_full`  | groot  | 78D    | 512,000 (32 × 16000, accum 1)        | 2         | 016000 | 0    | 2026-10-14 12:07 | 12.6 | h100_174 | yes              | mncai/g1-wbt-handover-groot-handover261014-he-full |
 | `groot_handover261014_he_smoke` | groot  | 78D    | 640 (32 × 20, accum 1)               | 2         | 000020 | 0    | 2026-10-14 09:45 | 12.6 | h100_174 |                  |                                                    |
+| `groot_handover261015_he_full`  | groot  | 78D    | 512,000 (32 × 16000, accum 1)        | 3         | 016000 | 0    | 2026-10-15 09:49 | 12.6 | h100_174 | yes              | mncai/g1-wbt-handover-groot-handover261015-he-full |
 
 ## humanoid_everyday_g1_20260923
 
