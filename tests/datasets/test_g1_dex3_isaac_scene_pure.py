@@ -39,3 +39,22 @@ def test_effort_limits_reorders_mujoco_actuators_to_body_then_dex3():
     assert out.shape == (len(order),)
     for name, v in zip(order, out):
         assert isc.MUJOCO_ACTUATORS[int(v)] == name
+
+
+def test_quat_wxyz_to_matrix():
+    np.testing.assert_allclose(isc.quat_wxyz_to_matrix([1, 0, 0, 0]), np.eye(3), atol=1e-12)
+    r = isc.quat_wxyz_to_matrix([np.cos(np.pi / 4), 0, 0, np.sin(np.pi / 4)])  # +90 deg about z
+    np.testing.assert_allclose(r @ [1, 0, 0], [0, 1, 0], atol=1e-12)
+
+
+def test_make_obs_has_every_bridge_key_and_splits_hands():
+    nb, nh = len(isc.BODY), len(isc.DEX3_MOTORS)
+    state = {"q": np.arange(nb + nh, dtype=float), "dq": np.zeros(nb + nh), "ddq": np.zeros(nb + nh),
+             "tau": np.zeros(nb + nh), "root_pose": np.r_[0, 0, 0.79, 1, 0, 0, 0], "root_vel": np.zeros(6),
+             "root_acc": np.zeros(6), "torso_quat": np.r_[1, 0, 0, 0], "torso_vel": np.zeros(6), "time": 1.5}  # fmt: skip
+    obs = isc.make_obs(state)
+    for k in ("body_q", "body_dq", "body_ddq", "body_tau_est", "floating_base_pose", "floating_base_vel",
+              "floating_base_acc", "secondary_imu_quat", "secondary_imu_vel", "left_hand_q", "left_hand_dq",
+              "right_hand_q", "right_hand_dq", "time"):  # fmt: skip
+        assert k in obs, k
+    assert obs["body_q"].shape == (nb,) and obs["left_hand_q"][0] == nb and obs["right_hand_q"][0] == nb + 7

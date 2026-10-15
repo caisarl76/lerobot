@@ -23,6 +23,7 @@ p.add_argument("--seconds", type=float, default=60.0)
 p.add_argument("--stand-z", type=float, default=isc.STAND_Z)
 p.add_argument("--device", default="cpu", help="physics device: cpu (default, test 0a) or cuda:0")
 p.add_argument("--no-render", action="store_true", help="diagnostic: camera never rendered")
+p.add_argument("--profile", action="store_true", help="diagnostic: cProfile the step loop into OUT/profile.txt")
 a = p.parse_args()
 
 try:  # Kit keeps the process alive after an exception or app.close(): always exit hard
@@ -35,12 +36,25 @@ try:  # Kit keeps the process alive after an exception or app.close(): always ex
     scene.place_table()
 
     windows, wall0, t_win, w_win = [], time.monotonic(), 0.0, time.monotonic()
+    if a.profile:
+        import cProfile
+
+        prof = cProfile.Profile()
+        prof.enable()
     while scene.t < a.seconds:
         scene.step()
         if scene.t - t_win >= 1.0 - 1e-9:
             now = time.monotonic()
             windows.append({"t": round(scene.t, 3), "rtf": round((scene.t - t_win) / (now - w_win), 3)})
             t_win, w_win = scene.t, now
+    if a.profile:
+        import io
+        import pstats
+
+        prof.disable()
+        buf = io.StringIO()
+        pstats.Stats(prof, stream=buf).sort_stats("cumulative").print_stats(40)
+        (a.out / "profile.txt").write_text(buf.getvalue())
     steady = [w["rtf"] for w in windows if w["t"] > 2.0]
     feet = int((scene.feet.data.net_forces_w[0].norm(dim=-1) > 1.0).sum())
     result = {

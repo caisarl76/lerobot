@@ -102,6 +102,13 @@ class Scene:
         if getattr(self.env, "fall", False):
             self.fall.latch(f"pelvis below 0.2 m at t {self.t:.3f} s (simulator reset the robot)")
 
+    @property
+    def bridge(self):
+        return self.env.unitree_bridge
+
+    def key(self, name: str) -> None:
+        self.sim.handle_keyboard_button(name)
+
     def mark(self, event: str) -> None:
         print(f"[{self.t:8.3f}] {event}", flush=True)
         with open(self.out / "events.txt", "a") as f:

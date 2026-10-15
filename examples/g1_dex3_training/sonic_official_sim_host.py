@@ -13,6 +13,7 @@ Usage (in jihun/sonic-vla-sim, cwd gear_sonic_deploy): python sonic_official_sim
 """
 
 import contextlib
+import json
 import os
 import pty
 import subprocess
@@ -21,7 +22,18 @@ import threading
 import time
 from pathlib import Path
 
-from sim_scene import Scene
+import numpy as np
+
+SIM = os.environ.get("SIM", "mujoco")
+if SIM == "isaac":
+    from isaac_scene import GEAR_ROOT, Scene
+
+    sys.argv[1:3] = [str(Path(a).resolve()) for a in sys.argv[1:3]]  # OUT, GATE before the chdir
+    os.chdir(GEAR_ROOT / "gear_sonic_deploy")  # the deploy paths below are relative to gear_sonic_deploy
+elif SIM == "mujoco":
+    from sim_scene import Scene
+else:
+    raise SystemExit(f"SIM must be mujoco or isaac, not {SIM!r}")
 from wbc_common import read_done
 
 OUT, GATE = Path(sys.argv[1]), Path(sys.argv[2])
@@ -71,7 +83,7 @@ def seen(pattern):
 def log_hand_gains(when):
     """The Dex3 kp/kd the deploy's last hand commands carry (spec test 8: expected 1.5 / 0.1 on all 14 motors)."""
     try:
-        br = scene.env.unitree_bridge
+        br = scene.bridge
         cmds = [c for cmd in (br.left_hand_cmd, br.right_hand_cmd) for c in cmd.motor_cmd]
         kp, kd = sorted({round(float(c.kp), 3) for c in cmds}), sorted({round(float(c.kd), 3) for c in cmds})
         scene.mark(f"hand gains {when}: kp {kp} kd {kd}")
@@ -99,12 +111,12 @@ try:
             scene.view["phase"] = "planner mode, hung"
         if t_control is not None and "band" not in steps and t >= t_control + 4:
             steps["band"] = t
-            scene.sim.handle_keyboard_button("9")
+            scene.key("9")
             scene.mark("sim key '9': band released")
             scene.view["phase"] = "band released"
         if "band" in steps and "reset" not in steps and t >= steps["band"] + 1:
             steps["reset"] = t
-            scene.sim.handle_keyboard_button("backspace")
+            scene.key("backspace")
             scene.mark("sim key 'Backspace': reset onto ground")
             scene.view["phase"] = "settling on ground"
         if "reset" in steps and t_settled is None and t >= steps["reset"] + 5:
@@ -145,4 +157,13 @@ finally:
         os.write(master, b"o")
     time.sleep(0.5)
     proc.terminate()
+    lag = getattr(scene, "lag_ms", None)
+    if lag:
+        lag_a = np.asarray(lag)
+        stats = {"max_ms": float(lag_a.max()), "p99_ms": float(np.percentile(lag_a, 99)),
+                 "over_20ms": int((lag_a > 20).sum()), "steps": int(lag_a.size)}  # fmt: skip
+        scene.mark(f"lag vs wall clock: {stats}")
+        (OUT / "lag.json").write_text(json.dumps(stats))
     scene.close(reason, detail)
+    if SIM == "isaac":
+        os._exit(1 if reason in ("error", "timeout") else 0)  # Kit can hang at interpreter exit
