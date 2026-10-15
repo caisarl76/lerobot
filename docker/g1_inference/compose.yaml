@@ -26,7 +26,7 @@
 # Host needs the NVIDIA container toolkit and a driver for CUDA 12.8 (>= 570).
 
 services:
-  server:
+  server: &server
     build: {context: ../.., dockerfile: docker/g1_inference/Dockerfile, target: server}
     image: ${REGISTRY:-}g1-inference-server:latest
     command: >-
@@ -59,16 +59,18 @@ services:
   #   CLIENT_ARGS="--policy-fps 50 --hold-rest-s 1.5 --max-token-step 0.05"   (the s03 settings; a repeated flag wins)
   # Rebuild with another checkpoint: BAKE_MODEL_DIR=<pretrained_model dir>, BAKE_HF_CACHE=<HF cache with its Hub files>.
   server-wbt-groot:
-    extends: server
+    <<: *server  # plain YAML merge: the keys below replace the server's (no mounts)
     build:
+      context: ../..
+      dockerfile: docker/g1_inference/Dockerfile
       target: server-baked
       additional_contexts:
         model: ${BAKE_MODEL_DIR:-/mnt/data/jihun/g1_models/wbt_groot_he_full/pretrained_model}
         hf: ${BAKE_HF_CACHE:-/mnt/data/jihun/g1_inference_image/hf_wbt_groot}
     image: ${REGISTRY:-}g1-inference-server:wbt-groot-he
     command: --policy-path /opt/model --port 5560 --backbone-dtype bfloat16 --noise-scale 0
-    volumes: !reset []
-    environment: !override [USER=lerobot]
+    volumes: []
+    environment: [USER=lerobot]
 
   client:
     build: {context: ../.., dockerfile: docker/g1_inference/Dockerfile, target: client}
