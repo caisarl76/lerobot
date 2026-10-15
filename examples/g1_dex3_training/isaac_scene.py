@@ -3,7 +3,8 @@ g1_29dof_with_hand.urdf (the twin of gear_sonic's MuJoCo model), the optional ta
 camera (D435 mount on torso_link, 640 x 480 at 30 Hz, published like g1_head_camera_server.py as "egocentric").
 
 The SONIC deploy talks to this scene exactly as to gear_sonic's MuJoCo sim: Unitree DDS on lo through gear_sonic's
-UnitreeSdk2Bridge (rt/lowcmd, rt/lowstate, rt/dex3/*, rt/secondary_imu, rt/odostate). Torques: tau = tau_ff +
+UnitreeSdk2Bridge (rt/lowcmd, rt/lowstate, rt/dex3/*, rt/secondary_imu, rt/odostate), which runs in a separate
+process (dds_publisher.py) fed through shared memory. Torques: tau = tau_ff +
 kp (q* - q) + kd (dq* - dq) from the latest commands, clipped to gear_sonic's motor effort limits, applied in effort
 mode at dt 0.005 s, as gear_sonic base_sim does. Physics runs on the CPU (PhysX): on the workstation RTX 3060 GPU
 physics for this single robot ran at 0.49x real time, CPU physics at 1.37x (spec test 0a).
@@ -18,17 +19,21 @@ import base64
 import contextlib
 import json
 import os
+import subprocess
 import sys
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 
 try:
+    from .dds_publisher import NB, NH, Exchange, make_obs  # noqa: F401 - make_obs re-exported
     from .sim_scene import BODY, HANDS, REC_KEYS
     from .wbc_common import FallDetector, write_termination
 except ImportError:
+    from dds_publisher import NB, NH, Exchange, make_obs  # noqa: F401 - make_obs re-exported
     from sim_scene import BODY, HANDS, REC_KEYS
     from wbc_common import FallDetector, write_termination
 
@@ -46,7 +51,8 @@ DEX3 = ("thumb_0", "thumb_1", "thumb_2", "middle_0", "middle_1", "index_0", "ind
 DEX3_MOTORS = [f"{s}_hand_{j}_joint" for s in ("left", "right") for j in DEX3]
 # gear_sonic g1_29dof_with_hand.xml actuator order, which motor_effort_limit_list follows
 MUJOCO_ACTUATORS = BODY[:15] + BODY[15:22] + DEX3_MOTORS[:7] + BODY[22:] + DEX3_MOTORS[7:]
-HAND_PERM = [DEX3_MOTORS.index(n) for n in HANDS]  # bridge order -> dataset order (sim_scene records HANDS)
+HAND_PERM = [DEX3_MOTORS.index(n) for n in HANDS]
+assert (NB, NH) == (len(BODY), len(DEX3_MOTORS) // 2), "dds_publisher layout differs from BODY / DEX3_MOTORS"  # bridge order -> dataset order (sim_scene records HANDS)
 CAMERA_KEYS = ("parent", "pos", "rot_wxyz", "width", "height", "fx", "fy", "cx", "cy")
 
 
@@ -81,20 +87,6 @@ def quat_wxyz_to_matrix(q) -> np.ndarray:
         [2 * (x * y + w * z), 1 - 2 * (x * x + z * z), 2 * (y * z - w * x)],
         [2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y)],
     ])  # fmt: skip
-
-
-def make_obs(s: dict) -> dict:
-    """UnitreeSdk2Bridge.PublishLowState input from plain arrays (joints in BODY + DEX3_MOTORS order; quaternions
-    w, x, y, z; velocities [lin 3, ang 3])."""
-    nb, nh = len(BODY), len(DEX3_MOTORS) // 2
-    obs = {
-        "body_q": s["q"][:nb], "body_dq": s["dq"][:nb], "body_ddq": s["ddq"][:nb], "body_tau_est": s["tau"][:nb],
-        "floating_base_pose": s["root_pose"], "floating_base_vel": s["root_vel"], "floating_base_acc": s["root_acc"],
-        "secondary_imu_quat": s["torso_quat"], "secondary_imu_vel": s["torso_vel"], "time": s["time"],
-    }  # fmt: skip
-    for side, sl in (("left", slice(nb, nb + nh)), ("right", slice(nb + nh, nb + 2 * nh))):
-        obs[f"{side}_hand_q"], obs[f"{side}_hand_dq"] = s["q"][sl], s["dq"][sl]
-    return obs
 
 
 class Scene:
@@ -206,7 +198,7 @@ class Scene:
         self.lag_ms: list[float] = []
         self.pub = zmq.Context().socket(zmq.PUB)
         self.pub.bind(f"tcp://*:{camera_port}")
-        self.bridge = self._start_dds() if dds else None
+        self.dds, self.dds_proc = self._start_dds() if dds else (None, None)
 
     def _check_joints(self) -> None:
         names = self.robot.joint_names
@@ -227,26 +219,39 @@ class Scene:
         return effort_limits(self.config["motor_effort_limit_list"])
 
     def _start_dds(self):
-        """The bridge on DDS domain / interface of the wbc yaml (0, lo), as gear_sonic's simulator_factory."""
-        import ctypes
-
-        ctypes.CDLL(str(CYCLONEDDS_LIB / "libddsc.so.0"), mode=ctypes.RTLD_GLOBAL)  # before the system libddsc
-        from gear_sonic.utils.mujoco_sim.unitree_sdk2py_bridge import UnitreeSdk2Bridge
-        from unitree_sdk2py.core.channel import ChannelFactoryInitialize
-
-        ChannelFactoryInitialize(self.config["DOMAIN_ID"], self.config["INTERFACE"])
-        return UnitreeSdk2Bridge(self.config)
+        """dds_publisher.py on the wbc yaml's DDS domain / interface (0, lo), as gear_sonic's simulator_factory."""
+        cfg = {**self.config, "GEAR_ROOT": str(GEAR_ROOT), "CYCLONEDDS_LIB": str(CYCLONEDDS_LIB)}
+        cfg_path = self.out / "dds_config.json"
+        cfg_path.write_text(json.dumps(cfg, default=str))
+        ex = Exchange()
+        log = open(self.out / "dds_publisher.log", "w")  # noqa: SIM115 - the child writes it for the whole run
+        proc = subprocess.Popen(
+            [sys.executable, "-u", str(Path(__file__).with_name("dds_publisher.py")), *ex.names, str(cfg_path),
+             str(os.getpid())], stdout=log, stderr=subprocess.STDOUT,
+        )  # fmt: skip
+        deadline = time.monotonic() + 30
+        while "up:" not in (self.out / "dds_publisher.log").read_text():
+            if proc.poll() is not None or time.monotonic() > deadline:
+                proc.kill()
+                ex.close(unlink=True)
+                raise SystemExit(f"dds_publisher did not start; see {self.out / 'dds_publisher.log'}")
+            time.sleep(0.1)
+        return ex, proc
 
     def _bridge_cmd(self) -> None:
-        """self.cmd from the latest rt/lowcmd and Dex3 commands (zero until the deploy has sent any)."""
-        br = self.bridge
-        if br is None or not br.cmd_received():
-            return
-        nb, nh = len(BODY), len(DEX3_MOTORS) // 2
-        motors = [br.low_cmd.motor_cmd[i] for i in range(nb)]
-        motors += [br.left_hand_cmd.motor_cmd[i] for i in range(nh)] + [br.right_hand_cmd.motor_cmd[i] for i in range(nh)]
-        for k in ("q", "dq", "kp", "kd", "tau"):
-            self.cmd[k] = np.array([getattr(m, k) for m in motors], dtype=float)
+        """self.cmd from the deploy's latest commands (zero until it has sent any)."""
+        if self.dds is not None and (c := self.dds.read_cmd()) is not None:
+            self.cmd = c
+
+    @property
+    def bridge(self):
+        """Read-only view of the latest Dex3 commands for the host's gain log (the bridge itself is in the
+        publisher process)."""
+        c = self.cmd
+        side = [[SimpleNamespace(kp=c["kp"][i], kd=c["kd"][i]) for i in range(NB + k * NH, NB + (k + 1) * NH)]
+                for k in (0, 1)]  # fmt: skip
+        return SimpleNamespace(left_hand_cmd=SimpleNamespace(motor_cmd=side[0]),
+                               right_hand_cmd=SimpleNamespace(motor_cmd=side[1]))  # fmt: skip
 
     def joint_state(self) -> tuple[np.ndarray, np.ndarray]:
         ids = self.body_ids + self.hand_ids
@@ -288,8 +293,8 @@ class Scene:
             self.sim.step(render=render)
             self.scene.update(DT)
             self.t += DT
-            if self.bridge is not None:
-                self.bridge.PublishLowState(make_obs(self._state()))
+            if self.dds is not None:
+                self.dds.write_state(self._state())
         if render:
             self.next_frame += 1 / FPS
             self._publish_frame()
@@ -411,3 +416,9 @@ class Scene:
             np.savez_compressed(self.out / "sim_state.npz", **{k: np.array(v) for k, v in self.rec.items()})
         write_termination(self.out, reason, self.view["phase"], detail, **fields)
         self.mark(f"termination: {reason} {detail}")
+        if self.dds is not None:
+            self.dds.set_stop()
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                self.dds_proc.wait(timeout=2)
+            self.dds_proc.kill()
+            self.dds.close(unlink=True)
