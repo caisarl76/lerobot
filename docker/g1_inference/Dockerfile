@@ -31,3 +31,11 @@ COPY . .
 RUN uv sync --locked --no-cache $(printf -- '--extra %s ' $EXTRAS) && uv pip install --no-cache msgpack
 WORKDIR /lerobot/examples/g1_dex3_training
 ENTRYPOINT ["python", "-u", "sonic_policy_server.py"]
+
+# server with one checkpoint baked in: no mounts, runs offline. Build contexts: `model` = the checkpoint's
+# pretrained_model dir, `hf` = an HF cache holding only the Hub files loading it downloads (compose server-wbt-groot)
+FROM server AS server-baked
+# --chmod: checkpoints are often saved mode 600; the server runs as the host user, not root
+COPY --from=model --chmod=755 . /opt/model
+COPY --from=hf --chmod=755 hub /opt/hf/hub
+ENV HF_HOME=/opt/hf HF_HUB_OFFLINE=1

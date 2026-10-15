@@ -21,12 +21,13 @@
 # Env: MODEL_DIR (checkpoint dir), POLICY_SUBDIR (pretrained_model; pretrained_model_ema for Pi0.5), GPU, PORT,
 #      SERVER_ARGS (default GR00T reference "--backbone-dtype bfloat16 --noise-scale 0"; set empty for other
 #      policies), HF_CACHE (tokenizers / base backbones the checkpoint references; pass HF_TOKEN for private repos),
+#      HF_HUB_OFFLINE=1 (no internet: load everything from MODEL_DIR + HF_CACHE; or use server-wbt-groot),
 #      POLICY_HOST, DEPLOY_HOST, CAMERA_HOST, TASK, SESSION, TRIALS, MAX_S, BLEND_S, OUT_DIR,
 #      CLIENT_ARGS (extra streamer flags, e.g. "--policy-fps 50" for the G1 WBT models), HOST_UID/HOST_GID.
 # Host needs the NVIDIA container toolkit and a driver for CUDA 12.8 (>= 570).
 
 services:
-  server:
+  server: &server
     build: {context: ../.., dockerfile: docker/g1_inference/Dockerfile, target: server}
     image: ${REGISTRY:-}g1-inference-server:latest
     command: >-
@@ -38,7 +39,7 @@ services:
       - ${HF_CACHE:-~/.cache/huggingface}:/hf
     # USER: the host uid has no passwd entry (torch calls getpass.getuser); TORCH_HOME: keep torch hub weights (ACT's
     # ResNet) in the mounted cache so later starts work offline
-    environment: [HF_TOKEN, USER=lerobot, TORCH_HOME=/hf/torch]
+    environment: [HF_TOKEN, HF_HUB_OFFLINE, USER=lerobot, TORCH_HOME=/hf/torch]
     user: ${HOST_UID:-1000}:${HOST_GID:-1000}
     mem_limit: 32g  # loading an fp32 checkpoint on the CPU first can otherwise exhaust host RAM
     memswap_limit: 32g
@@ -52,6 +53,25 @@ services:
       start_period: 15m
       start_interval: 10s
     restart: unless-stopped
+
+  # Self-contained: the WBT handover GR00T (HE init, 41 episodes; 5/5 on the robot, session s03) and the Hub files
+  # it loads are in the image, so no MODEL_DIR / HF_CACHE and no internet. Only GPU and PORT apply. Robot side (50 Hz):
+  #   TASK="pick drink bottle from the table and handover" MAX_S=30 \
+  #   CLIENT_ARGS="--policy-fps 50 --hold-rest-s 1.5 --max-token-step 0.05"   (the s03 settings; a repeated flag wins)
+  # Rebuild with another checkpoint: BAKE_MODEL_DIR=<pretrained_model dir>, BAKE_HF_CACHE=<HF cache with its Hub files>.
+  server-wbt-groot:
+    <<: *server  # plain YAML merge: the keys below replace the server's (no mounts)
+    build:
+      context: ../..
+      dockerfile: docker/g1_inference/Dockerfile
+      target: server-baked
+      additional_contexts:
+        model: ${BAKE_MODEL_DIR:-/mnt/data/jihun/g1_models/wbt_groot_he_full/pretrained_model}
+        hf: ${BAKE_HF_CACHE:-/mnt/data/jihun/g1_inference_image/hf_wbt_groot}
+    image: ${REGISTRY:-}g1-inference-server:wbt-groot-he
+    command: --policy-path /opt/model --port 5560 --backbone-dtype bfloat16 --noise-scale 0
+    volumes: []
+    environment: [USER=lerobot]
 
   client:
     build: {context: ../.., dockerfile: docker/g1_inference/Dockerfile, target: client}
