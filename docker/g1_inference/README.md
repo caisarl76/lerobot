@@ -65,7 +65,7 @@ for i in range(5):
 "
 ```
 
-Expect `(N, 78)` chunks, all finite. After the first call each chunk should take **well under 0.4 s**
+Expect `(40, 78)` chunks, all finite. After the first call each chunk should take **well under 0.4 s**
 (0.2 s on an RTX 3060). The robot asks for a new chunk every 0.4 s, so slower than that is too slow. Use a GPU
 that is not also driving a desktop.
 
