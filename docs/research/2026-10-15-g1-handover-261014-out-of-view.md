@@ -124,7 +124,7 @@ Findings:
 - **Label noise:** eps 0 and 9 had the same empty tail with different labels; resolved on 10-15 by setting ep 0
   to Failed.
 
-## 6. Plan: small Dex3 hand + bottle detector (approved direction, not started)
+## 6. Plan: small Dex3 hand + bottle detector (started 10-15; waiting for labels)
 
 Goal: a reliable per-frame hand/bottle signal on our ego view. Combined with the arm phase from proprioception,
 it should flag the reach and handover-tail exclusions. If it does, it becomes the scorer of the visualizer
@@ -163,3 +163,24 @@ out-of-view filter (Phase 2, which needs its own spec and review).
      produce suggestions for review only.
    - If only (a) passes: use the detector for a recording-time warning (hand out of view while the arm moves)
      instead of auto-annotation.
+
+### Status and commands (10-15)
+
+- Steps 1–2 are ready.
+  - `hand_detector.py sample` picked 457 frames: 385 for training and 72 for testing, split by episode. 93 of
+    them come from excluded intervals or out-of-frame Failed episodes.
+  - Frame selection used the reviewer's labels instead of GPT-5.6-Sol answers, so no frames went to Genon.
+  - Data: `/mnt/data/jihun/datasets/G1_WBT_GR00T/dex3_hand_detector` (`images/`, `frames.json`).
+- Labeling: `start_label_studio.sh` in that folder starts Label Studio at <http://127.0.0.1:8090> (localhost only,
+  tmux session `hand-labels`). Project 1 holds the 457 tasks. The login is in `label_studio/.login`, which only
+  the owner can read.
+- Steps 3–4: training and evaluation are implemented and pass a smoke test with fake boxes. Once the labels are
+  in, run from `examples/g1_dex3_training/`:
+
+```bash
+uv run python hand_detector.py labels /mnt/data/jihun/datasets/G1_WBT_GR00T/dex3_hand_detector   # Label Studio -> labels.json
+uv run python hand_detector.py train  /mnt/data/jihun/datasets/G1_WBT_GR00T/dex3_hand_detector 30
+uv run python hand_detector.py eval   /mnt/data/jihun/datasets/G1_WBT_GR00T/dex3_hand_detector
+```
+
+Step 4(b) (detector × arm activity against the reviewer's exclusions) is added after 4(a) passes.
