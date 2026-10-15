@@ -53,6 +53,23 @@ services:
       start_interval: 10s
     restart: unless-stopped
 
+  # Self-contained: the WBT handover GR00T (HE init, 41 episodes; 5/5 on the robot, session s03) and the Hub files
+  # it loads are in the image, so no MODEL_DIR / HF_CACHE and no internet. Only GPU and PORT apply. Robot side (50 Hz):
+  #   TASK="pick drink bottle from the table and handover" MAX_S=30 \
+  #   CLIENT_ARGS="--policy-fps 50 --hold-rest-s 1.5 --max-token-step 0.05"   (the s03 settings; a repeated flag wins)
+  # Rebuild with another checkpoint: BAKE_MODEL_DIR=<pretrained_model dir>, BAKE_HF_CACHE=<HF cache with its Hub files>.
+  server-wbt-groot:
+    extends: server
+    build:
+      target: server-baked
+      additional_contexts:
+        model: ${BAKE_MODEL_DIR:-/mnt/data/jihun/g1_models/wbt_groot_he_full/pretrained_model}
+        hf: ${BAKE_HF_CACHE:-/mnt/data/jihun/g1_inference_image/hf_wbt_groot}
+    image: ${REGISTRY:-}g1-inference-server:wbt-groot-he
+    command: --policy-path /opt/model --port 5560 --backbone-dtype bfloat16 --noise-scale 0
+    volumes: !reset []
+    environment: !override [USER=lerobot]
+
   client:
     build: {context: ../.., dockerfile: docker/g1_inference/Dockerfile, target: client}
     image: ${REGISTRY:-}g1-inference-client:latest
