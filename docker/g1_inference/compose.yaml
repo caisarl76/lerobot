@@ -1,0 +1,89 @@
+# G1 SONIC inference pipeline: `server` = VLA policy server on one GPU, `client` = the robot-side streamer
+# (sonic_policy_streamer.py) that runs the evaluation session against the NVIDIA deploy and the head camera.
+# Same protocol and defaults as examples/g1_dex3_training/g1_groot_real_run.sh `server` / `session`.
+#
+# Build (repo root):  docker compose -f docker/g1_inference/compose.yaml build
+# Ship:  REGISTRY=myregistry/ docker compose -f docker/g1_inference/compose.yaml build && ... push
+#        or: docker save g1-inference-server | ssh HOST docker load
+#
+# The client is optional: the PC2 runs the same streamer from ~/g1_sonic_eval/.venv (g1_groot_real_run.sh sync /
+# session; point it at the new host via WS/PORT there, i.e. --policy-server tcp://HOST:PORT). Use the image on a
+# robot PC without that venv (arm64: docker buildx build --platform linux/arm64 -f docker/g1_inference/Dockerfile
+# --target client -t g1-inference-client .). Keep the streamer on the robot: its 50 Hz token stream and watchdogs
+# should not cross the LAN.
+#
+# GPU host:   MODEL_DIR=/mnt/data/jihun/g1_models/he_groot_sonic78sonicstate_ho5_official_full GPU=1 \
+#               docker compose -f docker/g1_inference/compose.yaml up -d --wait server   # waits for the warm-up
+# Robot side: POLICY_HOST=192.168.0.62 SESSION=s01_he_groot_laptop TASK="close a laptop g1" \
+#               docker compose -f docker/g1_inference/compose.yaml run --rm client
+#             (operator keys as in g1_groot_real_run.sh session; sessions land in $OUT_DIR/sessions)
+#
+# Env: MODEL_DIR (checkpoint dir), POLICY_SUBDIR (pretrained_model; pretrained_model_ema for Pi0.5), GPU, PORT,
+#      SERVER_ARGS (default GR00T reference "--backbone-dtype bfloat16 --noise-scale 0"; set empty for other
+#      policies), HF_CACHE (tokenizers / base backbones the checkpoint references; pass HF_TOKEN for private repos),
+#      HF_HUB_OFFLINE=1 (no internet: load everything from MODEL_DIR + HF_CACHE; or use server-wbt-groot),
+#      POLICY_HOST, DEPLOY_HOST, CAMERA_HOST, TASK, SESSION, TRIALS, MAX_S, BLEND_S, OUT_DIR,
+#      CLIENT_ARGS (extra streamer flags, e.g. "--policy-fps 50" for the G1 WBT models), HOST_UID/HOST_GID.
+# Host needs the NVIDIA container toolkit and a driver for CUDA 12.8 (>= 570).
+
+services:
+  server: &server
+    build: {context: ../.., dockerfile: docker/g1_inference/Dockerfile, target: server}
+    image: ${REGISTRY:-}g1-inference-server:latest
+    command: >-
+      --policy-path /model/${POLICY_SUBDIR:-pretrained_model} --port 5560
+      ${SERVER_ARGS---backbone-dtype bfloat16 --noise-scale 0}
+    ports: ["${PORT:-5560}:5560"]
+    volumes:
+      - ${MODEL_DIR:-/set/MODEL_DIR}:/model:ro
+      - ${HF_CACHE:-~/.cache/huggingface}:/hf
+    # USER: the host uid has no passwd entry (torch calls getpass.getuser); TORCH_HOME: keep torch hub weights (ACT's
+    # ResNet) in the mounted cache so later starts work offline
+    environment: [HF_TOKEN, HF_HUB_OFFLINE, USER=lerobot, TORCH_HOME=/hf/torch]
+    user: ${HOST_UID:-1000}:${HOST_GID:-1000}
+    mem_limit: 32g  # loading an fp32 checkpoint on the CPU first can otherwise exhaust host RAM
+    memswap_limit: 32g
+    deploy:
+      resources:
+        reservations:
+          devices: [{driver: nvidia, device_ids: ["${GPU:-0}"], capabilities: [gpu]}]
+    healthcheck:  # "info" request; the start period covers loading + warm-up
+      test: ["CMD", "python", "-c", "import zmq, msgpack; s = zmq.Context().socket(zmq.REQ); s.setsockopt(zmq.RCVTIMEO, 5000); s.setsockopt(zmq.LINGER, 0); s.connect('tcp://localhost:5560'); s.send(msgpack.packb({'op': 'info'})); s.recv()"]
+      interval: 30s
+      start_period: 15m
+      start_interval: 10s
+    restart: unless-stopped
+
+  # Self-contained: the WBT handover GR00T (HE init, 41 episodes; 5/5 on the robot, session s03) and the Hub files
+  # it loads are in the image, so no MODEL_DIR / HF_CACHE and no internet. Only GPU and PORT apply. Robot side (50 Hz):
+  #   TASK="pick drink bottle from the table and handover" MAX_S=30 \
+  #   CLIENT_ARGS="--policy-fps 50 --hold-rest-s 1.5 --max-token-step 0.05"   (the s03 settings; a repeated flag wins)
+  # Rebuild with another checkpoint: BAKE_MODEL_DIR=<pretrained_model dir>, BAKE_HF_CACHE=<HF cache with its Hub files>.
+  server-wbt-groot:
+    <<: *server  # plain YAML merge: the keys below replace the server's (no mounts)
+    build:
+      context: ../..
+      dockerfile: docker/g1_inference/Dockerfile
+      target: server-baked
+      additional_contexts:
+        model: ${BAKE_MODEL_DIR:-/mnt/data/jihun/g1_models/wbt_groot_he_full/pretrained_model}
+        hf: ${BAKE_HF_CACHE:-/mnt/data/jihun/g1_inference_image/hf_wbt_groot}
+    image: ${REGISTRY:-}g1-inference-server:wbt-groot-he
+    command: --policy-path /opt/model --port 5560 --backbone-dtype bfloat16 --noise-scale 0
+    volumes: []
+    environment: [USER=lerobot]
+
+  client:
+    build: {context: ../.., dockerfile: docker/g1_inference/Dockerfile, target: client}
+    image: ${REGISTRY:-}g1-inference-client:latest
+    command: >-
+      --policy-server tcp://${POLICY_HOST:-localhost}:${PORT:-5560} --images zmq
+      --camera-host ${CAMERA_HOST:-localhost} --deploy-host ${DEPLOY_HOST:-localhost} --task "${TASK:-close a laptop g1}"
+      --start planner --end planner --duration-s ${MAX_S:-120} --replan-s 0.4 --max-token-step 0.1
+      --chunk-blend-s ${BLEND_S:-0.3} --trials ${TRIALS:-10} --session-dir /out/sessions/${SESSION:-session}
+      ${CLIENT_ARGS:-}
+    network_mode: host  # binds the deploy's command/pose port 5556; reaches the deploy state (5557) and camera (5555)
+    stdin_open: true  # operator Enter / verdict keys
+    tty: true
+    volumes: ["${OUT_DIR:-~/g1_inference_out}:/out"]
+    user: ${HOST_UID:-1000}:${HOST_GID:-1000}

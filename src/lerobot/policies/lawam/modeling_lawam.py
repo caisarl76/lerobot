@@ -16,14 +16,16 @@
 
 from __future__ import annotations
 
+import logging
 from collections import deque
 from typing import TYPE_CHECKING, Any
 
 import torch
+from safetensors.torch import load_file
 from torch import Tensor, nn
 
 from lerobot.policies.pretrained import PreTrainedPolicy
-from lerobot.policies.utils import populate_queues
+from lerobot.policies.utils import log_model_loading_keys, populate_queues
 from lerobot.utils.constants import ACTION
 from lerobot.utils.import_utils import (
     _diffusers_available,
@@ -210,7 +212,31 @@ class LaWAMPolicy(PreTrainedPolicy):
         """Stage LaWAM checkpoint loading on CPU to avoid duplicate accelerator weights."""
         del map_location
         model.to("cpu")
-        return super()._load_as_safetensor(model, model_file, "cpu", strict)
+        prefixes = tuple(model.config.reinit_modules or ())
+        if not prefixes:
+            return super()._load_as_safetensor(model, model_file, "cpu", strict)
+
+        state_dict = load_file(model_file, device="cpu")
+        current = model.state_dict()
+        mismatched = [k for k, v in state_dict.items() if k in current and v.shape != current[k].shape]
+        not_allowed = [k for k in mismatched if not k.startswith(prefixes)]
+        if not_allowed:
+            raise ValueError(f"LaWAM checkpoint shape mismatch outside `reinit_modules`: {not_allowed}.")
+        for key in mismatched:
+            logging.warning(
+                "LaWAM reinit_modules: re-initialised %s (checkpoint %s -> model %s)",
+                key,
+                tuple(state_dict.pop(key).shape),
+                tuple(current[key].shape),
+            )
+        missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=False)
+        if strict and (set(missing_keys) - set(mismatched) or unexpected_keys):
+            raise RuntimeError(
+                f"LaWAM strict load failed: missing {sorted(set(missing_keys) - set(mismatched))}, "
+                f"unexpected {unexpected_keys}."
+            )
+        log_model_loading_keys(missing_keys, unexpected_keys)
+        return model
 
     def reset(self) -> None:
         """Clear the queued action chunk used by step-wise inference."""

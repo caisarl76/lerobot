@@ -328,12 +328,12 @@ finite 40×78 chunks from this checkpoint, median round trip 0.233 s.
 In all three sessions: chunk inference median 0.21–0.22 s, token slew limit active on 0 ticks, no watchdog stops.
 The PC2 streamer copy was re-synced after s03 (10-14 15:33 KST); the only streamer change in between is ffc8edce
 (each trial records the served checkpoint, `model`). Streamer args are otherwise identical to s03 apart from session
-dir and server port.
+dir and server port. Trials are numbered from 1 (session files `trial_000` = trial 1).
 
 | Session | When (KST) | Score (user) | Conditions |
 | ------- | ---------- | ------------ | ---------- |
 | `s05_wbt_groot_he_handover` | 10-15 14:47 | 0/1 | two bottles on the box; ran to the 30 s cap |
-| `s06_wbt_groot_he_handover` | 10-15 16:39 | 2/5 | one bottle; box rotated relative to the robot in trials 1–4; operator hands on the box in trials 2–4 |
+| `s06_wbt_groot_he_handover` | 10-15 16:39 | 2/5 | one bottle; box rotated relative to the robot in trials 2–5; operator hands on the box in trials 3–5 |
 | `s07_wbt_groot_he_handover` | 10-16 09:37 | 4/5 | one bottle; box square to the robot (as in s03); fingertips at the far box edge only |
 
 - **s05 relabelled success → fail ("dropped the object").** The robot grasped and lifted bottle A, released it on
@@ -341,17 +341,17 @@ dir and server port.
   operator's hand at 15–18 s) and the policy picked B and handed it over (22–27 s). The original files are on pc2_222 in
   `~/g1_sonic_eval/sessions/s05_wbt_groot_he_handover.orig-20261015/`.
 - **Every miss closed on air.** Peak right-hand closure (sum |q − q0| over the 7 right Dex3 joints) is 3.9–4.3 when
-  the hand stops on a bottle and 6.3–6.4 in every "grasp failed / missed" trial (s06 t2–t4, s07 t3). First close
+  the hand stops on a bottle and 6.3–6.4 in every "grasp failed / missed" trial (s06 t3–t5, s07 t4). First close
   (2.9–4.9 s) and right-arm reach (64–71°) match s03 (3.2–5.3 s, 64–70°): an aiming miss, not a control fault.
-- **s06 trials 2–3 were jerkier** (jerk p95 401 and 387 vs 221–294 elsewhere; t3 arm speed p95 3.0 rad/s and
+- **s06 trials 3–4 were jerkier** (jerk p95 401 and 387 vs 221–294 elsewhere; t4 arm speed p95 3.0 rad/s and
   19 % of arm power at 1–2 Hz vs 4–10 %). s07 is back at the s03 level (jerk p95 224–268).
-- **s07 trial 3: the bottle at the far right corner** (the farthest placement) and the hand closed early (2.9 s), short
-  of it. s03 trial 3 had a similar far-right bottle and also missed its first grasp (closure 6.28); it succeeded on a
-  regrasp at 18.4 s, while s07 trial 3 was stopped after the first miss (8.4 s).
-- **Scoring is not uniform yet:** s03 t3 counted a regrasp as success; s07 t3 was scored on the first attempt. Fix
+- **s07 trial 4: the bottle at the far right corner** (the farthest placement) and the hand closed early (2.9 s), short
+  of it. s03 trial 4 had a similar far-right bottle and also missed its first grasp (closure 6.28); it succeeded on a
+  regrasp at 18.4 s, while s07 trial 4 was stopped after the first miss (8.4 s).
+- **Scoring is not uniform yet:** s03 t4 counted a regrasp as success; s07 t4 was scored on the first attempt. Fix
   one rule (first attempt only, or any grasp within the cap) before comparing further sessions.
 - **Not separated by these trials (n = 5 per session):** box rotation and operator hands flat on the box next to the
-  bottle (both present in the s06 failures). Fingertips at the far box edge did not prevent success (s07 t0–t2, t4).
+  bottle (both present in the s06 failures). Fingertips at the far box edge did not prevent success (s07 t1–t3, t5).
   The background is not the cause: the training episodes and s06/s07 share the speckled floor; s03 was on a grey
   floor.
 - **The head camera's device node changes across reboots** (`/dev/video4` normally; `/dev/video6` after one reboot,
@@ -361,6 +361,31 @@ dir and server port.
 
 Frame sheets: `/home/jihun/work/.enpire-runtime/g1-he-predict-20261015/` (`s05-contact-sheet.jpg`,
 `s03-vs-s06-sheet.jpg`, `s07-sheet.jpg`).
+
+## Real robot, 94-episode GR00T he (2026-10-15/16)
+
+`wbt_groot_handover261015_he_full` is GR00T he trained on the 43 old episodes plus the 10-14 recording, without
+its ep 0: 94 episodes ([2026-10-15 note](2026-10-15-g1-handover-261014-out-of-view.md)). It is compared on the robot
+with `wbt_groot_he_full` (41 episodes), same task, settings and server (workstation GPU 1, noise 0, blend 0.3, slew
+0.05, `--hold-rest-s 1.5`, 30 s cap). Verdicts are the operator's; VLM failure labels (Genon `gpt-6.1-sol`, since the
+h100 Qwen was down) agreed on every episode and were reviewed in the visualizer, where the user moved both failure
+frames earlier.
+
+| Session | Model                              | Trials | Success | Failures                                                                |
+| ------- | ---------------------------------- | ------ | ------- | ----------------------------------------------------------------------- |
+| s06     | `wbt_groot_he_full` (41 ep)        | 5      | 2/5     | grasp failed / missed (trials 3–5)                                      |
+| s07     | `wbt_groot_he_full` (41 ep)        | 5      | 4/5     | grasp failed / missed (trial 4, stopped at 8.4 s; "grasp" at frame 104) |
+| s08     | `wbt_groot_handover261015_he_full` | 10     | 9/10    | did not reach the object (trial 7, ran to the cap; "reach" at frame 88) |
+
+- **94 episodes: 9/10 against 6/10 for the 41-episode model** (s06 + s07) on the 10-15/16 setup. Successful
+  s08 trials took 11–16 s.
+- **s06 → s07 is the same model:** 2/5 then 4/5, so one 5-trial session swings by 2 trials. s03 (5/5, 10-14) used the
+  same model too; with it the 41-episode model is at 11/15. Compare models at 10 trials or more.
+- s05 (10-15, one trial, `wbt_groot_he_full`) is left out: a second bottle was in the scene; the user scored it a
+  fail ("dropped the object").
+- Sessions and exports: `/mnt/data/jihun/g1_eval_sessions/s0{6,7,8}_*`; reviewed exports in
+  `_visualizer/workspace/drafts/98ad57bbb4114e41928ffc085c111ef9` (s07) and `…/5cb635dd2bc94a7db0be5957cc59302c` (s08),
+  each under `retained-dataset`.
 
 ## Incidents
 
