@@ -70,8 +70,10 @@ Risks:
   - Same dataset files on h100_174; ep 0's segment (index 43 of `_261014`) is excluded together with the
     held-out 27/35. That gives 94 training episodes and 57,284 frames, the same data as `_261015`.
   - The normalization stats still include ep 0's 828 frames (1.4 %).
-- **TODO (operator):** evaluate against `wbt_groot_he_full` (41 episodes), open-loop on the held-out eps 27/35
-  and/or as robot trials; decide whether to use 5k or 16k.
+- **Robot (10-16, session s08, 16k weights): 9/10**, against 6/10 for `wbt_groot_he_full` (41 episodes, s06 + s07)
+  on the same setup. Details in the
+  [handover note](2026-10-02-g1-wbt-handover-training.md#real-robot-94-episode-groot-he-2026-10-1516). The 5k
+  checkpoint (equal sample budget) has not been tested.
 
 ## 4. Recording command
 
