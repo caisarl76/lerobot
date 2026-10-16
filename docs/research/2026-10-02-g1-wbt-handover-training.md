@@ -319,6 +319,49 @@ ssh h100_174 'cd /mnt/data01/jhkim/model_weight/g1_dex3_20260922/g1_wbt_handover
   for f in logs/*.exit; do echo "$f=$(cat $f)"; done; grep -v "^#" queue_gpu7.txt'
 ```
 
+## Real robot, GR00T he 41 re-evaluation (2026-10-15/16)
+
+Same checkpoint and settings as s03 (`wbt_groot_he_full`, workstation GPU 1, server port 5562, noise 0, blend 0.3,
+slew 0.05, `--hold-rest-s 1.5`, `POLICY_FPS=50`, 30 s cap, task "pick drink bottle from the table and handover").
+Before s05 a prediction-only check (5 live RGB + 28D state queries from pc2_222, no command publisher) returned
+finite 40×78 chunks from this checkpoint, median round trip 0.233 s.
+In all three sessions: chunk inference median 0.21–0.22 s, token slew limit active on 0 ticks, no watchdog stops.
+The PC2 streamer copy was re-synced after s03 (10-14 15:33 KST); the only streamer change in between is ffc8edce
+(each trial records the served checkpoint, `model`). Streamer args are otherwise identical to s03 apart from session
+dir and server port. Trials are numbered from 1 (session files `trial_000` = trial 1).
+
+| Session | When (KST) | Score (user) | Conditions |
+| ------- | ---------- | ------------ | ---------- |
+| `s05_wbt_groot_he_handover` | 10-15 14:47 | 0/1 | two bottles on the box; ran to the 30 s cap |
+| `s06_wbt_groot_he_handover` | 10-15 16:39 | 2/5 | one bottle; box rotated relative to the robot in trials 2–5; operator hands on the box in trials 3–5 |
+| `s07_wbt_groot_he_handover` | 10-16 09:37 | 4/5 | one bottle; box square to the robot (as in s03); fingertips at the far box edge only |
+
+- **s05 relabelled success → fail ("dropped the object").** The robot grasped and lifted bottle A, released it on
+  seeing bottle B, and A fell to the floor. The operator then put bottle B on the box (the right hand closed near the
+  operator's hand at 15–18 s) and the policy picked B and handed it over (22–27 s). The original files are on pc2_222 in
+  `~/g1_sonic_eval/sessions/s05_wbt_groot_he_handover.orig-20261015/`.
+- **Every miss closed on air.** Peak right-hand closure (sum |q − q0| over the 7 right Dex3 joints) is 3.9–4.3 when
+  the hand stops on a bottle and 6.3–6.4 in every "grasp failed / missed" trial (s06 t3–t5, s07 t4). First close
+  (2.9–4.9 s) and right-arm reach (64–71°) match s03 (3.2–5.3 s, 64–70°): an aiming miss, not a control fault.
+- **s06 trials 3–4 were jerkier** (jerk p95 401 and 387 vs 221–294 elsewhere; t4 arm speed p95 3.0 rad/s and
+  19 % of arm power at 1–2 Hz vs 4–10 %). s07 is back at the s03 level (jerk p95 224–268).
+- **s07 trial 4: the bottle at the far right corner** (the farthest placement) and the hand closed early (2.9 s), short
+  of it. s03 trial 4 had a similar far-right bottle and also missed its first grasp (closure 6.28); it succeeded on a
+  regrasp at 18.4 s, while s07 trial 4 was stopped after the first miss (8.4 s).
+- **Scoring is not uniform yet:** s03 t4 counted a regrasp as success; s07 t4 was scored on the first attempt. Fix
+  one rule (first attempt only, or any grasp within the cap) before comparing further sessions.
+- **Not separated by these trials (n = 5 per session):** box rotation and operator hands flat on the box next to the
+  bottle (both present in the s06 failures). Fingertips at the far box edge did not prevent success (s07 t1–t3, t5).
+  The background is not the cause: the training episodes and s06/s07 share the speckled floor; s03 was on a grey
+  floor.
+- **The head camera's device node changes across reboots** (`/dev/video4` normally; `/dev/video6` after one reboot,
+  2026-10-15). `g1_groot_real_run.sh camera` hardcodes `/dev/video4`; the color node is the higher-numbered RealSense
+  pair (`/sys/class/video4linux/video*/name`, `index` 0). `~/gumin/d435_color_publisher.py` (port 5556) holds the
+  same color node and the streamer's command port, so it must be stopped before the camera server and streamer.
+
+Frame sheets: `/home/jihun/work/.enpire-runtime/g1-he-predict-20261015/` (`s05-contact-sheet.jpg`,
+`s03-vs-s06-sheet.jpg`, `s07-sheet.jpg`).
+
 ## Real robot, 94-episode GR00T he (2026-10-15/16)
 
 `wbt_groot_handover261015_he_full` is GR00T he trained on the 43 old episodes plus the 10-14 recording, without
