@@ -81,6 +81,18 @@ class StreamerCliTests(unittest.TestCase):
             self.assertEqual(r.returncode, 2)
             self.assertIn("trial 1 used another task, action_space", r.stderr)
 
+    def test_replay_trials_pass_the_argument_checks(self):
+        # sim reset test (Isaac plan test 4): judged trials of a replayed segment, no live camera
+        import tempfile
+
+        from sonic_policy_streamer import DatasetImages
+
+        with tempfile.TemporaryDirectory() as session:
+            r = cli("--trials", "2", "--session-dir", session, "--replay", "--dataset-root", session + "/none",
+                    "--episode", "0", "--duration-s", "5")  # fmt: skip
+        self.assertNotEqual(r.returncode, 2, r.stderr[-500:])
+        self.assertTrue(callable(DatasetImages.start_recording) and callable(DatasetImages.stop_recording))
+
 
 if __name__ == "__main__":
     unittest.main()

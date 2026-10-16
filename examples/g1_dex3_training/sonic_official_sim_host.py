@@ -8,6 +8,10 @@ performs the confirmed operator steps that belong to the simulator, and exchange
                                              detection armed
   streamer writes GATE/done               -> stop 5 s later; termination.json says completed only if the streamer's
                                              episode completed
+With TRIALS=n (SIM=isaac, streamer in --trials n --gate-dir mode) the first settle starts judged trials instead
+(sim_trials.run_trials, tasks/handover_bottle.json): from trial next_trial(SESSION_DIR) up to n, and the stack ends on
+a redo. One stack per trial (TRIALS=i+1, a fresh GATE_DIR each) is the evaluation mode: the deploy's planner keeps its
+heading across a reset (test 4).
 Logs robot state every 20 ms with wall-clock time, the Dex3 gains the deploy sends (events.txt), and renders a video.
 Usage (in jihun/sonic-vla-sim, cwd gear_sonic_deploy): python sonic_official_sim_host.py OUT_DIR GATE_DIR
 """
@@ -22,8 +26,6 @@ import threading
 import time
 from pathlib import Path
 
-import numpy as np
-
 SIM = os.environ.get("SIM", "mujoco")
 if SIM == "isaac":
     from isaac_scene import GEAR_ROOT, Scene
@@ -34,9 +36,15 @@ elif SIM == "mujoco":
     from sim_scene import Scene
 else:
     raise SystemExit(f"SIM must be mujoco or isaac, not {SIM!r}")
-from wbc_common import read_done  # noqa: E402 - after the SIM switch (chdir)
+from wbc_common import lag_stats, read_done  # noqa: E402 - after the SIM switch (chdir)
 
 OUT, GATE = Path(sys.argv[1]), Path(sys.argv[2])
+# TRIALS > 0: judged trials (Isaac scene), streamer in --trials --gate-dir mode
+TRIALS = int(os.environ.get("TRIALS", "0"))
+SESSION_DIR = Path(os.environ["SESSION_DIR"]) if TRIALS else None
+SEED = int(os.environ.get("SEED", "0"))
+if TRIALS and SIM != "isaac":
+    raise SystemExit("TRIALS needs SIM=isaac (sim_scene has no reset_trial)")
 GATE.mkdir(parents=True, exist_ok=True)
 DEPLOY = [
     "bash",
@@ -129,6 +137,22 @@ try:
         if t_settled is not None and "gains_streaming" not in steps and t >= t_settled + 8:
             steps["gains_streaming"] = t
             log_hand_gains("while streaming")
+        if TRIALS and t_settled is not None:
+            from sim_trials import run_trials
+
+            task = json.loads((Path(__file__).parent / "tasks" / "handover_bottle.json").read_text())
+            reason, detail = run_trials(
+                scene,
+                GATE,
+                SESSION_DIR,
+                TRIALS,
+                SEED,
+                task,
+                wall0,
+                lambda: proc.poll() is None,
+                one_attempt=True,
+            )
+            break
         if t_done is None and (GATE / "done").exists():
             t_done, episode_end = t, read_done(GATE)
             scene.mark(f"streamer done: {episode_end}")
@@ -159,9 +183,7 @@ finally:
     proc.terminate()
     lag = getattr(scene, "lag_ms", None)
     if lag:
-        lag_a = np.asarray(lag)
-        stats = {"max_ms": float(lag_a.max()), "p99_ms": float(np.percentile(lag_a, 99)),
-                 "over_20ms": int((lag_a > 20).sum()), "steps": int(lag_a.size)}  # fmt: skip
+        stats = lag_stats(lag)
         scene.mark(f"lag vs wall clock: {stats}")
         (OUT / "lag.json").write_text(json.dumps(stats))
     try:

@@ -75,6 +75,7 @@ try:
         start_trial_input,
         stop_requested,
         summarize,
+        write_ended,
         write_trial,
     )
     from .sonic_targets import SonicEncoder, joint_chunk_to_sonic, load_joint_limits
@@ -109,6 +110,7 @@ except ImportError:
         start_trial_input,
         stop_requested,
         summarize,
+        write_ended,
         write_trial,
     )
     from sonic_targets import SonicEncoder, joint_chunk_to_sonic, load_joint_limits
@@ -207,6 +209,12 @@ class DatasetImages:
         item = self.ds[k]
         imgs = {key: (item[key].permute(1, 2, 0).numpy() * 255).round().astype(np.uint8) for key in self.keys}
         return k, imgs, item["observation.state"].numpy().astype(np.float32), str(item.get("task", ""))
+
+    def start_recording(self) -> None:
+        """--trials --replay (sim reset test): no live camera, nothing to record."""
+
+    def stop_recording(self) -> list[tuple[float, str, bytes]]:
+        return []
 
     def actions(self) -> np.ndarray:
         """The episode's recorded action column [n, D] (for --replay)."""
@@ -752,8 +760,15 @@ def main():
     if a.trials is not None:
         if a.trials < 1 or a.session_dir is None or a.log:
             p.error("--trials needs --session-dir and a count >= 1 (it replaces --log)")
-        if a.images != "zmq" or a.backend != "sonic" or a.end != "planner" or a.handoff_blend_s <= 0:
-            p.error("--trials needs --images zmq, --backend sonic, --end planner and --handoff-blend-s > 0")
+        if (
+            (a.images != "zmq" and not a.replay)
+            or a.backend != "sonic"
+            or a.end != "planner"
+            or a.handoff_blend_s <= 0
+        ):
+            p.error(
+                "--trials needs --images zmq (or --replay), --backend sonic, --end planner and --handoff-blend-s > 0"
+            )
         parse_reasons(a.failure_reasons)  # fail before the robot moves
         first = first_trial_args(a.session_dir)
         if first is not None and (bad := session_mismatch(first, vars(a))):
@@ -1041,6 +1056,8 @@ def main():
                 )
             episode_end, frames = run_episode(trial)
             print(f"[eval] trial {trial + 1}/{a.trials} ended: {episode_end}", flush=True)
+            if a.gate_dir:
+                write_ended(a.gate_dir, trial, episode_end)
             verdict = (
                 gate_verdict(a.gate_dir, trial, reasons) if a.gate_dir else ask_verdict(reasons, episode_end)
             )

@@ -37,7 +37,7 @@ def test_effort_limits_reorders_mujoco_actuators_to_body_then_dex3():
     out = isc.effort_limits(values)
     order = isc.BODY + isc.DEX3_MOTORS
     assert out.shape == (len(order),)
-    for name, v in zip(order, out):
+    for name, v in zip(order, out, strict=True):
         assert isc.MUJOCO_ACTUATORS[int(v)] == name
 
 

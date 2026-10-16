@@ -379,6 +379,32 @@ class Scene:
             self.table_obj.write_root_pose_to_sim(pose)
         self.mark(f"table placed: near edge {self.table_gap:g} cm from the torso (x = {edge:.3f} m)")
 
+    def reset_trial(self, seed: int, bottle_xy, jitter_m: float) -> None:
+        """Robot back to the deploy's standing pose (as key 'backspace'); bottle on the table at bottle_xy (world,
+        table placed) + uniform +-jitter_m in x and y, upright; trial records cleared."""
+        import torch
+
+        self.key("backspace")
+        rng = np.random.default_rng(seed)
+        x, y = np.asarray(bottle_xy, float) + rng.uniform(-jitter_m, jitter_m, 2)
+        with self.lock:
+            dev = self.sim.device
+            z = TABLE_TOP_Z + 0.10  # + half the bottle height
+            pose = torch.tensor([[x, y, z, 1.0, 0.0, 0.0, 0.0]], dtype=torch.float32, device=dev)
+            self.bottle.write_root_pose_to_sim(pose)
+            self.bottle.write_root_velocity_to_sim(torch.zeros(1, 6, device=dev))
+        self.rec = {k: [] for k in REC_KEYS}
+        self.next_rec = self.t
+        self.fall = FallDetector()
+        self.mark(f"trial reset: seed {seed}, bottle at ({x:.3f}, {y:.3f})")
+
+    def cut_trial(self, i: int) -> None:
+        if self.rec["t"]:
+            np.savez_compressed(
+                self.out / f"sim_state_{i:03d}.npz", **{k: np.array(v) for k, v in self.rec.items()}
+            )
+        self.rec = {k: [] for k in REC_KEYS}
+
     def record(self, **extra) -> None:
         """One row every 20 ms of sim time, the columns of sim_scene.Scene.record plus the bottle pose."""
         if self.t + 1e-9 < self.next_rec:
