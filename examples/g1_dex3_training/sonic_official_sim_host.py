@@ -130,6 +130,15 @@ try:
         if "reset" in steps and t_settled is None and t >= steps["reset"] + 5:
             t_settled = t
             scene.place_table()  # bring the table in now that the robot stands in planner mode
+            if os.environ.get(
+                "BOTTLE"
+            ):  # replays with a bottle (spec test 3), SIM=isaac: 1 = the task's, or "x,y"
+                xy = os.environ["BOTTLE"].split(",")
+                if len(xy) == 1:
+                    xy = json.loads((Path(__file__).parent / "tasks" / "handover_bottle.json").read_text())[
+                        "bottle_xy_world"
+                    ]
+                scene.place_bottle(SEED, [float(v) for v in xy], 0.0)
             scene.fall.armed = True
             (GATE / "settled").touch()
             scene.mark("settled -> streamer may hand off to POSE")
