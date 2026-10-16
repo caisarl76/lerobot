@@ -1,14 +1,58 @@
 {
-  "source": "placeholder until derive_handover_task.py (Task 6); robot at the origin, TABLE_GAP_CM=30",
-  "table_xy_world": [0.78, 0.0],
-  "bottle_xy_world": [0.50, -0.15],
-  "jitter_m": 0.03,
-  "judge": {
-    "table_top_z": 0.80,
-    "bottle_radius": 0.033,
-    "bottle_height": 0.20,
-    "zone_center_pelvis": [0.35, -0.20, 0.25],
-    "zone_radius": 0.08,
-    "grasp_hand": 1
+ "table_xy_world": [
+  0.66,
+  0.0
+ ],
+ "bottle_xy_world": [
+  0.3211,
+  0.025
+ ],
+ "jitter_m": 0.03,
+ "judge": {
+  "table_top_z": 0.8,
+  "bottle_radius": 0.033,
+  "bottle_height": 0.2,
+  "zone_center_pelvis": [
+   0.3645,
+   -0.1705,
+   0.1438
+  ],
+  "zone_radius": 0.08,
+  "grasp_hand": 1
+ },
+ "table_gap_cm": 18.0,
+ "per_episode": [
+  {
+   "run": "WBC_A28_ep27_r0",
+   "grasp_hand": 1,
+   "close_t": 340.95499999976244,
+   "release_t": 343.8749999997598,
+   "bottle_x_from_pelvis": 0.3755719369293383,
+   "bottle_y_from_pelvis": -0.112331042842188,
+   "bottle_z": 0.9446209147607465,
+   "zone_center_pelvis": [
+    0.37258134420010386,
+    -0.23065725961877362,
+    0.14802354822207875
+   ]
+  },
+  {
+   "run": "WBC_A28_ep35_r0",
+   "grasp_hand": 1,
+   "close_t": 339.0199999997642,
+   "release_t": 341.81999999976165,
+   "bottle_x_from_pelvis": 0.2666331596546886,
+   "bottle_y_from_pelvis": 0.1623905819790027,
+   "bottle_z": 0.9167022656577726,
+   "zone_center_pelvis": [
+    0.356447386153762,
+    -0.11030731386792066,
+    0.13965592573196825
+   ]
   }
+ ],
+ "source_runs": [
+  "WBC_A28_ep27_r0",
+  "WBC_A28_ep35_r0"
+ ]
 }

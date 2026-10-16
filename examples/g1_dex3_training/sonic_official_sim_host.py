@@ -45,6 +45,11 @@ SESSION_DIR = Path(os.environ["SESSION_DIR"]) if TRIALS else None
 SEED = int(os.environ.get("SEED", "0"))
 if TRIALS and SIM != "isaac":
     raise SystemExit("TRIALS needs SIM=isaac (sim_scene has no reset_trial)")
+if TRIALS:  # the table comes from TABLE_GAP_CM, the bottle and the judge from the task: they must agree
+    _task = Path(__file__).parent / "tasks" / "handover_bottle.json"
+    _gap = json.loads(_task.read_text()).get("table_gap_cm")
+    if _gap is None or os.environ.get("TABLE_GAP_CM") is None or float(os.environ["TABLE_GAP_CM"]) != _gap:
+        raise SystemExit(f"TRIALS needs TABLE_GAP_CM={_gap} (tasks/handover_bottle.json)")
 GATE.mkdir(parents=True, exist_ok=True)
 DEPLOY = [
     "bash",
