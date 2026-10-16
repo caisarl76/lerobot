@@ -319,6 +319,31 @@ ssh h100_174 'cd /mnt/data01/jhkim/model_weight/g1_dex3_20260922/g1_wbt_handover
   for f in logs/*.exit; do echo "$f=$(cat $f)"; done; grep -v "^#" queue_gpu7.txt'
 ```
 
+## Real robot, 94-episode GR00T he (2026-10-15/16)
+
+`wbt_groot_handover261015_he_full` is GR00T he trained on the 43 old episodes plus the 10-14 recording, without
+its ep 0: 94 episodes ([2026-10-15 note](2026-10-15-g1-handover-261014-out-of-view.md)). It is compared on the robot
+with `wbt_groot_he_full` (41 episodes), same task, settings and server (workstation GPU 1, noise 0, blend 0.3, slew
+0.05, `--hold-rest-s 1.5`, 30 s cap). Verdicts are the operator's; VLM failure labels (Genon `gpt-6.1-sol`, since the
+h100 Qwen was down) agreed on every episode and were reviewed in the visualizer, where the user moved both failure
+frames earlier.
+
+| Session | Model                              | Trials | Success | Failures                                                                |
+| ------- | ---------------------------------- | ------ | ------- | ----------------------------------------------------------------------- |
+| s06     | `wbt_groot_he_full` (41 ep)        | 5      | 2/5     | grasp failed / missed (trials 3–5)                                      |
+| s07     | `wbt_groot_he_full` (41 ep)        | 5      | 4/5     | grasp failed / missed (trial 4, stopped at 8.4 s; "grasp" at frame 104) |
+| s08     | `wbt_groot_handover261015_he_full` | 10     | 9/10    | did not reach the object (trial 7, ran to the cap; "reach" at frame 88) |
+
+- **94 episodes: 9/10 against 6/10 for the 41-episode model** (s06 + s07) on the 10-15/16 setup. Successful
+  s08 trials took 11–16 s.
+- **s06 → s07 is the same model:** 2/5 then 4/5, so one 5-trial session swings by 2 trials. s03 (5/5, 10-14) used the
+  same model too; with it the 41-episode model is at 11/15. Compare models at 10 trials or more.
+- s05 (10-15, one trial, `wbt_groot_he_full`) is left out: a second bottle was in the scene; the user scored it a
+  fail ("dropped the object").
+- Sessions and exports: `/mnt/data/jihun/g1_eval_sessions/s0{6,7,8}_*`; reviewed exports in
+  `_visualizer/workspace/drafts/98ad57bbb4114e41928ffc085c111ef9` (s07) and `…/5cb635dd2bc94a7db0be5957cc59302c` (s08),
+  each under `retained-dataset`.
+
 ## Incidents
 
 - **GPU 7 shared (10-02 12:17 UTC).** Session `lerobot-f0` started `groot_joint28_ho5_official_full` (40 GB) on
