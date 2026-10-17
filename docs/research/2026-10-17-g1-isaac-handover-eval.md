@@ -25,6 +25,10 @@ against the robot.
 
 ## Results
 
+All Isaac numbers below were produced before the IMU frame fix (`325aae1f`: the base gyro and torso IMU velocities
+were published in the world frame instead of gear_sonic's body / torso frames; the stacks start at yaw 1-3 deg and tilt
+2-6 deg, so the effect is expected to be small). Re-run pending on a quiet machine.
+
 ### Closed-loop sessions (test 5)
 
 10 trials each, seed 0, bottle jittered +-4 cm per trial; Wilson 95 % intervals.
@@ -72,7 +76,7 @@ Fitted to the real handover sessions (s03, s06, s07, s08), not to the training d
 | Table distance | `TABLE_GAP_CM` 20 (near edge 0.28 m ahead of the pelvis) | same fit |
 | Bottle | r 3.3 cm, h 13.5 cm + 1.5 cm yellow-green cap, 0.5 kg; nominal (0.33, -0.065) m, jitter +-4 cm | 16 real right-hand grasps (MuJoCo FK of the logged state) |
 | Handover zone | (0.359, -0.126, 0.143) m in the pelvis frame, r 0.10 m | the same trials' releases |
-| Judge | lift >= 3 cm, in the zone with the hand closed for 0.5 s | passes 18 of 20 real successes (10 cm / 8 cm / 1 s passed 0) |
+| Judge | lift >= 3 cm, palm within reach of the bottle and in the zone for 0.5 s | passes 18 of 20 real successes (10 cm / 8 cm / 1 s passed 0) |
 | Look | grey floor without grid, dome light 1200, black Dex3 hand and wrist links | side-by-side renders |
 
 Session JPEGs carry RGB bytes (the camera server encodes RGB as is): decoded as BGR they look channel-swapped.
@@ -111,7 +115,7 @@ Test 4b: `isaac_visual_gap.py samples <session> OUT` (lerobot env, `G1_SESSIONS`
 - The bottle is a rigid 0.5 kg cylinder and the fingers rigid: a brush that a water-filled PET bottle survives on the
   robot can tip it in sim.
 - Nominal camera intrinsics until the head camera is calibrated; table clearance from body origins; no third-person video.
-- The 3060 keeps up only on a quiet machine: under load ~9 most trials were redone (one trial took ~30 attempts).
+- The 3060 keeps up only on a quiet machine: at a load average of ~9, most trials had to be redone (one took ~30 attempts).
 - Sessions depend on the VPN to the GPU host; a drop ends the trial ("no valid chunk") and the trial is redone.
 
 Footage, per-trial heights and the render pairs: a private Claude artifact (Isaac Handover Footage).
