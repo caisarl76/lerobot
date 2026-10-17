@@ -46,7 +46,12 @@ FPS, W, H = 30, 640, 480
 DT = 0.005
 STAND_Z = 0.775  # pelvis height standing on the default pose: both feet on the floor in test 0a
 BAND_Z = 1.0  # root height while hanging on the band (gear_sonic: the deploy starts with the robot hung)
-TABLE_TOP_Z = 0.80  # table centre 0.785 + half its 3 cm top, as sim_scene
+# the robot handover table is a black flight case: depth (x), width (y), top height (m), estimated from the real head
+# camera frames (session s03) with the URDF camera mount; replays and the parity runs used sim_scene's 0.80 m slab
+CASE = (0.42, 0.32, 0.846)
+TABLE_TOP_Z = CASE[2]
+# clear PET bottle body radius / height from the same frames (the green cap is visual only)
+BOTTLE_R, BOTTLE_H = 0.033, 0.135
 DEX3 = ("thumb_0", "thumb_1", "thumb_2", "middle_0", "middle_1", "index_0", "index_1")  # bridge / actuator order
 DEX3_MOTORS = [f"{s}_hand_{j}_joint" for s in ("left", "right") for j in DEX3]
 # gear_sonic g1_29dof_with_hand.xml actuator order, which motor_effort_limit_list follows
@@ -120,7 +125,14 @@ class Scene:
         @configclass
         class CfgScene(InteractiveSceneCfg):
             ground = AssetBaseCfg(prim_path="/World/ground", spawn=ground_cfg)
-            light = AssetBaseCfg(prim_path="/World/light", spawn=sim_utils.DomeLightCfg(intensity=2500.0))
+            # grey concrete look without the grid: a visual-only slab 1 mm above the physics ground
+            floor = AssetBaseCfg(
+                prim_path="/World/floor_look",
+                spawn=sim_utils.CuboidCfg(size=(20.0, 20.0, 0.002), visual_material=sim_utils.PreviewSurfaceCfg(
+                    diffuse_color=(0.25, 0.25, 0.24), roughness=0.9)),
+                init_state=AssetBaseCfg.InitialStateCfg(pos=(0.0, 0.0, 0.0)),
+            )  # fmt: skip
+            light = AssetBaseCfg(prim_path="/World/light", spawn=sim_utils.DomeLightCfg(intensity=float(os.environ.get("DOME_LIGHT", "1200"))))
             robot = ArticulationCfg(
                 prim_path="{ENV_REGEX_NS}/Robot",
                 spawn=sim_utils.UrdfFileCfg(
@@ -143,21 +155,22 @@ class Scene:
             table = RigidObjectCfg(
                 prim_path="{ENV_REGEX_NS}/Table",
                 spawn=sim_utils.CuboidCfg(
-                    size=(0.8, 1.6, 0.03),
+                    size=CASE,
                     rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
                     collision_props=sim_utils.CollisionPropertiesCfg(),
-                    visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.62, 0.46, 0.3)),
+                    visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.03, 0.03, 0.03), roughness=0.35),
                 ),
-                init_state=RigidObjectCfg.InitialStateCfg(pos=(10.0, 0.0, 0.785)),  # parked, as sim_scene
+                init_state=RigidObjectCfg.InitialStateCfg(pos=(10.0, 0.0, CASE[2] / 2)),  # parked, as sim_scene
             )
             bottle = RigidObjectCfg(
                 prim_path="{ENV_REGEX_NS}/Bottle",
                 spawn=sim_utils.CylinderCfg(
-                    radius=0.033, height=0.20,
+                    radius=BOTTLE_R, height=BOTTLE_H,
                     rigid_props=sim_utils.RigidBodyPropertiesCfg(),
                     mass_props=sim_utils.MassPropertiesCfg(mass=0.5),
                     collision_props=sim_utils.CollisionPropertiesCfg(),
-                    visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.1, 0.5, 0.9)),
+                    # clear PET: a light glossy surface (OmniGlass renders black in the real-time RTX path)
+                    visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.72, 0.76, 0.78), roughness=0.05),
                 ),  # fmt: skip
                 init_state=RigidObjectCfg.InitialStateCfg(pos=(10.0, 2.0, 0.90)),
             )
@@ -167,6 +180,14 @@ class Scene:
 
         self.sim = sim_utils.SimulationContext(sim_utils.SimulationCfg(dt=DT, render_interval=1, device=device))
         self.scene = InteractiveScene(CfgScene(num_envs=1, env_spacing=4.0))
+        cap = sim_utils.CylinderCfg(radius=0.0165, height=0.017,
+                                    visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.78, 0.86, 0.12)))
+        cap.func("/World/envs/env_0/Bottle/cap", cap, translation=(0.0, 0.0, BOTTLE_H / 2 + 0.0085))  # rides the bottle
+        # the real Dex3 hands are black; the URDF meshes render white
+        black = sim_utils.PreviewSurfaceCfg(diffuse_color=(0.03, 0.03, 0.03), roughness=0.4)
+        black.func("/World/Looks/dex3_black", black)
+        for path in sim_utils.find_matching_prim_paths("/World/envs/env_0/Robot/.*_(hand_.*|wrist_yaw)_link"):
+            sim_utils.bind_visual_material(path, "/World/Looks/dex3_black")
         k = [cam["fx"], 0.0, cam["cx"], 0.0, cam["fy"], cam["cy"], 0.0, 0.0, 1.0]
         self.camera = Camera(
             CameraCfg(
@@ -375,7 +396,7 @@ class Scene:
         with self.lock:
             root = self.robot.data.root_state_w[0].cpu().numpy()
             edge = root[0] + 0.08 + self.table_gap / 100
-            pose = torch.tensor([[edge + 0.4, root[1], 0.785, 1.0, 0.0, 0.0, 0.0]], device=self.sim.device)
+            pose = torch.tensor([[edge + CASE[0] / 2, root[1], CASE[2] / 2, 1.0, 0.0, 0.0, 0.0]], device=self.sim.device)
             self.table_obj.write_root_pose_to_sim(pose)
         self.mark(f"table placed: near edge {self.table_gap:g} cm from the torso (x = {edge:.3f} m)")
 
@@ -396,7 +417,7 @@ class Scene:
         x, y = np.asarray(bottle_xy, float) + rng.uniform(-jitter_m, jitter_m, 2)
         with self.lock:
             dev = self.sim.device
-            z = TABLE_TOP_Z + 0.10  # + half the bottle height
+            z = TABLE_TOP_Z + BOTTLE_H / 2
             pose = torch.tensor([[x, y, z, 1.0, 0.0, 0.0, 0.0]], dtype=torch.float32, device=dev)
             self.bottle.write_root_pose_to_sim(pose)
             self.bottle.write_root_velocity_to_sim(torch.zeros(1, 6, device=dev))
