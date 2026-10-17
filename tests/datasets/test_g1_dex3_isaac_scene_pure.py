@@ -58,3 +58,14 @@ def test_make_obs_has_every_bridge_key_and_splits_hands():
               "right_hand_q", "right_hand_dq", "time"):  # fmt: skip
         assert k in obs, k
     assert obs["body_q"].shape == (nb,) and obs["left_hand_q"][0] == nb and obs["right_hand_q"][0] == nb + 7
+
+
+def test_imu_velocities_follow_mujoco_frames():
+    # gear_sonic MuJoCo: base = [qvel linear (world), qvel angular (body frame)]; torso IMU = mj_objectVelocity local
+    # ([lin, ang] in the torso frame). Isaac gives everything in the world frame.
+    yaw90 = np.array([np.cos(np.pi / 4), 0.0, 0.0, np.sin(np.pi / 4)])  # w x y z: +90 deg about z
+    lin_w, ang_w = np.array([1.0, 0.0, 0.0]), np.array([1.0, 0.0, 0.0])  # world +x
+    base, torso = isc.imu_velocities(yaw90, lin_w, ang_w, yaw90, lin_w, ang_w)
+    np.testing.assert_allclose(base[:3], [1.0, 0.0, 0.0], atol=1e-9)  # linear stays in the world frame
+    np.testing.assert_allclose(base[3:], [0.0, -1.0, 0.0], atol=1e-9)  # world +x seen from a body yawed +90 deg
+    np.testing.assert_allclose(torso, [0.0, -1.0, 0.0, 0.0, -1.0, 0.0], atol=1e-9)  # both torso parts local

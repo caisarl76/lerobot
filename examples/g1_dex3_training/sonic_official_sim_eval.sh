@@ -30,7 +30,9 @@ if [ "${SIM:-mujoco}" = isaac ]; then
   LEROBOT_DIR=${LEROBOT_DIR:-/mnt/data01/jhkim/code/lerobot-g1-official-20260929-ceb40b77}
   LOG_DIR=${LOG_DIR:-./sim_eval_logs}; OUTD=$(realpath -m "$LOG_DIR/$OUT"); mkdir -p "$OUTD" "$SESSION_DIR"
   SESSION_DIR=$(realpath "$SESSION_DIR"); HERE=$(cd "$(dirname "$0")" && pwd)
-  P=jihun-isaac-policy-$OUT; RPORT=$((15560 + GPU)); LPORT=${LPORT:-25560}; SOCK=$OUTD/policy.sock
+  P=jihun-isaac-policy-$OUT; RPORT=$((15560 + GPU)); SOCK=$OUTD/policy.sock
+  # a free local port per run: a fixed one could reach another run's tunnel (and model)
+  LPORT=${LPORT:-$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')}
   FLAGS=$(python3 -c "
 import json, sys, numpy as np
 a = json.loads(str(np.load(sys.argv[1], allow_pickle=True)['args']))
@@ -46,21 +48,28 @@ print(json.dumps(out))" "$ROBOT_ARGS") || exit 1
   ssh -n $SIM_HOST "docker rm -f $P >/dev/null 2>&1; docker run -d --name $P --gpus device=$GPU -p 127.0.0.1:$RPORT:5560 -e HF_HUB_OFFLINE=1 \
     -e PYTHONPATH=/audit/pylib_stream -w /workspace/lerobot/examples/g1_dex3_training -v $LEROBOT_DIR:/workspace/lerobot:ro \
     -v $C:/workspace/lerobot/examples/g1_dex3_training:ro -v /mnt/data01/jhkim/model_weight/g1_dex3_20260922:/run-output:ro \
-    -v ${HF_CACHE:-/mnt/data01/huggingface}:/root/.cache/huggingface -v $A:/audit:ro -v $POLICY_PATH:/policy:ro \
-    --entrypoint /run-output/environment/venv/bin/python 4cbe2a3f7fc6 -u sonic_policy_server.py --policy-path /policy \
+    -v ${HF_CACHE:-/mnt/data01/huggingface}:/root/.cache/huggingface -v $A:/audit:ro -v $POLICY_PATH:$POLICY_PATH:ro \
+    --entrypoint /run-output/environment/venv/bin/python 4cbe2a3f7fc6 -u sonic_policy_server.py --policy-path $POLICY_PATH \
     --port 5560 $SERVER_EXTRA >/dev/null && until docker logs $P 2>&1 | grep -q 'ready on port'; do
       [ -n \"\$(docker ps -q -f name=^$P\$)\" ] || { docker logs --tail 20 $P; exit 1; }; sleep 5; done" || { echo "policy server failed" >&2; exit 1; }
-  ssh -N -o ExitOnForwardFailure=yes -o ServerAliveInterval=15 -L 127.0.0.1:$LPORT:127.0.0.1:$RPORT $SIM_HOST & TUNNEL=$!
+  tunnel() {  # (re)start the ssh tunnel to the server; fails when it does not come up
+    ssh -N -o ExitOnForwardFailure=yes -o ServerAliveInterval=15 -L 127.0.0.1:$LPORT:127.0.0.1:$RPORT $SIM_HOST & TUNNEL=$!
+    for _ in $(seq 20); do (exec 3<>/dev/tcp/127.0.0.1/$LPORT) 2>/dev/null && return 0; kill -0 $TUNNEL 2>/dev/null || break; sleep 1; done
+    echo "ssh tunnel to $SIM_HOST:$RPORT did not come up" >&2; return 1
+  }
+  tunnel || exit 1
   rm -f "$SOCK"; socat UNIX-LISTEN:"$SOCK",fork TCP:127.0.0.1:$LPORT & BRIDGE=$!
   trap 'kill $TUNNEL $BRIDGE 2>/dev/null; ssh -n $SIM_HOST "docker rm -f $P >/dev/null 2>&1"' EXIT
   trap 'exit 130' INT TERM
   # the server's first chunk (CUDA warm-up) takes longer than the robot sessions' 1.5 s request timeout: warm it once
-  (cd "$HERE/../.." && env -u PYTHONPATH uv run python - "$LPORT" <<'PY'
+  (cd "$HERE/../.." && env -u PYTHONPATH uv run python - "$LPORT" "$POLICY_PATH" <<'PY'
 import sys, time
 import numpy as np
 sys.path.insert(0, "examples/g1_dex3_training")
 from sonic_policy_streamer import RemotePolicy
 p = RemotePolicy(f"tcp://127.0.0.1:{sys.argv[1]}", 300.0)
+if p.model != sys.argv[2]:
+    sys.exit(f"[policy] the server serves {p.model}, not {sys.argv[2]}")
 img = {k: np.zeros((480, 640, 3), np.uint8) for k in p.image_keys}  # camera size: warms the server's resize path too
 for i in range(3):
     t = time.time()
@@ -73,7 +82,9 @@ PY
     for attempt in $(seq "${MAX_ATTEMPTS:-5}"); do
       [ "$(done_n)" -gt "$i" ] && break
       G=$OUTD/gate_${i}_$attempt; mkdir -p "$G" "$OUTD/sim"
-      unshare -rn bash -c '
+      kill -0 $TUNNEL 2>/dev/null || { echo "[trial $((i + 1))] ssh tunnel down: restarting" >&2; tunnel || exit 1; }
+      # own PID namespace (with its /proc: CUDA fails without it): a hung host (Kit ignores SIGTERM) and its deploy end with the stack
+      unshare -rn --pid --fork --kill-child --mount-proc bash -c '
         SOCK=$0 HERE=$1 N=$2 SESS=$3 GAP=$4 OUTD=$5 G=$6 TAG=$7 EXTRA=$8
         mapfile -t FL < <(python3 -c "import json, sys; print(*json.load(open(sys.argv[1])), sep=chr(10))" "$OUTD/streamer_flags.json")
         ip link set lo up
@@ -88,7 +99,9 @@ PY
         cd "$HERE/../.." && timeout -k 10 380 env -u PYTHONPATH uv run python "$HERE/sonic_policy_streamer.py" \
           --policy-server tcp://127.0.0.1:5560 --gate-dir "$G" --trials $N --session-dir "$SESS" "${FL[@]}" \
           --dex3-right-order swap --policy-timeout-s 5 $EXTRA > "$OUTD/streamer_$TAG.log" 2>&1 & STR=$!
-        wait -n $HOST $STR; sleep 20; kill $STR 2>/dev/null; wait $HOST; kill $BR 2>/dev/null' \
+        wait -n $HOST $STR; sleep 20; kill $STR 2>/dev/null
+        for _ in $(seq 60); do kill -0 $HOST 2>/dev/null || break; sleep 1; done  # verdict and records written
+        kill $BR 2>/dev/null' \
         "$SOCK" "$HERE" $((i + 1)) "$SESSION_DIR" "$GAP" "$OUTD" "$G" "${i}_$attempt" "$EXTRA"
       grep -h "chunk inference s" "$OUTD/streamer_${i}_$attempt.log" | tail -1 | sed "s/^/[trial $((i + 1)) attempt $attempt] /"
     done

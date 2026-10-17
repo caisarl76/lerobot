@@ -94,6 +94,15 @@ def quat_wxyz_to_matrix(q) -> np.ndarray:
     ])  # fmt: skip
 
 
+def imu_velocities(root_quat, root_lin_w, root_ang_w, torso_quat, torso_lin_w, torso_ang_w):
+    """Isaac world-frame link velocities in gear_sonic MuJoCo's conventions: base = [linear world, angular body frame]
+    (free-joint qvel[:6]), torso IMU = [linear, angular] both in the torso frame (mj_objectVelocity, flg_local=1)."""
+    rb, rt = quat_wxyz_to_matrix(root_quat), quat_wxyz_to_matrix(torso_quat)
+    base = np.r_[np.asarray(root_lin_w, float), rb.T @ np.asarray(root_ang_w, float)]
+    torso = np.r_[rt.T @ np.asarray(torso_lin_w, float), rt.T @ np.asarray(torso_ang_w, float)]
+    return base, torso
+
+
 class Scene:
     def __init__(self, out: Path, table_gap_cm: str | None, camera_json: Path = CAMERA_JSON, camera_port: int = 5555,
                  device: str = "cpu", render: bool = True, dds: bool = True):  # fmt: skip
@@ -289,17 +298,18 @@ class Scene:
 
     def _state(self) -> dict:
         d, ids = self.robot.data, self.body_ids + self.hand_ids
-        root = d.root_state_w[0].cpu().numpy()
-        root_vel = root[7:13]
+        root = d.root_link_state_w[0].cpu().numpy()  # link origin, as MuJoCo's free joint (not the centre of mass)
+        torso_quat = d.body_quat_w[0, self.torso_id].cpu().numpy()
+        root_vel, torso_vel = imu_velocities(
+            root[3:7], root[7:10], root[10:13], torso_quat,
+            d.body_link_lin_vel_w[0, self.torso_id].cpu().numpy(), d.body_link_ang_vel_w[0, self.torso_id].cpu().numpy(),
+        )  # fmt: skip
         acc = (root_vel - self.prev_root_vel) / DT  # finite difference, no gravity term (MuJoCo qacc[:6])
         self.prev_root_vel = root_vel.copy()
-        torso_lin = d.body_lin_vel_w[0, self.torso_id].cpu().numpy()
-        torso_ang = d.body_ang_vel_w[0, self.torso_id].cpu().numpy()
         return {
             "q": d.joint_pos[0, ids].cpu().numpy(), "dq": d.joint_vel[0, ids].cpu().numpy(),
             "ddq": d.joint_acc[0, ids].cpu().numpy(), "tau": self.tau, "root_pose": root[:7], "root_vel": root_vel,
-            "root_acc": acc, "torso_quat": d.body_quat_w[0, self.torso_id].cpu().numpy(),
-            "torso_vel": np.r_[torso_lin, torso_ang], "time": self.t,
+            "root_acc": acc, "torso_quat": torso_quat, "torso_vel": torso_vel, "time": self.t,
         }  # fmt: skip
 
     def step(self) -> None:
