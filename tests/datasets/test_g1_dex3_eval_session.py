@@ -90,7 +90,25 @@ def test_write_trial_files_resume_and_summary(tmp_path):
     assert math.isnan(line["wall_start"])
     assert es.next_trial(tmp_path / "s") == 2  # a restarted session continues at trial 2
     assert not list((tmp_path / "s").glob("*.tmp*"))
-    assert es.summarize(tmp_path / "s") == "success 1/2; y: 1"
+    assert es.summarize(tmp_path / "s") == "success 1/2; first attempt 1/2; y: 1"
+
+
+def right_hand_log(closures):
+    """An episode whose right Dex3 closure (sum |q| over its 7 joints) steps through `closures`."""
+    log = fake_log(n=len(closures), episode=slice(0, len(closures)))
+    log["state"] = [np.r_[np.zeros(21), np.full(7, c / 7)].astype(np.float32) for c in closures]
+    return log
+
+
+def test_first_attempt_score_counts_a_regrasp_as_a_miss(tmp_path):
+    extra = {"episode_end": "operator stop", "args": "{}", "verdict": "success", "reason": "", "note": ""}
+    held = [0.1, 3.8, 4.2, 4.4, 0.1]  # closed on the bottle, handed over
+    regrasp = [0.1, 6.4, 2.7, 4.2, 0.1]  # closed on air first (s03 trial 4)
+    for i, closures in enumerate((held, regrasp)):
+        es.write_trial(tmp_path / "s", i, right_hand_log(closures), extra, [])
+    assert not es.closed_on_air(tmp_path / "s/trial_000.npz")
+    assert es.closed_on_air(tmp_path / "s/trial_001.npz")
+    assert es.summarize(tmp_path / "s") == "success 2/2; first attempt 1/2"
 
 
 def _gate_after(tmp_path, first, second, trial=3, delay=0.2):

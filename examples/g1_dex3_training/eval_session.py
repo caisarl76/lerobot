@@ -37,6 +37,10 @@ DEFAULT_FAILURE_REASONS = (
 SAFETY_STOP = "safety stop (watchdog)"
 # every trial of a session shares these (a resumed session must not change them)
 SESSION_KEYS = ("task", "action_space", "policy_server", "policy_path")
+# Right Dex3 closure, sum |q| over its 7 joints in the 28D state (rad). Robot sessions s01-s08 (10-08..10-16, one drink
+# bottle): open ~0.1, closed on the bottle 3.6-4.4 (5.1 once, a partial hold), closed on air 6.0-6.5.
+RIGHT_HAND = slice(21, 28)
+AIR_CLOSURE = 5.5
 
 
 def parse_reasons(text: str | None) -> list[str]:
@@ -194,8 +198,30 @@ def load_frames(path: Path) -> tuple[np.ndarray, np.ndarray, list[bytes]]:
     return z["t_recv"], z["names"], [raw[a:b] for a, b in zip(offsets[:-1], offsets[1:], strict=True)]
 
 
+def closed_on_air(trial_npz: Path) -> bool:
+    """The right hand closed on air during the episode: a missed grasp (in a success, the robot regrasped)."""
+    z = np.load(trial_npz)
+    right = z["state"][z["phase"] == "episode"][:, RIGHT_HAND]
+    return bool((np.abs(right).sum(1) > AIR_CLOSURE).any())
+
+
 def summarize(session_dir: Path) -> str:
+    """Operator successes, and first-attempt successes: those without a missed grasp. Only the first-attempt score
+    compares across sessions, since operators stop some trials at the first miss and let others regrasp."""
     lines = [json.loads(s) for s in (Path(session_dir) / "results.jsonl").read_text().splitlines()]
-    ok = sum(line["verdict"] == "success" for line in lines)
+    ok = [line for line in lines if line["verdict"] == "success"]
+    first = sum(not closed_on_air(Path(session_dir) / f"trial_{line['trial']:03d}.npz") for line in ok)
     reasons = Counter(line["reason"] for line in lines if line["verdict"] == "fail")
-    return "; ".join([f"success {ok}/{len(lines)}", *(f"{r}: {n}" for r, n in reasons.most_common())])
+    n = len(lines)
+    return "; ".join(
+        [
+            f"success {len(ok)}/{n}",
+            f"first attempt {first}/{n}",
+            *(f"{r}: {c}" for r, c in reasons.most_common()),
+        ]
+    )
+
+
+if __name__ == "__main__":  # rescore recorded sessions: python eval_session.py SESSION_DIR...
+    for d in sys.argv[1:]:
+        print(f"{d}: {summarize(Path(d))}")
