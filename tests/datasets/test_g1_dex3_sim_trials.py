@@ -25,10 +25,15 @@ class FakeScene:
 
     def __init__(self, slow_resets=()):
         self.t, self.lag_ms, self.resets, self.slow = 0.0, [], 0, set(slow_resets)
+        self.events = []
         self.fall = type("F", (), {"armed": False})()
 
     def reset_trial(self, seed, bottle_xy, jitter_m):
         self.resets += 1
+        self.events.append(("reset", self.t))
+
+    def place_bottle(self, seed, bottle_xy, jitter_m):
+        self.events.append(("bottle", self.t))
 
     def step(self):
         self.t += 0.005
@@ -118,3 +123,11 @@ def test_one_attempt_per_stack_ends_the_stack_on_a_redo(tmp_path):
     result, verdicts, _ = run(tmp_path, FakeScene(slow_resets={1}), one_attempt=True)
     assert result[0] == "redo" and "lag" in result[1]
     assert verdicts == ["redo"]
+
+
+def test_bottle_is_placed_after_the_settle(tmp_path):
+    # smoke trial 0: the bottle placed at the reset met the hand still raised in the default pose and was bumped
+    scene = FakeScene()
+    run(tmp_path, scene, n_trials=1)
+    (_, t_reset), (kind, t_bottle) = scene.events[0], scene.events[1]
+    assert kind == "bottle" and t_bottle >= t_reset + 5.0 - 1e-6

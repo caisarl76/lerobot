@@ -401,10 +401,16 @@ class Scene:
         self.mark(f"table placed: near edge {self.table_gap:g} cm from the torso (x = {edge:.3f} m)")
 
     def reset_trial(self, seed: int, bottle_xy, jitter_m: float) -> None:
-        """Robot back to the deploy's standing pose (as key 'backspace'); bottle placed (place_bottle); trial records
-        cleared."""
+        """Robot back to the deploy's standing pose (as key 'backspace'); bottle parked off the table (the caller places
+        it once the robot has settled); trial records cleared."""
+        import torch
+
         self.key("backspace")
-        self.place_bottle(seed, bottle_xy, jitter_m)
+        with self.lock:
+            dev = self.sim.device
+            park = torch.tensor([[10.0, 2.0, BOTTLE_H / 2, 1.0, 0.0, 0.0, 0.0]], dtype=torch.float32, device=dev)
+            self.bottle.write_root_pose_to_sim(park)
+            self.bottle.write_root_velocity_to_sim(torch.zeros(1, 6, device=dev))
         self.rec = {k: [] for k in REC_KEYS}
         self.next_rec = self.t
         self.fall = FallDetector()

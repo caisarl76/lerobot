@@ -54,6 +54,8 @@ def run_trials(scene, gate: Path, session_dir: Path, n_trials: int, seed: int, t
                 break
             if attempt == 2:
                 return "reset_failed", f"robot down after two resets before trial {trial}"
+        # the bottle comes after the settle: placed at the reset it meets the hand still raised in the default pose
+        scene.place_bottle(seed + trial, task["bottle_xy_world"], task["jitter_m"])
         scene.fall.armed = True
         judge = Judge(task["judge"])
         judge.table_xy = np.asarray(task["table_xy_world"], float)
