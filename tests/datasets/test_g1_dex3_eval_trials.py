@@ -212,26 +212,33 @@ def fault_policy(ctx, port, stop, fault):
                 "model": "/m/fake/pretrained_model",
             }
             if req["op"] == "info"
-            else {"chunk": np.zeros((40, 78), np.float32).tobytes(), "shape": [40, 78]}
+            else {"chunk": np.full((40, 78), 0.1, np.float32).tobytes(), "shape": [40, 78]}
         )
         rep.send(msgpack.packb(out, use_bin_type=True))
     rep.close(0)
 
 
-def listen_commands(ctx, port, stop, out):
-    """The deploy's side of the action port: (start, stop, planner) of every command message, in order."""
+def listen_commands(ctx, port, stop, out, echo):
+    """The deploy's side of the action port: (start, stop, planner) of every command message, in order, and the
+    latest pose token in echo["token"] (the deploy copies it into g1_debug token_state)."""
     sub = ctx.socket(zmq.SUB)
     sub.setsockopt(zmq.SUBSCRIBE, b"command")
+    sub.setsockopt(zmq.SUBSCRIBE, b"pose")
     sub.connect(f"tcp://127.0.0.1:{port}")
     while not stop.is_set():
         if sub.poll(50):
-            out.append(tuple(sub.recv()[-3:]))
+            msg = sub.recv()
+            if msg.startswith(b"pose"):
+                start = len(b"pose") + 1280
+                echo["token"] = np.frombuffer(msg[start : start + 256], "<f4").tolist()
+            else:
+                out.append(tuple(msg[-3:]))
     sub.close(0)
 
 
-def run_faulted_trial(tmp_path, fault_name, sigint=False, policy_after_chunks=None):
+def run_faulted_trial(tmp_path, fault_name, sigint=False, policy_after_chunks=None, duration_s=20):
     ports = {k: free_port() for k in ("policy", "state", "camera", "action")}
-    ctx, stop, fault, commands = zmq.Context(), threading.Event(), {}, []
+    ctx, stop, fault, commands, echo = zmq.Context(), threading.Event(), {}, [], {"token": [0.0] * 64}
     if policy_after_chunks is not None:
         fault["policy_after_chunks"] = policy_after_chunks
 
@@ -241,7 +248,15 @@ def run_faulted_trial(tmp_path, fault_name, sigint=False, policy_after_chunks=No
         elif fault.get("state_malformed"):
             pub.send(b"g1_debug" + msgpack.packb({"body_q": [0.0] * 28, "left_hand_q": [0.0] * 7}))
         elif not fault.get("state_stopped"):
-            deploy_state(pub, i)
+            # a deploy listening to another command source reports that source's tokens, not ours
+            token = [0.7] * 64 if fault.get("deploy_elsewhere") else echo["token"]
+            msg = {
+                "body_q": [0.0] * 29,
+                "left_hand_q": [0.0] * 7,
+                "right_hand_q": [0.0] * 7,
+                "token_state": token,
+            }
+            pub.send(b"g1_debug" + msgpack.packb(msg, use_bin_type=True))
 
     def cam(pub, i):
         if not fault.get("camera_frozen"):
@@ -251,7 +266,7 @@ def run_faulted_trial(tmp_path, fault_name, sigint=False, policy_after_chunks=No
         threading.Thread(target=fault_policy, args=(ctx, ports["policy"], stop, fault)),
         threading.Thread(target=publish, args=(ctx, ports["state"], stop, 0.02, state)),
         threading.Thread(target=publish, args=(ctx, ports["camera"], stop, 1 / 30, cam)),
-        threading.Thread(target=listen_commands, args=(ctx, ports["action"], stop, commands)),
+        threading.Thread(target=listen_commands, args=(ctx, ports["action"], stop, commands, echo)),
     ]
     gate, session = tmp_path / "gate", tmp_path / "session"
     gate.mkdir()
@@ -263,7 +278,7 @@ def run_faulted_trial(tmp_path, fault_name, sigint=False, policy_after_chunks=No
              "--policy-server", f"tcp://127.0.0.1:{ports['policy']}", "--images", "zmq",
              "--camera-host", "127.0.0.1", "--camera-port", str(ports["camera"]),
              "--deploy-host", "127.0.0.1", "--state-port", str(ports["state"]), "--action-port", str(ports["action"]),
-             "--task", "pick", "--duration-s", "20", "--start", "planner", "--end", "planner",
+             "--task", "pick", "--duration-s", str(duration_s), "--start", "planner", "--end", "planner",
              "--handoff-blend-s", "0.2", "--trials", "1", "--session-dir", str(session), "--gate-dir", str(gate)],
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, stdin=subprocess.DEVNULL,
         )  # fmt: skip
@@ -310,6 +325,7 @@ START_PLANNER, POSE = (1, 0, 1), (1, 0, 0)
         ("state_undecodable", "robot state"),
         ("state_malformed", "robot state"),
         ("camera_frozen", "camera frame"),
+        ("deploy_elsewhere", "deploy token_state"),
     ],
 )
 def test_a_fault_inside_the_episode_ends_the_trial_and_hands_back(tmp_path, fault_name, episode_end):
@@ -329,4 +345,10 @@ def test_a_policy_dead_at_the_first_chunk_still_hands_back(tmp_path):
 def test_ctrl_c_inside_the_episode_hands_back_before_exiting(tmp_path):
     code, out, commands, _ = run_faulted_trial(tmp_path, None, sigint=True)
     assert code != 0 and "KeyboardInterrupt" in out, out[-3000:]
+    assert commands == [START_PLANNER, POSE, START_PLANNER], out[-3000:]
+
+
+def test_a_deploy_that_echoes_the_streamed_tokens_runs_to_the_cap(tmp_path):
+    code, out, commands, ended = run_faulted_trial(tmp_path, None, duration_s=8)
+    assert code == 0 and ended == "completed", (ended, out[-3000:])
     assert commands == [START_PLANNER, POSE, START_PLANNER], out[-3000:]

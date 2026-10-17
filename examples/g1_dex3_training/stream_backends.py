@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import struct
 import time
+from collections import deque
 from pathlib import Path
 
 import numpy as np
@@ -90,6 +91,16 @@ def observation_state(msg: dict) -> np.ndarray:
         raise ValueError(f"expected 29 body joints, got {body.shape}")
     right = np.asarray(msg["right_hand_q"], np.float32)[RIGHT_ORDER]
     return np.concatenate([body[15:29], msg["left_hand_q"], right]).astype(np.float32)
+
+
+def token_echo_err(msg: dict | None, recent) -> float:
+    """Smallest max-abs difference between the deploy's g1_debug token_state and a recently sent token. In POSE mode
+    the deploy copies each received token into token_state; a deploy fed by another command source (or still in
+    planner mode) reports other tokens. inf without a 64D token_state or sent tokens."""
+    echo = np.asarray((msg or {}).get("token_state", []), np.float32)
+    if echo.shape != (64,) or not recent:
+        return float("inf")
+    return float(np.abs(np.asarray(recent) - echo).max(axis=1).min())
 
 
 def measured_ref(msg: dict, action_space: str) -> np.ndarray:
@@ -176,6 +187,7 @@ class SonicBackend:
         self.planner = None  # the planner's token at the POSE switch (gradual handoff only)
         self.frame, self.last_sent, self.last_hands, self.slewed = 0, None, None, 0
         self.pose = False  # POSE mode commanded and not yet handed back: an error must still call finish()
+        self.recent = deque(maxlen=25)  # tokens sent in the last 0.5 s: the deploy's echo lags by a few ticks
 
     def send(self, token, hands, phase, t_ep=-1.0, k=-1, chunk_t0=np.nan, joint_ref=None):
         token = np.asarray(token, np.float32)
@@ -186,6 +198,7 @@ class SonicBackend:
                 token = self.last_sent + np.clip(step, -step_max, step_max)
                 self.slewed += 1
         self.last_sent, self.last_hands = token, hands
+        self.recent.append(token)
         self.pub.send(pose_message(token, hands, self.frame))
         self.frame += 1
         self.record(token, hands, phase, t_ep, k, chunk_t0, joint_ref)

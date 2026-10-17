@@ -89,6 +89,7 @@ try:
         measured_ref as measured_ref,  # re-exported for the tests
         observation_state,
         ticks,
+        token_echo_err,
     )
     from .wbc_common import (
         check_replay_width,
@@ -123,6 +124,7 @@ except ImportError:
         measured_ref as measured_ref,  # re-exported for the tests
         observation_state,
         ticks,
+        token_echo_err,
     )
     from wbc_common import (
         check_replay_width,
@@ -159,6 +161,7 @@ ARM_LO = np.array(
 ARM_HI = np.array(
     [1.473, 1.637, 1.676, 1.526, 1.97, 1.618, 1.625, 1.586, 0.284, 1.579, 1.419, 1.599, 1.634, 1.616]
 )
+TOKEN_ECHO_TOL = 1e-4  # the deploy copies float32 tokens into double token_state: an echo is exact
 ARM_SPEED_TICKS = 3  # measured arm speed over 3 ticks (60 ms): robust to one late or repeated state message
 
 
@@ -659,6 +662,13 @@ def main():
         "41 robot trials s01-s08: frames every 0.067 s, largest gap 0.10 s)",
     )
     p.add_argument(
+        "--token-echo-timeout-s",
+        type=float,
+        default=0.5,
+        help="--backend sonic: end the episode if the deploy's g1_debug token_state has matched none of the recently "
+        "streamed tokens for this long (the deploy follows another command source, e.g. --zmq-host elsewhere); 0 = off",
+    )
+    p.add_argument(
         "--max-state-age-s",
         type=float,
         default=0.2,
@@ -978,6 +988,7 @@ def main():
         latencies, slot, slot_t = [], None, 0.0
         next_replan, last_chunk_t, chunk_t0 = a.replan_s, 0.0, 0.0
         last_accepted = True  # the first chunk is playing
+        echo_lost = None  # t_ep since the deploy's token_state stopped matching our tokens
         episode_end = "completed"
         for i in ticks(int(duration / TICK)):
             t_ep = i * TICK
@@ -1010,6 +1021,18 @@ def main():
                 episode_end = f"camera frame {images.age():.2f} s old"
                 print(f"[streamer] {episode_end}: ending episode", flush=True)
                 break
+            if a.backend == "sonic" and a.token_echo_timeout_s > 0:
+                if token_echo_err(state.latest(), backend.recent) <= TOKEN_ECHO_TOL:
+                    echo_lost = None
+                elif echo_lost is None:
+                    echo_lost = t_ep
+                elif t_ep - echo_lost > a.token_echo_timeout_s:
+                    episode_end = (
+                        f"deploy token_state has not matched a streamed token for {a.token_echo_timeout_s:g} s "
+                        "(another command source?)"
+                    )
+                    print(f"[streamer] {episode_end}: ending episode", flush=True)
+                    break
             reason = arm_watchdog()
             if reason:
                 episode_end = f"watchdog: {reason}"
