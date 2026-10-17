@@ -175,6 +175,7 @@ class SonicBackend:
         self.jres = ChunkResampler(fps) if a.action_space != "sonic78" else None  # 50 Hz joint_ref
         self.planner = None  # the planner's token at the POSE switch (gradual handoff only)
         self.frame, self.last_sent, self.last_hands, self.slewed = 0, None, None, 0
+        self.pose = False  # POSE mode commanded and not yet handed back: an error must still call finish()
 
     def send(self, token, hands, phase, t_ep=-1.0, k=-1, chunk_t0=np.nan, joint_ref=None):
         token = np.asarray(token, np.float32)
@@ -228,6 +229,7 @@ class SonicBackend:
             for _ in ticks(50):
                 self.send(planner, self.zero_h, "planner token")
             self.pub.send(command_message(start=True, planner=False))
+            self.pose = True
             n = int(a.handoff_blend_s * 50)
             # table startup: switch into the table-safe arm path instead of NVIDIA's standing token, whose hands rise
             # to ~0.8 m, 0.3 m forward (into an 80 cm table)
@@ -243,6 +245,7 @@ class SonicBackend:
             for _ in ticks(50):  # latent initial token, then POSE mode
                 self.send(LATENT_INITIAL_MOTION_TOKEN, self.zero_h, "initial")
             self.pub.send(command_message(start=True, planner=False))
+            self.pose = True
         print("[streamer] command: POSE mode (streamed tokens)", flush=True)
 
     def wait_tick(self):
@@ -311,6 +314,7 @@ class SonicBackend:
         else:
             self.pub.send(command_message(start=False, planner=False))
             print("[streamer] command: stop", flush=True)
+        self.pose = False
 
 
 class DecoupledBackend:

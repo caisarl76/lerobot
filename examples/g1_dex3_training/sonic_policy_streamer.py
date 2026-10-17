@@ -175,10 +175,15 @@ class StateSubscriber:
 
         try:
             raw = self.sock.recv(zmq.NOBLOCK)
-            self.msg = msgpack.unpackb(raw[len("g1_debug") :], raw=False)
-            self.t = time.monotonic()
         except zmq.Again:
-            pass
+            return self.msg
+        try:  # an undecodable or malformed message is dropped: it ages into the --max-state-age-s stop
+            msg = msgpack.unpackb(raw[len("g1_debug") :], raw=False)
+            observation_state(msg)
+        except Exception as exc:
+            print(f"[streamer] dropped a g1_debug message: {exc!r}", flush=True)
+            return self.msg
+        self.msg, self.t = msg, time.monotonic()
         return self.msg
 
     def age(self) -> float:
@@ -383,7 +388,7 @@ class LiveImages:
 
     def __init__(self, ctx, host: str, port: int, keys: list[str], shapes: dict, stereo: str, task: str):
         self.keys, self.shapes, self.stereo, self.task = keys, shapes, stereo, task
-        self.latest, self.lock = {}, threading.Lock()
+        self.latest, self.lock, self.t = {}, threading.Lock(), None
         self.recording: list[tuple[float, str, bytes]] | None = None  # --trials: JPEGs as received
         sock = ctx.socket(zmq.SUB)
         sock.setsockopt(zmq.CONFLATE, 1)
@@ -413,7 +418,12 @@ class LiveImages:
             }
             with self.lock:
                 self.latest.update(decoded)
+                self.t = time.monotonic()
         sock.close(linger=0)
+
+    def age(self) -> float:
+        """Seconds since the last camera message (inf before the first)."""
+        return float("inf") if self.t is None else time.monotonic() - self.t
 
     def close(self):
         """Stop the receiver thread before the process exits: a daemon thread still inside OpenCV or libzmq at
@@ -640,6 +650,13 @@ def main():
         type=float,
         default=1.0,
         help="end the episode if no new chunk arrives for this long (keep below the chunk's duration)",
+    )
+    p.add_argument(
+        "--max-camera-age-s",
+        type=float,
+        default=0.5,
+        help="--images zmq: end the episode if the newest head-camera frame is older than this (frozen camera; "
+        "41 robot trials s01-s08: frames every 0.067 s, largest gap 0.10 s)",
     )
     p.add_argument(
         "--max-state-age-s",
@@ -988,6 +1005,11 @@ def main():
                 episode_end = f"robot state {state.age():.2f} s old"
                 print(f"[streamer] {episode_end}: ending episode", flush=True)
                 break
+            # never plan on a frozen view
+            if isinstance(images, LiveImages) and images.age() > a.max_camera_age_s:
+                episode_end = f"camera frame {images.age():.2f} s old"
+                print(f"[streamer] {episode_end}: ending episode", flush=True)
+                break
             reason = arm_watchdog()
             if reason:
                 episode_end = f"watchdog: {reason}"
@@ -1012,6 +1034,15 @@ def main():
         backend.finish()
         return episode_end, frames
 
+    def run_episode_or_hand_back(trial: int | None) -> tuple[str, list]:
+        try:
+            return run_episode(trial)
+        except BaseException as exc:
+            if getattr(backend, "pose", False):
+                print(f"[streamer] {exc!r}: blending out and handing back before exiting", flush=True)
+                backend.finish()
+            raise
+
     if a.trials:
         reasons = parse_reasons(a.failure_reasons)
         backend.connect()
@@ -1033,7 +1064,7 @@ def main():
                 raise SystemExit(
                     f"[eval] the policy server now serves {model}, trial 1 used {first}: use a new --session-dir"
                 )
-            episode_end, frames = run_episode(trial)
+            episode_end, frames = run_episode_or_hand_back(trial)
             print(f"[eval] trial {trial + 1}/{a.trials} ended: {episode_end}", flush=True)
             verdict = (
                 gate_verdict(a.gate_dir, trial, reasons) if a.gate_dir else ask_verdict(reasons, episode_end)
@@ -1056,7 +1087,7 @@ def main():
             trial += 1
         print(f"[eval] session {a.session_dir}: {summarize(a.session_dir)}", flush=True)
     else:
-        episode_end, _ = run_episode(None)
+        episode_end, _ = run_episode_or_hand_back(None)
         if a.log:
             np.savez_compressed(
                 a.log,
