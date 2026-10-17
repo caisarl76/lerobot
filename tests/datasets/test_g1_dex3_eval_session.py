@@ -90,7 +90,45 @@ def test_write_trial_files_resume_and_summary(tmp_path):
     assert math.isnan(line["wall_start"])
     assert es.next_trial(tmp_path / "s") == 2  # a restarted session continues at trial 2
     assert not list((tmp_path / "s").glob("*.tmp*"))
-    assert es.summarize(tmp_path / "s") == "success 1/2; y: 1"
+    # an empty episode is no evidence for the operator's success
+    assert (
+        es.summarize(tmp_path / "s") == "success 1/2; first attempt 0/2 (1 unknown, review trial_001); y: 1"
+    )
+
+
+def right_hand_log(*segments):
+    """A 50 Hz episode whose right Dex3 hand (mean |q| over its 7 joints) holds each (value, seconds) in turn."""
+    hand = np.concatenate([np.full(round(s * 50), v, np.float32) for v, s in segments])
+    log = fake_log(n=len(hand), episode=slice(0, len(hand)))
+    log["state"] = [np.r_[np.zeros(21), np.full(7, h)].astype(np.float32) for h in hand]
+    return log
+
+
+OPEN, HOLD, AIR = (0.01, 1.0), (0.55, 2.0), (0.9, 1.0)  # bottle 0.51-0.63, air 0.86-0.93 (s01-s08)
+HANDOVER = (OPEN, HOLD, (0.01, 1.5))
+
+
+@pytest.mark.parametrize(
+    ("segments", "operator_success", "expected"),
+    [
+        (HANDOVER, True, "success"),
+        (HANDOVER, False, "unknown"),  # a release looks the same as a drop
+        ((*HANDOVER, AIR, OPEN), False, "unknown"),  # a later attempt missed (s17 trial 2)
+        ((*HANDOVER, AIR, OPEN), True, "success"),
+        ((OPEN, AIR, OPEN, *HANDOVER), True, "fail"),  # missed, then regrasped (s03 trial 4)
+        ((OPEN, HOLD, AIR, OPEN), False, "fail"),  # dropped while carrying: the hand closed further
+        ((OPEN, HOLD, (0.01, 0.3)), True, "success"),  # the operator stopped right after the release
+        ((AIR, *HANDOVER), True, "success"),  # the startup fist is not a miss
+        ((OPEN, HOLD), False, "fail"),  # still holding at the end
+        ((OPEN, HOLD), True, "unknown"),  # the recording contradicts the operator
+        ((OPEN,), False, "fail"),
+        ((OPEN, (np.nan, 0.5), *HANDOVER), True, "unknown"),  # a gap could hide a miss
+    ],
+)
+def test_first_attempt(tmp_path, segments, operator_success, expected):
+    extra = {"episode_end": "completed", "args": "{}", "verdict": "", "reason": "", "note": ""}
+    es.write_trial(tmp_path, 0, right_hand_log(*segments), extra, [])
+    assert es.first_attempt(tmp_path / "trial_000.npz", operator_success) == expected
 
 
 def _gate_after(tmp_path, first, second, trial=3, delay=0.2):
