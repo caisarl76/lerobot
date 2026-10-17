@@ -57,7 +57,10 @@ def run_trials(scene, gate: Path, session_dir: Path, n_trials: int, seed: int, t
         # the bottle comes after the settle: placed at the reset it meets the hand still raised in the default pose
         scene.place_bottle(seed + trial, task["bottle_xy_world"], task["jitter_m"])
         scene.fall.armed = True
-        judge = Judge(task["judge"])
+        # the scene's table top (CASE_TOP_Z may move it) wins over the task file's
+        judge = Judge(
+            {**task["judge"], "table_top_z": getattr(scene, "table_top_z", task["judge"]["table_top_z"])}
+        )
         judge.table_xy = np.asarray(task["table_xy_world"], float)
         # re-anchor the pacing while the robot stands: a stall before (load on the shared machine) does not carry
         # into the trial; a loaded machine cannot run the sim faster than real time to catch up

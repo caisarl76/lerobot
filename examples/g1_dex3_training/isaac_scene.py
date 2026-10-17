@@ -48,7 +48,7 @@ STAND_Z = 0.775  # pelvis height standing on the default pose: both feet on the 
 BAND_Z = 1.0  # root height while hanging on the band (gear_sonic: the deploy starts with the robot hung)
 # the robot handover table is a black flight case: depth (x), width (y), top height (m), estimated from the real head
 # camera frames (session s03) with the URDF camera mount; replays and the parity runs used sim_scene's 0.80 m slab
-CASE = (0.42, 0.32, 0.846)
+CASE = (0.42, 0.32, float(os.environ.get("CASE_TOP_Z", "0.846")))  # CASE_TOP_Z: test 5 rerun at +5 cm
 TABLE_TOP_Z = CASE[2]
 # clear PET bottle body radius / height from the same frames (the green cap is visual only)
 BOTTLE_R, BOTTLE_H = 0.033, 0.135
@@ -111,6 +111,7 @@ class Scene:
         self.out = Path(out)
         self.out.mkdir(parents=True, exist_ok=True)
         self.table_gap = float(table_gap_cm) if table_gap_cm else None
+        self.table_top_z = TABLE_TOP_Z  # the judge reads it (sim_trials)
         cam = load_camera(camera_json)
 
         def act(expr, friction):  # effort mode: no drive stiffness; MJCF passive damping 0.05, armature 0.01
@@ -137,6 +138,8 @@ class Scene:
                 prim_path="{ENV_REGEX_NS}/Robot",
                 spawn=sim_utils.UrdfFileCfg(
                     asset_path=str(URDF), fix_base=False, merge_fixed_joints=True, activate_contact_sensors=True,
+                    # one conversion reused by every run (default: a new timestamped dir per run, ~35 MB each)
+                    usd_dir=os.environ.get("ISAAC_USD_DIR", "/tmp/IsaacLab/g1_29dof_with_hand"),
                     joint_drive=sim_utils.UrdfConverterCfg.JointDriveCfg(
                         gains=sim_utils.UrdfConverterCfg.JointDriveCfg.PDGainsCfg(stiffness=0.0, damping=0.0)
                     ),
