@@ -19,15 +19,15 @@ held-out replays (gate GI). The scene and the task were fitted to the real robot
 bottle, black Dex3 hands; bottle position, handover zone and judge thresholds from 16-20 real successes), and the
 policies act on its renders almost as on real frames (test 4b). At the case height estimated from one real head frame
 (top 0.846 m), all 20 trials knocked the bottle over: the hand reached the bottle at cap height. With the case and bottle
-raised 5 cm (0.896 m), **Pi0.5 he scored 8/10 and GR00T he 3/10**; every failure is a knock-over before a lift. The robot
+raised 5 cm (0.896 m), **Pi0.5 he scored 8/10 and GR00T he 4/10**; every failure is a knock-over before a lift. The robot
 baseline (GR00T he 6/11 on the same checkpoint) overlaps both intervals, so the sim does not yet rank the two policies
 against the robot.
 
 ## Results
 
-All Isaac numbers below were produced before the IMU frame fix (`325aae1f`: the base gyro and torso IMU velocities
-were published in the world frame instead of gear_sonic's body / torso frames; the stacks start at yaw 1-3 deg and tilt
-2-6 deg, so the effect is expected to be small). Re-run pending on a quiet machine.
+Session numbers are from the rerun after the IMU frame fix (`325aae1f`: the base gyro and torso IMU velocities had
+been published in the world frame instead of gear_sonic's body / torso frames); the runs before it are in brackets
+and gave the same picture.
 
 ### Closed-loop sessions (test 5)
 
@@ -35,15 +35,15 @@ were published in the world frame instead of gear_sonic's body / torso frames; t
 
 | Case top | Policy (checkpoint) | Successes | 95 % CI | Failures |
 | --- | --- | --- | --- | --- |
-| 0.846 m (estimate) | GR00T he (`wbt_groot_he_full`) | 0/10 | 0.00-0.28 | 10 knocked over |
-| 0.846 m (estimate) | Pi0.5 he (`wbt_pi05_he_full`, EMA) | 0/10 | 0.00-0.28 | 10 knocked over |
-| 0.896 m (+5 cm) | GR00T he | 3/10 | 0.11-0.60 | 7 knocked over |
-| 0.896 m (+5 cm) | Pi0.5 he | 8/10 | 0.49-0.94 | 2 knocked over |
+| 0.846 m (estimate) | GR00T he (`wbt_groot_he_full`) | 0/10 (0/10) | 0.00-0.28 | 10 knocked over |
+| 0.846 m (estimate) | Pi0.5 he (`wbt_pi05_he_full`, EMA) | 0/10 (0/10) | 0.00-0.28 | 10 knocked over |
+| 0.896 m (+5 cm) | GR00T he | 4/10 (3/10) | 0.17-0.69 | 6 knocked over |
+| 0.896 m (+5 cm) | Pi0.5 he | 8/10 (8/10) | 0.49-0.94 | 2 knocked over |
 | robot | GR00T he, sessions s05-s07 (model logged) | 6/11 | 0.28-0.79 | 4 grasp failed, 1 dropped |
 | robot | GR00T he, + s03 (model not logged, 5/5) | 11/16 | 0.44-0.86 | |
 | robot | Pi0.5 he, 41 episodes | runs 36-37: 1 success, 1 watchdog stop | | no session |
 
-Successes lifted the bottle 9-14 cm (judge bar 3 cm). Per-trial lag p99 10-61 ms (most ~11 ms; the redo bar is 100 ms); policy chunk latency median 0.17 s
+Successes lifted the bottle 6-15 cm (judge bar 3 cm). Per-trial lag p99 10-61 ms (most ~11 ms; the redo bar is 100 ms); policy chunk latency median 0.17 s
 (GR00T) / 0.25 s (Pi0.5) over the tunnel. The spec's "Pi0.5 he 3/5" was the 20-episode Pi0.5 he, not this checkpoint.
 
 **Why 0/20 at the estimated height.** Torso-frame comparison with one FK model on the logged joints: the policies bring
@@ -60,7 +60,7 @@ Open: the case height measured on the real setup.
 | --- | --- |
 | 0a real-time factor, scene + camera, 60 s | GPU physics 0.49x (fails); CPU physics min 1.08 / median 1.37 (user: continue on CPU) |
 | 0b paced lag, ep 27 replay with the deploy | max 18.4 ms, p99 10.7 ms, 0 of 12259 steps > 20 ms (quiet machine); scorer valid, palm err vs the recording p50 3.9 / p95 7.0 cm |
-| GI Isaac vs MuJoCo replay parity, ep 27 / 35 x 3 | pass: palm p50 diff 0.17 / 0.93 cm (<= 1.0), p95 diff 0.43 / 1.30 cm (<= 2.0), tilt 9.3 vs 8.1 / 7.6 vs 7.3 deg |
+| GI Isaac vs MuJoCo replay parity, ep 27 / 35 x 3 | pass after the IMU fix (Isaac table at the MuJoCo slab height 0.80 m): palm p50 diff 0.07 / 0.97 cm (<= 1.0), p95 diff 0.47 / 1.40 cm (<= 2.0), tilt 9.2 vs 8.1 / 7.6 vs 7.3 deg (before: 0.17 / 0.93, 0.43 / 1.30) |
 | 3 task config | zone reached on replays (5.7-6.1 cm <= 8); replay reach check dropped (user): open-loop replays land 4-7 cm off |
 | 4 reset stability | the planner keeps its world heading across a reset (pelvis twisted to the last heading, 15.9 deg): one stack per trial; fresh stacks settle at yaw 1.8-2.6 deg, xy <= 4 cm |
 | 4b visual gap, 42 pre-grasp samples of s07, GR00T he | token gap render vs real 0.0117 (median), black frame 0.0305, real vs streamed 0.0086; render closer than black in 35/42; last 1.5 s before the grasp: render ~0.01, black 0.04-0.09 |
