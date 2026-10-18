@@ -10,6 +10,108 @@
 #          --startup-tokens /audit/table_startup/r20/startup.npz
 # Needs: /audit/code on H100 holding this directory's current scripts (copy them there through a container).
 # Env: SIM_HOST (ssh alias of the GPU host; default h100), HF_CACHE (host HF cache mounted for the policy server and streamer, default /mnt/data01/huggingface; on h100_174 use /mnt/data01/jhkim/huggingface, which holds CLIP and Qwen3-VL for Psi0/XR-1), LOG_DIR (local streamer logs, default ./sim_eval_logs), CODE_DIR (H100 script copy, default $A/code), JOINT28_DIR (joint28 dataset for scoring; HE: /run-output/humanoid_everyday_g1_20260923/datasets/joint28), SERVER_EXTRA (extra policy server args, e.g. --noise-seed 0 or --noise-scale 0), POLICY_SUBDIR (checkpoint subfolder, e.g. pretrained_model_ema), VPN_ON (command to re-establish the VPN, optional), BACKEND (sonic | decoupled; default sonic), HOST_ARGS (extra host args, decoupled only, e.g. --waist-location lower_and_upper_body), REPLAY (1: stream the episode's recorded actions; no policy server, RUN_NAME is ignored), SONIC_DIR (stored-token dataset for scoring; default the episode dataset), LEROBOT_DIR (lerobot code mounted at /workspace/lerobot for the policy server and streamer; default the official-recipe copy lerobot-g1-official-20260929-ceb40b77).
+if [ "${SIM:-mujoco}" = isaac ]; then
+  # Isaac mode (closed-loop handover sessions, docs/research/2026-10-17-g1-isaac-handover-eval.md): Isaac + deploy +
+  # streamer on this workstation, one full stack per trial (the deploy's planner keeps its heading across a reset), each
+  # in a private network namespace (its own lo: no DDS cross-talk with other sims on the machine) with a fresh gate dir;
+  # the policy server on $SIM_HOST GPU $GPU in a container, reached over an ssh tunnel bridged into each namespace
+  # through a unix socket. Streamer flags are a real robot session's args (ROBOT_ARGS: its trial_000.npz) except the
+  # policy server, gate / session dirs, the trial count, --dex3-right-order swap (the sim bridge's right-hand order) and
+  # --policy-timeout-s 5.
+  # Usage: SIM=isaac TRIALS=10 SESSION_DIR=DIR POLICY_PATH=DIR_ON_SIM_HOST ROBOT_ARGS=trial_000.npz \
+  #          GROUND_USD=default_environment.usd ISAAC_PY=python-of-the-isaac-env \
+  #          sonic_official_sim_eval.sh OUT - - - GPU TABLE_GAP_CM [extra streamer args...]
+  # Env: SERVER_EXTRA (e.g. "--backbone-dtype bfloat16 --noise-scale 0" for GR00T), ISAAC_GPU (default 0), SEED, MAX_ATTEMPTS
+  # (stacks per trial, default 5: a trial is redone when the sim lagged), CODE_DIR, LEROBOT_DIR, HF_CACHE as below.
+  : "${TRIALS:?}" "${SESSION_DIR:?}" "${POLICY_PATH:?policy dir on SIM_HOST}" "${ROBOT_ARGS:?robot session trial_000.npz}"
+  : "${GROUND_USD:?local copy of Isaac Grid/default_environment.usd}" "${ISAAC_PY:?python of the Isaac Lab env}"
+  OUT=$1; GPU=$5; GAP=$6; shift 6; EXTRA="$*"; SIM_HOST=${SIM_HOST:-h100}
+  A=/mnt/data01/jhkim/model_weight/sonic_roundtrip_20260923; C=${CODE_DIR:-$A/code}
+  LEROBOT_DIR=${LEROBOT_DIR:-/mnt/data01/jhkim/code/lerobot-g1-official-20260929-ceb40b77}
+  LOG_DIR=${LOG_DIR:-./sim_eval_logs}; OUTD=$(realpath -m "$LOG_DIR/$OUT"); mkdir -p "$OUTD" "$SESSION_DIR"
+  SESSION_DIR=$(realpath "$SESSION_DIR"); HERE=$(cd "$(dirname "$0")" && pwd)
+  P=jihun-isaac-policy-$OUT; RPORT=$((15560 + GPU)); SOCK=$OUTD/policy.sock
+  # a free local port per run: a fixed one could reach another run's tunnel (and model)
+  LPORT=${LPORT:-$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')}
+  FLAGS=$(python3 -c "
+import json, sys, numpy as np
+a = json.loads(str(np.load(sys.argv[1], allow_pickle=True)['args']))
+skip = {'policy_path', 'policy_server', 'device', 'gate_dir', 'log', 'trials', 'session_dir', 'dataset_root', 'episode',
+        'replay', 'replay_horizon', 'synthetic_waist', 'encoder_model', 'observation_config', 'robot_xml', 'dex3_right_order'}
+out = []
+for k, v in a.items():
+    if k in skip or v is None or v is False:
+        continue
+    out += [f'--{k.replace(\"_\", \"-\")}'] + ([] if v is True else [str(v)])
+print(json.dumps(out))" "$ROBOT_ARGS") || exit 1
+  echo "$FLAGS" > "$OUTD/streamer_flags.json"
+  ssh -n $SIM_HOST "docker rm -f $P >/dev/null 2>&1; docker run -d --name $P --gpus device=$GPU -p 127.0.0.1:$RPORT:5560 -e HF_HUB_OFFLINE=1 \
+    -e PYTHONPATH=/audit/pylib_stream -w /workspace/lerobot/examples/g1_dex3_training -v $LEROBOT_DIR:/workspace/lerobot:ro \
+    -v $C:/workspace/lerobot/examples/g1_dex3_training:ro -v /mnt/data01/jhkim/model_weight/g1_dex3_20260922:/run-output:ro \
+    -v ${HF_CACHE:-/mnt/data01/huggingface}:/root/.cache/huggingface -v $A:/audit:ro -v $POLICY_PATH:$POLICY_PATH:ro \
+    --entrypoint /run-output/environment/venv/bin/python 4cbe2a3f7fc6 -u sonic_policy_server.py --policy-path $POLICY_PATH \
+    --port 5560 $SERVER_EXTRA >/dev/null && until docker logs $P 2>&1 | grep -q 'ready on port'; do
+      [ -n \"\$(docker ps -q -f name=^$P\$)\" ] || { docker logs --tail 20 $P; exit 1; }; sleep 5; done" || { echo "policy server failed" >&2; exit 1; }
+  tunnel() {  # (re)start the ssh tunnel to the server; fails when it does not come up
+    ssh -N -o ExitOnForwardFailure=yes -o ServerAliveInterval=15 -L 127.0.0.1:$LPORT:127.0.0.1:$RPORT $SIM_HOST & TUNNEL=$!
+    for _ in $(seq 20); do (exec 3<>/dev/tcp/127.0.0.1/$LPORT) 2>/dev/null && return 0; kill -0 $TUNNEL 2>/dev/null || break; sleep 1; done
+    echo "ssh tunnel to $SIM_HOST:$RPORT did not come up" >&2; return 1
+  }
+  tunnel || exit 1
+  rm -f "$SOCK"; socat UNIX-LISTEN:"$SOCK",fork TCP:127.0.0.1:$LPORT & BRIDGE=$!
+  trap 'kill $TUNNEL $BRIDGE 2>/dev/null; ssh -n $SIM_HOST "docker rm -f $P >/dev/null 2>&1"' EXIT
+  trap 'exit 130' INT TERM
+  # the server's first chunk (CUDA warm-up) takes longer than the robot sessions' 1.5 s request timeout: warm it once
+  (cd "$HERE/../.." && env -u PYTHONPATH uv run python - "$LPORT" "$POLICY_PATH" <<'PY'
+import sys, time
+import numpy as np
+sys.path.insert(0, "examples/g1_dex3_training")
+from sonic_policy_streamer import RemotePolicy
+p = RemotePolicy(f"tcp://127.0.0.1:{sys.argv[1]}", 300.0)
+if p.model != sys.argv[2]:
+    sys.exit(f"[policy] the server serves {p.model}, not {sys.argv[2]}")
+img = {k: np.zeros((480, 640, 3), np.uint8) for k in p.image_keys}  # camera size: warms the server's resize path too
+for i in range(3):
+    t = time.time()
+    p.chunk([np.zeros(28, np.float32)] * p.n_obs, [img] * p.n_obs, "warm-up")
+    print(f"[policy] warm-up chunk {i}: {time.time() - t:.2f} s", flush=True)
+PY
+  ) || { echo "policy server warm-up failed" >&2; exit 1; }
+  done_n() { [ -f "$SESSION_DIR/results.jsonl" ] && wc -l < "$SESSION_DIR/results.jsonl" || echo 0; }
+  for i in $(seq 0 $((TRIALS - 1))); do
+    for attempt in $(seq "${MAX_ATTEMPTS:-5}"); do
+      [ "$(done_n)" -gt "$i" ] && break
+      G=$OUTD/gate_${i}_$attempt; mkdir -p "$G" "$OUTD/sim"
+      kill -0 $TUNNEL 2>/dev/null || { echo "[trial $((i + 1))] ssh tunnel down: restarting" >&2; tunnel || exit 1; }
+      # own PID namespace (with its /proc: CUDA fails without it): a hung host (Kit ignores SIGTERM) and its deploy end with the stack
+      unshare -rn --pid --fork --kill-child --mount-proc bash -c '
+        SOCK=$0 HERE=$1 N=$2 SESS=$3 GAP=$4 OUTD=$5 G=$6 TAG=$7 EXTRA=$8
+        mapfile -t FL < <(python3 -c "import json, sys; print(*json.load(open(sys.argv[1])), sep=chr(10))" "$OUTD/streamer_flags.json")
+        ip link set lo up
+        socat TCP-LISTEN:5560,bind=127.0.0.1,fork,reuseaddr UNIX-CONNECT:"$SOCK" & BR=$!
+        cd "$HERE" && SIM=isaac TRIALS=$N SESSION_DIR="$SESS" SEED=${SEED:-0} TABLE_GAP_CM=$GAP CUDA_VISIBLE_DEVICES=${ISAAC_GPU:-0} \
+          timeout -k 30 400 env -u PYTHONPATH "$ISAAC_PY" -u sonic_official_sim_host.py "$OUTD/sim" "$G" > "$OUTD/host_$TAG.log" 2>&1 & HOST=$!
+        # the streamer grabs a camera frame at start (10 s timeout): wait until Isaac is up and the deploy is ready.
+        # 127.0.0.1, not localhost: resolving localhost in the user namespace costs ~2 s per connection (warm-up timeout)
+        # --policy-timeout-s 5 (robot: 1.5): the first chunk of a fresh streamer through the namespace bridge took 1.5-2.1 s
+        # (later ones 0.15-0.4 s); the per-trial chunk latency is logged
+        until [ -f "$G/deploy_ready" ] || ! kill -0 $HOST 2>/dev/null; do sleep 2; done
+        cd "$HERE/../.." && timeout -k 10 380 env -u PYTHONPATH uv run python "$HERE/sonic_policy_streamer.py" \
+          --policy-server tcp://127.0.0.1:5560 --gate-dir "$G" --trials $N --session-dir "$SESS" "${FL[@]}" \
+          --dex3-right-order swap --policy-timeout-s 5 $EXTRA > "$OUTD/streamer_$TAG.log" 2>&1 & STR=$!
+        wait -n $HOST $STR; sleep 20; kill $STR 2>/dev/null
+        for _ in $(seq 60); do kill -0 $HOST 2>/dev/null || break; sleep 1; done  # verdict and records written
+        kill $BR 2>/dev/null' \
+        "$SOCK" "$HERE" $((i + 1)) "$SESSION_DIR" "$GAP" "$OUTD" "$G" "${i}_$attempt" "$EXTRA"
+      grep -h "chunk inference s" "$OUTD/streamer_${i}_$attempt.log" | tail -1 | sed "s/^/[trial $((i + 1)) attempt $attempt] /"
+    done
+    [ "$(done_n)" -gt "$i" ] || { echo "trial $((i + 1)) not saved after ${MAX_ATTEMPTS:-5} stacks" >&2; exit 1; }
+  done
+  echo "[$(TZ=Asia/Seoul date +%H:%M) KST] $OUT: $(python3 -c "
+import json, sys; r = [json.loads(l) for l in open(sys.argv[1])]
+print(f\"{sum(x['verdict'] == 'success' for x in r)}/{len(r)} success\")" "$SESSION_DIR/results.jsonl")"
+  exit 0
+fi
 LOG_DIR=${LOG_DIR:-./sim_eval_logs}; mkdir -p "$LOG_DIR"
 SIM_HOST=${SIM_HOST:-h100}
 OUT=$1; RUN=$2; DS=$3; EP=$4; GPU=$5; GAP=$6; shift 6; EXTRA="$*"

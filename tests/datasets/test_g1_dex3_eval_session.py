@@ -127,3 +127,17 @@ def test_gate_verdict_does_not_consume_a_half_written_file(tmp_path):
     got, waited = _gate_after(tmp_path, "", good)
     assert got == {"verdict": "success", "reason": "", "note": ""}
     assert waited >= 0.15
+
+
+def test_ended_roundtrip_and_clear(tmp_path):
+    es.write_ended(tmp_path, 3, "watchdog: arm speed")
+    assert es.read_ended(tmp_path, 2) is None
+    assert es.read_ended(tmp_path, 3) == "watchdog: arm speed"
+    assert es.read_ended(tmp_path, 3) is None  # consumed
+
+
+def test_clear_trial_files(tmp_path):
+    for name in ("ended.4", "stop.4", "settled.4", "verdict.4", "ended.5"):
+        (tmp_path / name).write_text("x")
+    es.clear_trial_files(tmp_path, 4)
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["ended.5"]

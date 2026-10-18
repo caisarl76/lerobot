@@ -110,6 +110,28 @@ def start_trial_input(gate_dir: Path | None, trial: int) -> None:
         termios.tcflush(sys.stdin, termios.TCIFLUSH)
 
 
+def write_ended(gate_dir: Path, trial: int, episode_end: str) -> None:
+    """--trials with --gate-dir: tell the sim host how trial `trial` ended, before waiting for verdict.{trial}."""
+    tmp = Path(gate_dir) / f".ended.{trial}.tmp"
+    tmp.write_text(episode_end)
+    tmp.replace(Path(gate_dir) / f"ended.{trial}")  # atomic: the host never reads a half-written file
+
+
+def read_ended(gate_dir: Path, trial: int) -> str | None:
+    path = Path(gate_dir) / f"ended.{trial}"
+    if not path.exists():
+        return None
+    text = path.read_text()
+    path.unlink()
+    return text
+
+
+def clear_trial_files(gate_dir: Path, trial: int) -> None:
+    """Sim host, before a trial: drop gate files of trial `trial` left by a crash or an earlier run."""
+    for name in ("ended", "stop", "settled", "verdict"):
+        (Path(gate_dir) / f"{name}.{trial}").unlink(missing_ok=True)
+
+
 def stop_requested(gate_dir: Path | None, trial: int) -> bool:
     """Polled once per 50 Hz tick: the operator pressed Enter (or wrote stop.{trial})."""
     if gate_dir is not None:

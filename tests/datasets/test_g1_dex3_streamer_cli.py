@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parents[2] / "examples" / "g1_dex3_training"))
-from sonic_policy_streamer import measured_ref, rtc_args, rtc_prefix
+from sonic_policy_streamer import frame_index, measured_ref, rtc_args, rtc_prefix
 from sonic_targets import NOMINAL_BODY
 
 HERE = Path(__file__).parents[2] / "examples" / "g1_dex3_training"
@@ -81,6 +81,25 @@ class StreamerCliTests(unittest.TestCase):
             self.assertEqual(r.returncode, 2)
             self.assertIn("trial 1 used another task, action_space", r.stderr)
 
+    def test_replay_trials_pass_the_argument_checks(self):
+        # sim reset test (Isaac plan test 4): judged trials of a replayed segment, no live camera
+        import tempfile
+
+        from sonic_policy_streamer import DatasetImages
+
+        with tempfile.TemporaryDirectory() as session:
+            r = cli("--trials", "2", "--session-dir", session, "--replay", "--dataset-root", session + "/none",
+                    "--episode", "0", "--duration-s", "5")  # fmt: skip
+        self.assertNotEqual(r.returncode, 2, r.stderr[-500:])
+        self.assertTrue(callable(DatasetImages.start_recording) and callable(DatasetImages.stop_recording))
+
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_frame_index_visits_every_frame_of_a_50hz_replay():
+    # t_ep = i * 0.02 (stream_backends.TICK): int(0.58 * 50) is 28, which skipped frame 29 (scorer coverage 97.9%)
+    assert [frame_index(i * 0.02, 50, 475) for i in range(475)] == list(range(475))
+    assert [frame_index(i * 0.02, 30, 300) for i in range(0, 500, 5)] == list(range(0, 300, 3))
+    assert frame_index(20.0, 50, 475) == 474 and frame_index(-0.1, 50, 475) == 0
