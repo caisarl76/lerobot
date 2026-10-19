@@ -67,6 +67,37 @@ def test_live_images_records_received_jpegs():
     assert all(abs(t - time.time()) < 5 for t, _, _ in rec)
 
 
+def test_camera_age_follows_the_camera_frame_reads(tmp_path):
+    """A named camera that stalls while the stereo stream continues: frame() keeps serving the cached named image,
+    so age() must report that image's age, not the stereo stream's."""
+    port, ctx = free_port(), zmq.Context()
+    pub = ctx.socket(zmq.PUB)
+    pub.bind(f"tcp://127.0.0.1:{port}")
+    key = "observation.images.egocentric"
+    images = LiveImages(ctx, "127.0.0.1", port, [key], {key: (3, 48, 64)}, "head_camera", "t")
+
+    def send(*names):
+        pub.send_string(
+            json.dumps({"images": {n: base64.b64encode(jpeg(10)).decode("ascii") for n in names}})
+        )
+
+    try:
+        deadline = time.monotonic() + 10
+        while images.age() > 0.2 and time.monotonic() < deadline:  # PUB/SUB slow joiner
+            send("egocentric", "head_camera")
+            time.sleep(0.05)
+        assert images.age() < 0.2
+        for _ in range(12):  # 0.6 s of stereo frames only
+            send("head_camera")
+            time.sleep(0.05)
+        assert images.age() > 0.5
+        assert images.frame(0.0)[1][key].shape == (48, 64, 3)  # still the cached named image
+    finally:
+        images.close()
+        pub.close(0)
+        ctx.term()
+
+
 def serve_policy(ctx, port, stop):
     rep = ctx.socket(zmq.REP)
     rep.bind(f"tcp://127.0.0.1:{port}")

@@ -433,13 +433,13 @@ class LiveImages:
         sock.close(linger=0)
 
     def age(self) -> float:
-        """Seconds since the cameras frame() reads last delivered a decoded frame: the oldest of the policy's key
-        cameras, or the stereo camera (as frame() picks them); inf if one never has."""
+        """Age of the oldest image frame() would return: per key, its own camera once that camera has delivered a
+        decoded frame (frame() prefers a cached named image), else the stereo camera; inf if a source never has."""
         now, inf = time.monotonic(), float("inf")
         with self.lock:
-            t = dict(self.t)
-        per_key = max((now - t.get(k.split(".")[-1], -inf) for k in self.keys), default=inf)
-        return min(per_key, now - t.get(self.stereo, -inf))
+            t = dict(self.t)  # same keys as self.latest
+        sources = [k.split(".")[-1] if k.split(".")[-1] in t else self.stereo for k in self.keys]
+        return max((now - t.get(src, -inf) for src in sources), default=inf)
 
     def close(self):
         """Stop the receiver thread before the process exits: a daemon thread still inside OpenCV or libzmq at
