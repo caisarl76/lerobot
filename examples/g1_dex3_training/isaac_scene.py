@@ -50,8 +50,17 @@ BAND_Z = 1.0  # root height while hanging on the band (gear_sonic: the deploy st
 # (2026-10-19; the head-frame fit gave 0.42 x 0.32 x 0.846); replays and the parity runs used sim_scene's 0.80 m slab
 CASE = (0.475, 0.35, float(os.environ.get("CASE_TOP_Z", "0.845")))  # CASE_TOP_Z: e.g. the +5 cm runs
 TABLE_TOP_Z = CASE[2]
-# clear PET bottle: 17 cm with the cap (measured), radius from the head frames; the 1.5 cm cap is visual only
+# clear PET bottle: 17 cm with the cap (measured), radius from the head frames. BOTTLE_H is the body without the cap;
+# the root sits at its middle. Profile (base up): body r 3.3 cm to 11 cm, a shoulder cone, a 1.35 cm neck from 12.5 cm,
+# a solid 1.65 cm cap on top: the hand passes the narrow neck, a full-radius cylinder catches it (every knock-over hit
+# the top 4 cm)
 BOTTLE_R, BOTTLE_H = 0.033, 0.155
+BOTTLE_PARTS = (  # (name, shape, radius, height, centre height above the base)
+    ("body", "cylinder", BOTTLE_R, 0.110, 0.055),
+    ("shoulder", "cone", BOTTLE_R, 0.050, 0.135),
+    ("neck", "cylinder", 0.0135, 0.030, 0.140),
+    ("cap", "cylinder", 0.0165, 0.017, BOTTLE_H + 0.0085),
+)
 DEX3 = ("thumb_0", "thumb_1", "thumb_2", "middle_0", "middle_1", "index_0", "index_1")  # bridge / actuator order
 DEX3_MOTORS = [f"{s}_hand_{j}_joint" for s in ("left", "right") for j in DEX3]
 # gear_sonic g1_29dof_with_hand.xml actuator order, which motor_effort_limit_list follows
@@ -176,11 +185,10 @@ class Scene:
             )
             bottle = RigidObjectCfg(
                 prim_path="{ENV_REGEX_NS}/Bottle",
-                spawn=sim_utils.CylinderCfg(
+                spawn=sim_utils.CylinderCfg(  # the rigid root; its own cylinder is hidden, BOTTLE_PARTS collide
                     radius=BOTTLE_R, height=BOTTLE_H,
                     rigid_props=sim_utils.RigidBodyPropertiesCfg(),
                     mass_props=sim_utils.MassPropertiesCfg(mass=0.5),
-                    collision_props=sim_utils.CollisionPropertiesCfg(),
                     # clear PET: a light glossy surface (OmniGlass renders black in the real-time RTX path)
                     visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.72, 0.76, 0.78), roughness=0.05),
                 ),  # fmt: skip
@@ -192,9 +200,17 @@ class Scene:
 
         self.sim = sim_utils.SimulationContext(sim_utils.SimulationCfg(dt=DT, render_interval=1, device=device))
         self.scene = InteractiveScene(CfgScene(num_envs=1, env_spacing=4.0))
-        cap = sim_utils.CylinderCfg(radius=0.0165, height=0.017,
-                                    visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.78, 0.86, 0.12)))
-        cap.func("/World/envs/env_0/Bottle/cap", cap, translation=(0.0, 0.0, BOTTLE_H / 2 + 0.0085))  # rides the bottle
+        from pxr import UsdGeom
+
+        stage = sim_utils.get_current_stage()
+        UsdGeom.Imageable(stage.GetPrimAtPath("/World/envs/env_0/Bottle/geometry/mesh")).MakeInvisible()
+        pet = sim_utils.PreviewSurfaceCfg(diffuse_color=(0.72, 0.76, 0.78), roughness=0.05)
+        # colliders under the rigid root: one body, its mass stays 0.5 kg
+        for name, shape, r, h, zc in BOTTLE_PARTS:
+            look = sim_utils.PreviewSurfaceCfg(diffuse_color=(0.78, 0.86, 0.12)) if name == "cap" else pet
+            part = (sim_utils.ConeCfg if shape == "cone" else sim_utils.CylinderCfg)(
+                radius=r, height=h, collision_props=sim_utils.CollisionPropertiesCfg(), visual_material=look)
+            part.func(f"/World/envs/env_0/Bottle/{name}", part, translation=(0.0, 0.0, zc - BOTTLE_H / 2))
         # the real Dex3 hands are black; the URDF meshes render white
         black = sim_utils.PreviewSurfaceCfg(diffuse_color=(0.03, 0.03, 0.03), roughness=0.4)
         black.func("/World/Looks/dex3_black", black)

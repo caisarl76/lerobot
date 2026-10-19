@@ -776,14 +776,17 @@ def main():
     if a.trials is not None:
         if a.trials < 1 or a.session_dir is None or a.log:
             p.error("--trials needs --session-dir and a count >= 1 (it replaces --log)")
+        # --images dataset with --policy-server: the sim's real-frame runs (recorded head frames, live sim state); the
+        # gate dir means a sim host, so a real robot never acts on recorded frames
         if (
-            (a.images != "zmq" and not a.replay)
+            (a.images != "zmq" and not a.replay and a.gate_dir is None)
             or a.backend != "sonic"
             or a.end != "planner"
             or a.handoff_blend_s <= 0
         ):
             p.error(
-                "--trials needs --images zmq (or --replay), --backend sonic, --end planner and --handoff-blend-s > 0"
+                "--trials needs --images zmq (or --replay, or --images dataset with --gate-dir), --backend sonic, --end planner "
+                "and --handoff-blend-s > 0"
             )
         parse_reasons(a.failure_reasons)  # fail before the robot moves
         first = first_trial_args(a.session_dir)
@@ -936,7 +939,9 @@ def main():
             joints = replay_chunk(replay, k, a.replay_horizon)
         else:
             # --state-source dataset: recorded state (isolates execution from state feedback); robot: closed loop
-            states = [o[2] for o in obs] if a.state_source == "dataset" else [s + state_offset for s in robot_hist]
+            states = (
+                [o[2] for o in obs] if a.state_source == "dataset" else [s + state_offset for s in robot_hist]
+            )
             joints = policy.chunk_rtc(states, [o[1] for o in obs], task, rtc_offset, rtc_delay)
         if a.synthetic_waist:
             times = (k + np.arange(len(joints))) / images.fps
