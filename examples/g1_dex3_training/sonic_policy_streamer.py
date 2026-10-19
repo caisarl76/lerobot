@@ -88,7 +88,9 @@ try:
         max_arm_speed,
         measured_ref as measured_ref,  # re-exported for the tests
         observation_state,
+        say,
         ticks,
+        token_echo_err,
     )
     from .wbc_common import (
         check_replay_width,
@@ -122,7 +124,9 @@ except ImportError:
         max_arm_speed,
         measured_ref as measured_ref,  # re-exported for the tests
         observation_state,
+        say,
         ticks,
+        token_echo_err,
     )
     from wbc_common import (
         check_replay_width,
@@ -159,6 +163,7 @@ ARM_LO = np.array(
 ARM_HI = np.array(
     [1.473, 1.637, 1.676, 1.526, 1.97, 1.618, 1.625, 1.586, 0.284, 1.579, 1.419, 1.599, 1.634, 1.616]
 )
+TOKEN_ECHO_TOL = 1e-4  # the deploy copies float32 tokens into double token_state: an echo is exact
 ARM_SPEED_TICKS = 3  # measured arm speed over 3 ticks (60 ms): robust to one late or repeated state message
 
 
@@ -175,10 +180,15 @@ class StateSubscriber:
 
         try:
             raw = self.sock.recv(zmq.NOBLOCK)
-            self.msg = msgpack.unpackb(raw[len("g1_debug") :], raw=False)
-            self.t = time.monotonic()
         except zmq.Again:
-            pass
+            return self.msg
+        try:  # an undecodable or malformed message is dropped: it ages into the --max-state-age-s stop
+            msg = msgpack.unpackb(raw[len("g1_debug") :], raw=False)
+            observation_state(msg)
+        except Exception as exc:
+            print(f"[streamer] dropped a g1_debug message: {exc!r}", flush=True)
+            return self.msg
+        self.msg, self.t = msg, time.monotonic()
         return self.msg
 
     def age(self) -> float:
@@ -383,7 +393,11 @@ class LiveImages:
 
     def __init__(self, ctx, host: str, port: int, keys: list[str], shapes: dict, stereo: str, task: str):
         self.keys, self.shapes, self.stereo, self.task = keys, shapes, stereo, task
-        self.latest, self.lock = {}, threading.Lock()
+        self.latest, self.lock, self.t = (
+            {},
+            threading.Lock(),
+            {},
+        )  # t: receive time of each camera's last frame
         self.recording: list[tuple[float, str, bytes]] | None = None  # --trials: JPEGs as received
         sock = ctx.socket(zmq.SUB)
         sock.setsockopt(zmq.CONFLATE, 1)
@@ -407,13 +421,25 @@ class LiveImages:
             recording = self.recording  # one read: the main thread swaps the list
             if recording is not None:
                 recording.extend((t, name, jpg) for name, jpg in raw.items())
-            decoded = {
-                name: cv2.imdecode(np.frombuffer(jpg, np.uint8), cv2.IMREAD_COLOR)
+            decoded = {  # an undecodable image (or the server's empty message on a capture stall) is no frame
+                name: img
                 for name, jpg in raw.items()
+                if (img := cv2.imdecode(np.frombuffer(jpg, np.uint8), cv2.IMREAD_COLOR)) is not None
             }
+            now = time.monotonic()
             with self.lock:
                 self.latest.update(decoded)
+                self.t.update(dict.fromkeys(decoded, now))
         sock.close(linger=0)
+
+    def age(self) -> float:
+        """Age of the oldest image frame() would return: per key, its own camera once that camera has delivered a
+        decoded frame (frame() prefers a cached named image), else the stereo camera; inf if a source never has."""
+        now, inf = time.monotonic(), float("inf")
+        with self.lock:
+            t = dict(self.t)  # same keys as self.latest
+        sources = [k.split(".")[-1] if k.split(".")[-1] in t else self.stereo for k in self.keys]
+        return max((now - t.get(src, -inf) for src in sources), default=inf)
 
     def close(self):
         """Stop the receiver thread before the process exits: a daemon thread still inside OpenCV or libzmq at
@@ -640,6 +666,20 @@ def main():
         type=float,
         default=1.0,
         help="end the episode if no new chunk arrives for this long (keep below the chunk's duration)",
+    )
+    p.add_argument(
+        "--max-camera-age-s",
+        type=float,
+        default=0.5,
+        help="--images zmq: end the episode if the newest head-camera frame is older than this (frozen camera; "
+        "41 robot trials s01-s08: frames every 0.067 s, largest gap 0.10 s)",
+    )
+    p.add_argument(
+        "--token-echo-timeout-s",
+        type=float,
+        default=0.5,
+        help="--backend sonic: end the episode if the deploy's g1_debug token_state has matched none of the recently "
+        "streamed tokens for this long (the deploy follows another command source, e.g. --zmq-host elsewhere); 0 = off",
     )
     p.add_argument(
         "--max-state-age-s",
@@ -961,6 +1001,7 @@ def main():
         latencies, slot, slot_t = [], None, 0.0
         next_replan, last_chunk_t, chunk_t0 = a.replan_s, 0.0, 0.0
         last_accepted = True  # the first chunk is playing
+        echo_lost = None  # t_ep since the deploy's token_state stopped matching our tokens
         episode_end = "completed"
         for i in ticks(int(duration / TICK)):
             t_ep = i * TICK
@@ -988,6 +1029,23 @@ def main():
                 episode_end = f"robot state {state.age():.2f} s old"
                 print(f"[streamer] {episode_end}: ending episode", flush=True)
                 break
+            # never plan on a frozen view
+            if isinstance(images, LiveImages) and images.age() > a.max_camera_age_s:
+                episode_end = f"camera frame {images.age():.2f} s old"
+                print(f"[streamer] {episode_end}: ending episode", flush=True)
+                break
+            if a.backend == "sonic" and a.token_echo_timeout_s > 0:
+                if token_echo_err(state.latest(), backend.recent) <= TOKEN_ECHO_TOL:
+                    echo_lost = None
+                elif echo_lost is None:
+                    echo_lost = t_ep
+                elif t_ep - echo_lost > a.token_echo_timeout_s:
+                    episode_end = (
+                        f"deploy token_state has not matched a streamed token for {a.token_echo_timeout_s:g} s "
+                        "(another command source?)"
+                    )
+                    print(f"[streamer] {episode_end}: ending episode", flush=True)
+                    break
             reason = arm_watchdog()
             if reason:
                 episode_end = f"watchdog: {reason}"
@@ -1012,6 +1070,15 @@ def main():
         backend.finish()
         return episode_end, frames
 
+    def run_episode_or_hand_back(trial: int | None) -> tuple[str, list]:
+        try:
+            return run_episode(trial)
+        except BaseException as exc:
+            if getattr(backend, "pose", False):
+                say(f"[streamer] {exc!r}: blending out and handing back before exiting")
+                backend.finish()
+            raise
+
     if a.trials:
         reasons = parse_reasons(a.failure_reasons)
         backend.connect()
@@ -1033,7 +1100,7 @@ def main():
                 raise SystemExit(
                     f"[eval] the policy server now serves {model}, trial 1 used {first}: use a new --session-dir"
                 )
-            episode_end, frames = run_episode(trial)
+            episode_end, frames = run_episode_or_hand_back(trial)
             print(f"[eval] trial {trial + 1}/{a.trials} ended: {episode_end}", flush=True)
             verdict = (
                 gate_verdict(a.gate_dir, trial, reasons) if a.gate_dir else ask_verdict(reasons, episode_end)
@@ -1056,7 +1123,7 @@ def main():
             trial += 1
         print(f"[eval] session {a.session_dir}: {summarize(a.session_dir)}", flush=True)
     else:
-        episode_end, _ = run_episode(None)
+        episode_end, _ = run_episode_or_hand_back(None)
         if a.log:
             np.savez_compressed(
                 a.log,
