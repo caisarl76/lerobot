@@ -88,6 +88,7 @@ try:
         max_arm_speed,
         measured_ref as measured_ref,  # re-exported for the tests
         observation_state,
+        say,
         ticks,
         token_echo_err,
     )
@@ -123,6 +124,7 @@ except ImportError:
         max_arm_speed,
         measured_ref as measured_ref,  # re-exported for the tests
         observation_state,
+        say,
         ticks,
         token_echo_err,
     )
@@ -391,7 +393,11 @@ class LiveImages:
 
     def __init__(self, ctx, host: str, port: int, keys: list[str], shapes: dict, stereo: str, task: str):
         self.keys, self.shapes, self.stereo, self.task = keys, shapes, stereo, task
-        self.latest, self.lock, self.t = {}, threading.Lock(), None
+        self.latest, self.lock, self.t = (
+            {},
+            threading.Lock(),
+            {},
+        )  # t: receive time of each camera's last frame
         self.recording: list[tuple[float, str, bytes]] | None = None  # --trials: JPEGs as received
         sock = ctx.socket(zmq.SUB)
         sock.setsockopt(zmq.CONFLATE, 1)
@@ -415,18 +421,25 @@ class LiveImages:
             recording = self.recording  # one read: the main thread swaps the list
             if recording is not None:
                 recording.extend((t, name, jpg) for name, jpg in raw.items())
-            decoded = {
-                name: cv2.imdecode(np.frombuffer(jpg, np.uint8), cv2.IMREAD_COLOR)
+            decoded = {  # an undecodable image (or the server's empty message on a capture stall) is no frame
+                name: img
                 for name, jpg in raw.items()
+                if (img := cv2.imdecode(np.frombuffer(jpg, np.uint8), cv2.IMREAD_COLOR)) is not None
             }
+            now = time.monotonic()
             with self.lock:
                 self.latest.update(decoded)
-                self.t = time.monotonic()
+                self.t.update(dict.fromkeys(decoded, now))
         sock.close(linger=0)
 
     def age(self) -> float:
-        """Seconds since the last camera message (inf before the first)."""
-        return float("inf") if self.t is None else time.monotonic() - self.t
+        """Seconds since the cameras frame() reads last delivered a decoded frame: the oldest of the policy's key
+        cameras, or the stereo camera (as frame() picks them); inf if one never has."""
+        now, inf = time.monotonic(), float("inf")
+        with self.lock:
+            t = dict(self.t)
+        per_key = max((now - t.get(k.split(".")[-1], -inf) for k in self.keys), default=inf)
+        return min(per_key, now - t.get(self.stereo, -inf))
 
     def close(self):
         """Stop the receiver thread before the process exits: a daemon thread still inside OpenCV or libzmq at
@@ -1062,7 +1075,7 @@ def main():
             return run_episode(trial)
         except BaseException as exc:
             if getattr(backend, "pose", False):
-                print(f"[streamer] {exc!r}: blending out and handing back before exiting", flush=True)
+                say(f"[streamer] {exc!r}: blending out and handing back before exiting")
                 backend.finish()
             raise
 

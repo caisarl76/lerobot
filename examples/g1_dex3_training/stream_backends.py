@@ -17,6 +17,7 @@ record(token, hands, phase, t_ep, k, chunk_t0, joint_ref) is the streamer's per-
 
 from __future__ import annotations
 
+import contextlib
 import json
 import struct
 import time
@@ -89,8 +90,16 @@ def observation_state(msg: dict) -> np.ndarray:
     body = np.asarray(msg["body_q"], np.float32)
     if body.shape != (29,):
         raise ValueError(f"expected 29 body joints, got {body.shape}")
-    right = np.asarray(msg["right_hand_q"], np.float32)[RIGHT_ORDER]
-    return np.concatenate([body[15:29], msg["left_hand_q"], right]).astype(np.float32)
+    left, right = (np.asarray(msg[k], np.float32) for k in ("left_hand_q", "right_hand_q"))
+    if left.shape != (7,) or right.shape != (7,):
+        raise ValueError(f"expected 7 joints per Dex3 hand, got {left.shape} and {right.shape}")
+    return np.concatenate([body[15:29], left, right[RIGHT_ORDER]]).astype(np.float32)
+
+
+def say(text: str) -> None:
+    """print() that cannot raise: a closed log pipe (tee gone) must not stop a blend out or handback."""
+    with contextlib.suppress(OSError, ValueError):
+        print(text, flush=True)
 
 
 def token_echo_err(msg: dict | None, recent) -> float:
@@ -293,7 +302,7 @@ class SonicBackend:
     def finish(self):
         a, startup = self.a, self.startup
         rest_token, rest_hands = self.rest_token, self.rest_hands
-        print(f"[streamer] token slew limit active on {self.slewed} ticks so far", flush=True)
+        say(f"[streamer] token slew limit active on {self.slewed} ticks so far")
         last_token, last_hands = self.last_sent, self.last_hands
         for i in ticks(
             50
@@ -323,10 +332,10 @@ class SonicBackend:
                 w = (i + 1) / n
                 self.send((1 - w) * held + w * self.planner, (1 - w) * held_h, "handback blend")
             self.pub.send(command_message(start=True, planner=True))
-            print("[streamer] command: PLANNER mode (deploy left running)", flush=True)
+            say("[streamer] command: PLANNER mode (deploy left running)")
         else:
             self.pub.send(command_message(start=False, planner=False))
-            print("[streamer] command: stop", flush=True)
+            say("[streamer] command: stop")
         self.pose = False
 
 

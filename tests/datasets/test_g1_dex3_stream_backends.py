@@ -11,6 +11,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 import numpy as np
+import pytest
 
 sys.path.insert(0, str(Path(__file__).parents[2] / "examples" / "g1_dex3_training"))
 import stream_backends
@@ -251,3 +252,11 @@ class MaxArmSpeedTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@pytest.mark.parametrize("side, n", [("left_hand_q", 6), ("right_hand_q", 6), ("left_hand_q", 8)])
+def test_observation_state_rejects_a_hand_without_7_joints(side, n):
+    msg = {"body_q": [0.0] * 29, "left_hand_q": [0.0] * 7, "right_hand_q": [0.0] * 7}
+    msg[side] = [0.0] * n
+    with pytest.raises(ValueError, match="7 joints"):
+        stream_backends.observation_state(msg)

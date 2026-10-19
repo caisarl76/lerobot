@@ -236,7 +236,9 @@ def listen_commands(ctx, port, stop, out, echo):
     sub.close(0)
 
 
-def run_faulted_trial(tmp_path, fault_name, sigint=False, policy_after_chunks=None, duration_s=20):
+def run_faulted_trial(
+    tmp_path, fault_name, sigint=False, policy_after_chunks=None, duration_s=20, close_stdout=False
+):
     ports = {k: free_port() for k in ("policy", "state", "camera", "action")}
     ctx, stop, fault, commands, echo = zmq.Context(), threading.Event(), {}, [], {"token": [0.0] * 64}
     if policy_after_chunks is not None:
@@ -247,6 +249,14 @@ def run_faulted_trial(tmp_path, fault_name, sigint=False, policy_after_chunks=No
             pub.send(b"g1_debug\xc1")  # 0xc1: never valid msgpack
         elif fault.get("state_malformed"):
             pub.send(b"g1_debug" + msgpack.packb({"body_q": [0.0] * 28, "left_hand_q": [0.0] * 7}))
+        elif fault.get("state_short_hand"):  # a 27D observation if accepted
+            msg = {
+                "body_q": [0.0] * 29,
+                "left_hand_q": [0.0] * 6,
+                "right_hand_q": [0.0] * 7,
+                "token_state": echo["token"],
+            }
+            pub.send(b"g1_debug" + msgpack.packb(msg, use_bin_type=True))
         elif not fault.get("state_stopped"):
             # a deploy listening to another command source reports that source's tokens, not ours
             token = [0.7] * 64 if fault.get("deploy_elsewhere") else echo["token"]
@@ -259,7 +269,11 @@ def run_faulted_trial(tmp_path, fault_name, sigint=False, policy_after_chunks=No
             pub.send(b"g1_debug" + msgpack.packb(msg, use_bin_type=True))
 
     def cam(pub, i):
-        if not fault.get("camera_frozen"):
+        if fault.get("camera_empty"):  # the image server's message while capture is stalled
+            pub.send_string(json.dumps({"images": {}}))
+        elif fault.get("camera_undecodable"):
+            pub.send_string(json.dumps({"images": {"egocentric": base64.b64encode(b"not a jpeg").decode()}}))
+        elif not fault.get("camera_frozen"):
             camera(pub, i)
 
     threads = [
@@ -284,13 +298,16 @@ def run_faulted_trial(tmp_path, fault_name, sigint=False, policy_after_chunks=No
         )  # fmt: skip
         lines = []
         reader = threading.Thread(target=lambda: lines.extend(proc.stdout), daemon=True)
-        reader.start()
+        if not close_stdout:  # else nothing reads the pipe, so closing it races no reader
+            reader.start()
         for name in ("deploy_ready", "settled.0"):
             (gate / name).touch()
         wait_gone(gate / "settled.0")
         time.sleep(FAULT_AT_S)
         if sigint:
             proc.send_signal(signal.SIGINT)
+        elif close_stdout:  # the log consumer (tee) goes away: every later print raises BrokenPipeError
+            proc.stdout.close()
         elif fault_name:
             fault[fault_name] = True
         deadline = time.monotonic() + 60
@@ -300,7 +317,8 @@ def run_faulted_trial(tmp_path, fault_name, sigint=False, policy_after_chunks=No
         if proc.poll() is None:  # the trial ended normally: the operator scores it
             (gate / "verdict.0").write_text(json.dumps({"verdict": "fail", "reason": 1}))
         proc.wait(timeout=60)
-        reader.join(timeout=10)
+        if reader.is_alive() or not close_stdout:
+            reader.join(timeout=10)
         time.sleep(0.2)  # the last command in flight
     finally:
         if proc.poll() is None:
@@ -325,6 +343,9 @@ START_PLANNER, POSE = (1, 0, 1), (1, 0, 0)
         ("state_undecodable", "robot state"),
         ("state_malformed", "robot state"),
         ("camera_frozen", "camera frame"),
+        ("camera_empty", "camera frame"),
+        ("camera_undecodable", "camera frame"),
+        ("state_short_hand", "robot state"),
         ("deploy_elsewhere", "deploy token_state"),
     ],
 )
@@ -352,3 +373,9 @@ def test_a_deploy_that_echoes_the_streamed_tokens_runs_to_the_cap(tmp_path):
     code, out, commands, ended = run_faulted_trial(tmp_path, None, duration_s=8)
     assert code == 0 and ended == "completed", (ended, out[-3000:])
     assert commands == [START_PLANNER, POSE, START_PLANNER], out[-3000:]
+
+
+def test_a_closed_log_pipe_does_not_prevent_the_handback(tmp_path):
+    code, _, commands, _ = run_faulted_trial(tmp_path, None, duration_s=8, close_stdout=True)
+    assert code != 0
+    assert commands == [START_PLANNER, POSE, START_PLANNER]
