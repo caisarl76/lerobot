@@ -188,6 +188,17 @@ class StateSubscriber:
         return float("inf") if self.t is None else time.monotonic() - self.t
 
 
+def parse_state_offset(text: str | None) -> np.ndarray:
+    """--state-offset: 14 arm-joint offsets in degrees -> a 28D offset in radians (hands 0)."""
+    off = np.zeros(28, np.float32)
+    if text:
+        v = [float(x) for x in text.split(",")]
+        if len(v) != 14:
+            raise ValueError(f"--state-offset needs 14 values (the arm joints), got {len(v)}")
+        off[:14] = np.radians(v)
+    return off
+
+
 def frame_index(t: float, fps: float, n: int) -> int:
     """Recorded frame at elapsed time t, clipped to [0, n-1]. The epsilon keeps t = i * TICK on frame i: int(0.58 * 50)
     is 28, which skipped a frame every ~0.6 s of a 50 Hz replay."""
@@ -690,6 +701,11 @@ def main():
         help="robot: closed loop on the deploy's state; dataset: feed the recorded observation.state (evaluation)",
     )
     p.add_argument(
+        "--state-offset",
+        help="sim experiments: 14 comma-separated degrees added to the arm joints of the policy's state input only "
+        "(the deploy, the watchdog and the log keep the measured state)",
+    )
+    p.add_argument(
         "--handoff-blend-s",
         type=float,
         default=2.0,
@@ -862,6 +878,7 @@ def main():
         """Replay chunk rows are dataset frames k, k+1, ...: their time base is frame k's time."""
         return k / images.fps
 
+    state_offset = parse_state_offset(a.state_offset)
     history = []  # (t_ep, robot state, wall time) of recent episode ticks, for policies with n_obs_steps > 1
     log = {
         k: [] for k in ("wall", "t_ep", "phase", "frame", "token", "hands", "chunk_t0", "state", "joint_ref")
@@ -919,7 +936,7 @@ def main():
             joints = replay_chunk(replay, k, a.replay_horizon)
         else:
             # --state-source dataset: recorded state (isolates execution from state feedback); robot: closed loop
-            states = [o[2] for o in obs] if a.state_source == "dataset" else robot_hist
+            states = [o[2] for o in obs] if a.state_source == "dataset" else [s + state_offset for s in robot_hist]
             joints = policy.chunk_rtc(states, [o[1] for o in obs], task, rtc_offset, rtc_delay)
         if a.synthetic_waist:
             times = (k + np.arange(len(joints))) / images.fps
