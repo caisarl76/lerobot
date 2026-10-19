@@ -1,8 +1,8 @@
 {
- "source": "real GR00T he handover sessions s03/s06/s07/s08 (16 right-hand successes): bottle = grasp point in front of the palm (MuJoCo FK of the logged arm+hand state, torso pitched 6 deg in the planner stance), zone = palm at the release; case (table) size, top height and distance from the s03 trial 0 head frame with the URDF camera mount (fit: case top rectangular). Replay-derived values (derive_handover_task.py) kept under replay_derivation.",
+ "source": "real GR00T he handover sessions s03/s06/s07/s08 (16 right-hand successes): bottle = grasp point in front of the palm (MuJoCo FK of the logged arm+hand state, torso pitched 6 deg in the planner stance), zone = palm at the release; case size and height measured on the real setup (2026-10-19), its distance from the s03 trial 0 head frame with the URDF camera mount (fit: case top rectangular). Replay-derived values (derive_handover_task.py) kept under replay_derivation.",
  "table_gap_cm": 20.0,
  "table_xy_world": [
-  0.49,
+  0.5175,
   0.0
  ],
  "bottle_xy_world": [
@@ -11,13 +11,13 @@
  ],
  "jitter_m": 0.04,
  "judge": {
-  "table_top_z": 0.846,
+  "table_top_z": 0.845,
   "table_half_xy": [
-   0.21,
-   0.16
+   0.2375,
+   0.175
   ],
   "bottle_radius": 0.033,
-  "bottle_height": 0.135,
+  "bottle_height": 0.155,
   "zone_center_pelvis": [
    0.359,
    -0.126,

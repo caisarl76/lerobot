@@ -46,12 +46,12 @@ FPS, W, H = 30, 640, 480
 DT = 0.005
 STAND_Z = 0.775  # pelvis height standing on the default pose: both feet on the floor in test 0a
 BAND_Z = 1.0  # root height while hanging on the band (gear_sonic: the deploy starts with the robot hung)
-# the robot handover table is a black flight case: depth (x), width (y), top height (m), estimated from the real head
-# camera frames (session s03) with the URDF camera mount; replays and the parity runs used sim_scene's 0.80 m slab
-CASE = (0.42, 0.32, float(os.environ.get("CASE_TOP_Z", "0.846")))  # CASE_TOP_Z: test 5 rerun at +5 cm
+# the robot handover table is a black flight case: depth (x), width (y), top height (m), measured on the real setup
+# (2026-10-19; the head-frame fit gave 0.42 x 0.32 x 0.846); replays and the parity runs used sim_scene's 0.80 m slab
+CASE = (0.475, 0.35, float(os.environ.get("CASE_TOP_Z", "0.845")))  # CASE_TOP_Z: e.g. the +5 cm runs
 TABLE_TOP_Z = CASE[2]
-# clear PET bottle body radius / height from the same frames (the green cap is visual only)
-BOTTLE_R, BOTTLE_H = 0.033, 0.135
+# clear PET bottle: 17 cm with the cap (measured), radius from the head frames; the 1.5 cm cap is visual only
+BOTTLE_R, BOTTLE_H = 0.033, 0.155
 DEX3 = ("thumb_0", "thumb_1", "thumb_2", "middle_0", "middle_1", "index_0", "index_1")  # bridge / actuator order
 DEX3_MOTORS = [f"{s}_hand_{j}_joint" for s in ("left", "right") for j in DEX3]
 # gear_sonic g1_29dof_with_hand.xml actuator order, which motor_effort_limit_list follows
@@ -464,6 +464,7 @@ class Scene:
                 "wrist_R": np.stack([quat_wxyz_to_matrix(quats[i]) for i in self.wrist_ids]),
                 "torso_R": quat_wxyz_to_matrix(quats[self.torso_id]), "floor_contacts": self.floor_contacts(),
                 "table_clear": clear, "table_hits": hits, "bottle_pos": bottle_pos, "bottle_quat": bottle_quat,
+                "cmd_q": self.cmd["q"][: len(BODY)].copy(),  # the deploy's body setpoints (tracking vs the measured body_q)
             }  # fmt: skip
         row.update(extra)
         for k, v in row.items():
