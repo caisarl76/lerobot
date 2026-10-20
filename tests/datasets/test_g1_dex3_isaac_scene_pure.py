@@ -69,3 +69,12 @@ def test_imu_velocities_follow_mujoco_frames():
     np.testing.assert_allclose(base[:3], [1.0, 0.0, 0.0], atol=1e-9)  # linear stays in the world frame
     np.testing.assert_allclose(base[3:], [0.0, -1.0, 0.0], atol=1e-9)  # world +x seen from a body yawed +90 deg
     np.testing.assert_allclose(torso, [0.0, -1.0, 0.0, 0.0, -1.0, 0.0], atol=1e-9)  # both torso parts local
+
+
+def test_composite_keeps_robot_and_bottle_pixels_only():
+    rgb, bg = np.full((2, 3, 3), 200, np.uint8), np.full((2, 3, 3), 10, np.uint8)
+    seg = np.array([[1, 2, 3], [4, 0, 1]])
+    labels = {"1": "/World/envs/env_0/Robot/right_hand_index_0_link/visuals", "2": "/World/envs/env_0/Bottle/neck/geometry/mesh",
+              "3": "/World/envs/env_0/Table/geometry/mesh", "4": "/World/ground/Environment", "0": "BACKGROUND"}  # fmt: skip
+    out = isc.composite(rgb, seg, labels, bg)
+    np.testing.assert_array_equal(out[..., 0], [[200, 200, 10], [10, 10, 200]])  # robot, bottle | case, floor, sky

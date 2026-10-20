@@ -70,6 +70,12 @@ assert (len(BODY), len(DEX3_MOTORS) // 2) == (NB, NH), "dds_publisher layout dif
 CAMERA_KEYS = ("parent", "pos", "rot_wxyz", "width", "height", "fx", "fy", "cx", "cy")
 
 
+def composite(rgb: np.ndarray, seg: np.ndarray, id_to_labels: dict, bg: np.ndarray) -> np.ndarray:
+    """COMPOSITE_BG test: the rendered robot and bottle pixels over a real head frame (everything else from bg)."""
+    keep = [int(i) for i, path in id_to_labels.items() if "/Robot/" in str(path) or "/Bottle/" in str(path)]
+    return np.where(np.isin(seg, keep)[..., None], rgb, bg)
+
+
 def load_camera(path) -> dict:
     cam = json.loads(Path(path).read_text())
     missing = [k for k in CAMERA_KEYS if k not in cam]
@@ -225,10 +231,15 @@ class Scene:
         for path in sim_utils.find_matching_prim_paths("/World/envs/env_0/Robot/.*_(hand_.*|wrist_yaw)_link"):
             sim_utils.bind_visual_material(path, "/World/Looks/dex3_black")
         k = [cam["fx"], 0.0, cam["cx"], 0.0, cam["fy"], cam["cy"], 0.0, 0.0, 1.0]
+        # COMPOSITE_BG=<real head frame .npy, the camera server's array convention>: publish the rendered robot and bottle
+        # over it (a test of the rendered scene's look; the case and room come from the real frame)
+        self.bg = np.load(os.environ["COMPOSITE_BG"]) if os.environ.get("COMPOSITE_BG") else None
         self.camera = Camera(
             CameraCfg(
                 prim_path=f"/World/envs/env_0/Robot/{cam['parent']}/head_cam",
-                height=cam["height"], width=cam["width"], data_types=["rgb"], update_period=0.0,
+                height=cam["height"], width=cam["width"], update_period=0.0,
+                data_types=["rgb"] + (["instance_id_segmentation_fast"] if self.bg is not None else []),
+                colorize_instance_id_segmentation=False,
                 spawn=sim_utils.PinholeCameraCfg.from_intrinsic_matrix(
                     intrinsic_matrix=k, width=cam["width"], height=cam["height"]
                 ),
@@ -371,6 +382,9 @@ class Scene:
         rgb = self.camera.data.output["rgb"][0, ..., :3].cpu().numpy()
         if rgb.shape[:2] != (H, W):
             raise SystemExit(f"head camera gives {rgb.shape[1]}x{rgb.shape[0]}, not {W}x{H}")
+        if self.bg is not None:
+            seg = self.camera.data.output["instance_id_segmentation_fast"][0, ..., 0].cpu().numpy()
+            rgb = composite(rgb, seg, self.camera.data.info[0]["instance_id_segmentation_fast"]["idToLabels"], self.bg)
         _, jpg = cv2.imencode(".jpg", rgb, [int(cv2.IMWRITE_JPEG_QUALITY), 90])  # RGB as is, like the camera server
         msg = {"timestamps": {"egocentric": time.time()}, "images": {"egocentric": base64.b64encode(jpg).decode()}}
         with contextlib.suppress(zmq.Again):  # no subscriber / buffer full: drop, as the camera server does
