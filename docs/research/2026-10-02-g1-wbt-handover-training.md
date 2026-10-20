@@ -368,6 +368,8 @@ set). Training notes in the [2026-10-15 note](2026-10-15-g1-handover-261014-out-
   with the hand closed. They are only 7 episodes but 35 % of the training frames. One cycle takes about 10 s, so the
   operator was not moving slowly; the episodes are just not cut per attempt, so mid-task states such as "back at
   ready, bottle on the table again" follow a handover instead of an episode start.
+  The old 43 episodes run init pose (standing) → reach → pick → handover posture and end there; only the 10-19
+  recordings go back to a ready pose between attempts, so s09's good return to ready can only come from them.
 - **Not isolated:** the model also has fewer single-attempt episodes than the 94-episode one (66 against 94), so
   two things changed at once.
 - Session and export: `/mnt/data/jihun/g1_eval_sessions/s09_wbt_groot_handover261019_he_handover` (`raw/`,
