@@ -15,7 +15,7 @@ policy latency, execution lag, sampling noise, the arm-joint input and the bottl
 full-radius cylinder catches the hand where a real PET bottle narrows (tapered bottle committed); (2) the rendered
 scene delays the policy: with renders GR00T's commands trail the robot's by ~0.3 s, with the real room composited
 behind the live sim robot (`COMPOSITE_BG`) they match within 0.06 s and the hand follows the real hand path.
-**Bottleneck now: contact.** Even on that real path the sim hand meets the bottle's neck or cap 1.8-2.3 s into the
+**Update (push-force check): placement, not contact physics** - see "Push force and bottle placement". Earlier note: Even on that real path the sim hand meets the bottle's neck or cap 1.8-2.3 s into the
 episode and the bottle slides 8-9 cm and tips, while in the real frames the hand also touches the bottle (thumb at the
 cap, fingers at the base) and it stays upright until grasped. Next: bottle/case friction, the bottle's mass
 distribution, and the sim arm's stiffness against contact.
@@ -116,13 +116,37 @@ first contact survivable every time. Caveat: 4 cm is lower than a full 500 ml bo
 shoulder); it would fit a bottle filled about halfway. In the real frames the hand also touches the bottle and it
 barely moves, so the sim hand may push harder than the real one.
 
+## Push force and bottle placement (2026-10-20)
+
+`touch_force` (contact sensor on the bottle, per wrist/Dex3 link) and `cmd_kp`/`cmd_kd` are logged (b820272e);
+`<eval data>/analysis/pushforce.py` summarizes a session.
+
+- **The push.** In every composite trial the right wrist link (the Dex3 palm is merged into it) meets the bottle top at
+  ~1.7-2.0 s and presses 5-9 N mean, 8-21 N peak, for >= 0.5 s; ~1.1 N at that height starts tipping the bottle. The
+  palm moves at 0.09-0.17 m/s at the touch (real s03 t0 at the same time: 0.11-0.17 m/s); arm kp 14.3-16.8 Nm/rad,
+  kd 0.91-1.07 (the deploy's); tracking error up to 15 deg: the arm's target lies past the bottle.
+- **Collision approximation is not it.** `URDF_COLLIDER=convex_decomposition` (cce2ee82; the convex hull makes the
+  wrist_yaw mesh 10.5x and the palm 1.5x their volume): 1/5, same touch time and force.
+- **The real commands replayed** (s03 t0's logged tokens, open loop, `run_replay.sh` with `DS=<session>/dataset`, own
+  network namespace: another process holds port 5556): the sim palm follows the real palm within ~1 cm to 2.0 s, then
+  the sim wrist hits the bottle at 2.04 s and the bottle tips, where the real hand went down beside it.
+- **Grid over the bottle's position** (`run_replay_grid.sh`, same real commands): lifted 12-13 cm at 7 of 9 positions
+  on the case (x 0.312 and 0.352, y -0.09..-0.05); knocked over only at x 0.332, y -0.09/-0.07, the image estimate
+  of s03 t0's bottle (x 0.292 hangs off the case edge). The failure is a ~2 cm band where the wrist path crosses the
+  cap. Every composite run so far pinned the bottle inside it.
+- **Closed loop at working spots** (composite, GR00T): (0.352, -0.070) **3/3**; (0.312, -0.090) 0/3 (the policy shifts
+  its path with the bottle and meets the top again).
+
+So the sim reproduces the real grasp; the outcome turns on centimetre-level placement relative to the hand path, as
+it plausibly does on the robot (GR00T 6/11). Evaluation needs random placements over the real range, not one pinned
+spot.
+
 ## Next experiments, in order
 
-1. **Contact physics (the bottleneck).** Measure the real bottle's mass and water level (its centre of mass) and set
-   `BOTTLE_COM_Z` from it; run 10 trials of that against 10 default to get a real rate (3-trial runs are noise-level).
-   Then check how hard the sim hand pushes: compare the arm and hand PD gains and effort limits with the real motors,
-   log the contact force at first touch, and compare the bottle's displacement with the real frames (the real bottle
-   barely moves under the same touch).
+1. **Placement-randomized evaluation (composite view).** Sample bottle positions over the real range (x 0.30-0.42,
+   y -0.12..+0.11 m, from the back-projected real placements; keep x >= 0.31 so the bottle stands on the case), 20+
+   trials per policy, GR00T and Pi0.5, and compare with the robot. Also stochastic sampling (noise scale 1) for a
+   distribution rather than one deterministic path per spot.
 2. **Then the rendered scene.** Once composite runs grasp, go back to renders and close the look gap that delays the
    policy (case texture, floor and background, the person's hands), or keep the composite as the evaluation view.
 3. **Measure the real bottle** (neck radius, shoulder start, cap size: the real cap looks larger in the frames) and
