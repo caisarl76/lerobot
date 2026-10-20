@@ -10,6 +10,9 @@ an automatic verdict per trial in the robot's eval-session format. Design:
 This repository is public: addresses, user names and credentials are left out on purpose. "Workstation" is the
 2x RTX 3060 machine, "GPU host" the H100 server.
 
+> **Update 2026-10-20:** with the case and bottle measured, both policies fail in sim; the investigation and the next
+> steps are in [`2026-10-20-g1-isaac-sim-real-gap-handover.md`](./2026-10-20-g1-isaac-sim-real-gap-handover.md).
+
 ## Status in one paragraph
 
 Isaac Lab 2.3.2 (Isaac Sim 5.1, CPU physics, RTX head camera) now replaces MuJoCo behind the SONIC deploy's DDS
