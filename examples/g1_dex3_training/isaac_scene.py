@@ -204,7 +204,15 @@ class Scene:
 
         stage = sim_utils.get_current_stage()
         UsdGeom.Imageable(stage.GetPrimAtPath("/World/envs/env_0/Bottle/geometry/mesh")).MakeInvisible()
-        pet = sim_utils.PreviewSurfaceCfg(diffuse_color=(0.72, 0.76, 0.78), roughness=0.05)
+        # clear PET with water: a thin glass shell around a light grey core matches the real bottle's look in the head
+        # frames (body brightness 134 vs 144 real; the opaque grey was 190, glass alone 71: it shows the black case)
+        import carb
+
+        carb.settings.get_settings().set("/rtx/translucency/enabled", True)  # glass renders black without it
+        pet = sim_utils.GlassMdlCfg(glass_color=(0.95, 0.97, 1.0), glass_ior=1.45, thin_walled=True)
+        water = sim_utils.CylinderCfg(radius=0.027, height=0.100, visual_material=sim_utils.PreviewSurfaceCfg(
+            diffuse_color=(0.88, 0.915, 0.94), roughness=0.3))  # visual only
+        water.func("/World/envs/env_0/Bottle/water", water, translation=(0.0, 0.0, 0.055 - BOTTLE_H / 2))
         # colliders under the rigid root: one body, its mass stays 0.5 kg
         for name, shape, r, h, zc in BOTTLE_PARTS:
             look = sim_utils.PreviewSurfaceCfg(diffuse_color=(0.78, 0.86, 0.12)) if name == "cap" else pet
