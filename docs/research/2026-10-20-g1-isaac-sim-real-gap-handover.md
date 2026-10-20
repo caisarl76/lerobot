@@ -9,15 +9,16 @@ workstation's evaluation data dir (sessions, logs, the analysis scripts named be
 ## Status in one paragraph
 
 With the real case and bottle measured (case 0.475 x 0.35 m, top 0.845 m; bottle 17 cm with the cap), both policies
-fail every trial in Isaac by knocking the bottle over: the hand arrives over the bottle's top, the palm 0.15-0.20 m
-above the torso where real grasps sit at 0.07-0.12 m. On the robot GR00T he grasps 6/11 (Pi0.5 he 3/5 by operator
+fail every trial in Isaac by knocking the bottle over. On the robot GR00T he grasps 6/11 (Pi0.5 he 3/5 by operator
 score), so the sim must be fixed before it can rank policies. Ruled out: pelvis height, body posture, head-camera pose,
-policy latency, execution lag, sampling noise and the arm-joint input. Found: (1) the bottle's shape matters, since a
-full-radius cylinder catches the hand where a real PET bottle narrows; with the tapered bottle and the real head frames
-GR00T grasps 4/6. (2) With the same tapered bottle but rendered frames GR00T still scores 0/10 and Pi0.5 1/10; a
-realistic glass bottle changed nothing. **Bottleneck:** is the rest of the rendered scene the gap (case texture,
-floor, background, the person), or did the real-frame runs succeed only because those frames show the real arm
-grasping on schedule? The composite-image test below separates the two.
+policy latency, execution lag, sampling noise, the arm-joint input and the bottle's look. Found so far: (1) a
+full-radius cylinder catches the hand where a real PET bottle narrows (tapered bottle committed); (2) the rendered
+scene delays the policy: with renders GR00T's commands trail the robot's by ~0.3 s, with the real room composited
+behind the live sim robot (`COMPOSITE_BG`) they match within 0.06 s and the hand follows the real hand path.
+**Bottleneck now: contact.** Even on that real path the sim hand meets the bottle's neck or cap 1.8-2.3 s into the
+episode and the bottle slides 8-9 cm and tips, while in the real frames the hand also touches the bottle (thumb at the
+cap, fingers at the base) and it stays upright until grasped. Next: bottle/case friction, the bottle's mass
+distribution, and the sim arm's stiffness against contact.
 
 ## Results at the measured geometry
 
@@ -34,6 +35,7 @@ logged joints) at the closest horizontal approach to the bottle; the bottle cent
 | `rfoff_groot_s03e0` | real frames + tapered bottle + arm offset | 2/3 (lift 13 cm) | - | 0.17 |
 | `rftaper_groot_s03e0` | real frames + tapered bottle | 2/3 | - | - |
 | `taper_groot_glass` | tapered glass bottle with a water core, renders | 0/10 | - | 0.16-0.18 |
+| `comp_*_s03` | composite: real s03 background + live sim robot and bottle (15 fps) | 0/5 | 0/5 | 0.17 / 0.12-0.17 |
 
 Every failure is "collision (table, knocked over)". Real-frame runs pin the bottle at the trial's real spot
 (`BOTTLE=0.332,-0.090` for s03 t0); the policy is deterministic, so trials of one run are near repeats.
@@ -77,20 +79,38 @@ Every failure is "collision (table, knocked over)". Real-frame runs pin the bott
 - **The +5 cm case result** (Pi0.5 8/10, GR00T 4/10) only moved the bottle top relative to the hand path; it does not
   rank the policies.
 
+## Composite-image test (2026-10-20)
+
+`COMPOSITE_BG=<real frame .npy>` publishes the rendered robot and bottle (instance segmentation) over a real head frame;
+`HEAD_CAMERA_FPS=15` keeps the extra render pass in real time (at 30 fps lag p99 reached 0.4-1.3 s). Background: s03
+trial 0's first-tick frame with its bottle patched from trial 2 (ECC-registered, gain-matched, feathered;
+`<eval data>/analysis/composite_bg.py`). Bottle pinned at s03 t0's spot. Results, GR00T 0/5 and Pi0.5 0/5, all
+knock-overs, but:
+
+- GR00T's tokens match the robot's (s03 t0) within 0.02-0.06 s (renders: 0.30-0.38 s late) and its palm follows the
+  real path: at 2.5 s 0.12-0.16 m above the torso (real 0.145), at the end 0.115-0.125 m, 15.5 cm right (real 0.128 m,
+  13.5 cm). The rendered scene's look caused the lag.
+- The sim bottle is drawn within 1-14 px of the real bottle's place in the real frame (one Pi0.5 trial 35 px: the
+  standing heading varies per trial). The real hand projected through the sim camera (logged arm and hand joints, the
+  sim's SONIC stance) lands on the hand in the real frames within ~10-20 px (`hand_reproj.py`): no gross mount error.
+- The judge is right: the bottle starts moving under the hand at 1.8-2.3 s, slides 8-9 cm and passes 60 deg tilt
+  0.6-2.0 s later. The nearest hand parts at first contact are the wrist link and thumb or finger bases, 13-17 cm above
+  the bottle's base (neck and cap).
+
 ## Next experiments, in order
 
-1. **Composite-image test (decides the bottleneck).** Closed loop in Isaac, but each published head frame is the real
-   s03 t0 frame from just before the reach (room, case, person; no arm) with the live sim robot (arm, hand) and the sim
-   bottle pasted over it using Isaac's instance segmentation (add `instance_id_segmentation_fast` to the head
-   `CameraCfg` data types; composite in `Scene`'s camera publisher behind an env flag, off by default). Pin the bottle
-   at the real spot. If GR00T grasps, the scene's appearance is the gap: texture the case (rails, handle, bumpers),
-   match the floor and background, consider the person's hands. If it still knocks the bottle over, the real-frame
-   successes came from seeing the real arm, and the next suspect is the ~0.3 s command lag (state input).
-2. **State input, if (1) points there.** Ablate which state dims drive the lag: query the policy server open loop with
-   the real frames of s03 t0 and the real state history, then swap in sim values per joint group (right wrist first)
-   and compare tokens with the robot's. If the wrist is it, model it in the sim (joint friction or a rest-angle bias)
-   rather than offsetting the policy input.
-3. **Measure the real bottle** (neck radius, shoulder start) and update `BOTTLE_PARTS`.
+1. **Contact physics (the bottleneck).** The real hand touches the bottle without tipping it. Try, each with a short
+   composite run (bottle pinned, 3-5 trials, GR00T):
+   - physics materials for the bottle and the case (none set now: PhysX default friction 0.5, no compliance);
+   - the bottle's mass distribution: the water keeps a real bottle's centre of mass low (now uniform over the
+     colliders, 0.5 kg);
+   - how hard the sim hand pushes: compare the arm and hand PD gains and effort limits with the real motors, and log
+     the contact force at first touch.
+   Also measure in the real frames how much the real bottle moves before the grasp.
+2. **Then the rendered scene.** Once composite runs grasp, go back to renders and close the look gap that delays the
+   policy (case texture, floor and background, the person's hands), or keep the composite as the evaluation view.
+3. **Measure the real bottle** (neck radius, shoulder start, cap size: the real cap looks larger in the frames) and
+   update `BOTTLE_PARTS`.
 4. **Ranking.** Once a policy succeeds in sim at the real geometry, rerun both policies (10+ trials) and compare with
    the robot (GR00T better there).
 
@@ -124,5 +144,6 @@ next to the script with per-trial palm/bottle heights, closest approach and lift
 - **pgrep self-match.** A wait loop written inline in `bash -c` matches its own command line; put it in a script and
   use a `[d]emo`-style pattern.
 - `gen_metrics.py` overwrites `trials.json` beside it: copy it first if a page depends on it.
+- The other session's processes now run from a `dimos_dev` checkout: the wrappers wait on any `[d]imos` process.
 - In the scene, `UsdGeom.Imageable(...).MakeInvisible()` on the typeless `.../geometry` prim does nothing; target the
   `.../geometry/mesh` prim.
