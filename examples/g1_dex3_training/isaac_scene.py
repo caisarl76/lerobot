@@ -43,6 +43,7 @@ CYCLONEDDS_LIB = Path(os.environ.get("CYCLONEDDS_LIB", Path.home() / "work" / "c
 URDF = GEAR_ROOT / "gear_sonic/data/robot_model/model_data/g1/g1_29dof_with_hand.urdf"
 CAMERA_JSON = Path(__file__).parent / "cameras" / "d435i_head.json"
 FPS, W, H = 30, 640, 480
+CAMERA_FPS = float(os.environ.get("HEAD_CAMERA_FPS", FPS))  # e.g. 15 for COMPOSITE_BG: its extra render pass lags at 30
 DT = 0.005
 STAND_Z = 0.775  # pelvis height standing on the default pose: both feet on the floor in test 0a
 BAND_Z = 1.0  # root height while hanging on the band (gear_sonic: the deploy starts with the robot hung)
@@ -370,7 +371,7 @@ class Scene:
             if self.dds is not None:
                 self.dds.write_state(self._state())
         if render:
-            self.next_frame += 1 / FPS
+            self.next_frame += 1 / CAMERA_FPS
             self._publish_frame()
 
     def _publish_frame(self) -> None:
