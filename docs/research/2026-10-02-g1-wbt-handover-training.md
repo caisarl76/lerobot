@@ -375,6 +375,30 @@ set). Training notes in the [2026-10-15 note](2026-10-15-g1-handover-261014-out-
 - Session and export: `/mnt/data/jihun/g1_eval_sessions/s09_wbt_groot_handover261019_he_handover` (`raw/`,
   `dataset/`); VLM failure labels and the human review are not done yet.
 
+## Real robot, 105-episode GR00T he with the 10-19 attempts cut (2026-10-20)
+
+`wbt_groot_handover261020_he_full`: same recipe, on `handover_bottle_merged_261020`, where the user cut the 10-19
+recordings into 39 single attempts (hand-marked exclusions; the old 43 and the 25 10-14 segments are unchanged):
+105 training episodes, 58,054 frames, held out 27/35. Same server and settings as s08, 30 s cap.
+
+| Session | Model                              | Trials | Success | Failures                                                                       |
+| ------- | ---------------------------------- | ------ | ------- | ------------------------------------------------------------------------------ |
+| s10     | `wbt_groot_handover261020_he_full` | 10     | 8/10    | stalled, hand did not open (trial 3); wavy arm after the lift (trial 9, other) |
+
+- **8/10, against 3/10 before the cut (s09) and 9/10 for the 94-episode model (s08).** Cutting the attempts fixed
+  the reach: the grasp comes at a median 5.9 s (s09 11.9 s, s08 4.8 s) and the arm is still 33 % of the time (s09
+  52 %, s08 18 %).
+- **Slower than s08:** successes took 13–28 s (median 17), against 11–16 s; trials 1 and 2 needed 27–28 s.
+- **Trial 3 (index 2):** grasped, then stood still for 15 s with the bottle and did not open the hand.
+- **Trial 9 (index 8), corrected success → fail at review:** after the grasp and lift the right arm swayed at
+  1.2 Hz (elbow and wrist pitch ~18° peak to peak, shoulder roll 10°) until the 30 s cap. The policy's tokens carry the
+  same 1.2 Hz motion (70 % of their first principal component in 0.7–3 Hz), so the sway comes from the policy, not the
+  controller. No other trial of s08 or s10 has more than 10 % of the elbow motion in that band (this one 68 %). Fixed in
+  `results.jsonl` and `trial_008.npz` on PC2 and the workstation (reason "other"; originals kept as
+  `results.jsonl.orig`).
+- Session and export: `/mnt/data/jihun/g1_eval_sessions/s10_wbt_groot_handover261020_he_handover` (`raw/`,
+  `dataset/`); VLM failure labels and the human review are not done yet.
+
 ## Incidents
 
 - **GPU 7 shared (10-02 12:17 UTC).** Session `lerobot-f0` started `groot_joint28_ho5_official_full` (40 GB) on
