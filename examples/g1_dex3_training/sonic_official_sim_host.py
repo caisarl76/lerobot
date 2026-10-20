@@ -158,6 +158,9 @@ try:
             # BOTTLE=x,y: pinned bottle, no jitter (e.g. a real trial's spot for the real-frame runs)
             if "," in os.environ.get("BOTTLE", ""):
                 task.update(bottle_xy_world=[float(v) for v in os.environ["BOTTLE"].split(",")], jitter_m=0.0)
+            # BOTTLE_JITTER=jx,jy: uniform +-jx, +-jy around the centre, seeded per trial (placement-randomized evaluation)
+            if os.environ.get("BOTTLE_JITTER"):
+                task["jitter_m"] = [float(v) for v in os.environ["BOTTLE_JITTER"].split(",")]
             reason, detail = run_trials(
                 scene,
                 GATE,

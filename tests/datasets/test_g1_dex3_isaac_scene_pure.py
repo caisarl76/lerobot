@@ -86,3 +86,10 @@ def test_parse_friction():
     assert isc.parse_friction("0.4,0.3") == (0.4, 0.3)
     with pytest.raises(ValueError):
         isc.parse_friction("0.3,0.4")  # dynamic above static
+
+
+def test_bottle_xy_per_axis_jitter_is_seeded_and_bounded():
+    xy = np.array([isc.sample_bottle_xy(s, [0.3675, -0.005], [0.0525, 0.115]) for s in range(200)])
+    assert (np.abs(xy[:, 0] - 0.3675) <= 0.0525).all() and (np.abs(xy[:, 1] + 0.005) <= 0.115).all()
+    assert np.ptp(xy[:, 1]) > 0.15  # y spreads wider than x could
+    np.testing.assert_array_equal(isc.sample_bottle_xy(7, [0.3, 0.0], 0.04), isc.sample_bottle_xy(7, [0.3, 0.0], 0.04))  # paired

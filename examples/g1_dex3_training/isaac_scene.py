@@ -76,6 +76,13 @@ assert (len(BODY), len(DEX3_MOTORS) // 2) == (NB, NH), "dds_publisher layout dif
 CAMERA_KEYS = ("parent", "pos", "rot_wxyz", "width", "height", "fx", "fy", "cx", "cy")
 
 
+def sample_bottle_xy(seed: int, center, jitter_m) -> np.ndarray:
+    """The trial's bottle position: center + uniform +-jitter_m, a scalar or per axis (x, y); seeded by the trial."""
+    rng = np.random.default_rng(seed)
+    j = np.broadcast_to(np.asarray(jitter_m, float), (2,))
+    return np.asarray(center, float) + rng.uniform(-j, j)
+
+
 def parse_friction(text: str | None) -> tuple[float, float] | None:
     """BOTTLE_FRICTION / CASE_FRICTION: "mu" or "static,dynamic"; unset = the PhysX default (0.5, no material)."""
     if not text:
@@ -500,11 +507,10 @@ class Scene:
         self.fall = FallDetector()
 
     def place_bottle(self, seed: int, bottle_xy, jitter_m: float) -> None:
-        """Bottle upright on the table at bottle_xy (world, table placed) + uniform +-jitter_m in x and y, at rest."""
+        """Bottle upright on the table at bottle_xy (world, table placed) + uniform +-jitter_m (scalar or x, y), at rest."""
         import torch
 
-        rng = np.random.default_rng(seed)
-        x, y = np.asarray(bottle_xy, float) + rng.uniform(-jitter_m, jitter_m, 2)
+        x, y = sample_bottle_xy(seed, bottle_xy, jitter_m)
         with self.lock:
             dev = self.sim.device
             z = TABLE_TOP_Z + BOTTLE_H / 2
