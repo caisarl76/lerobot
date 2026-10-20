@@ -78,3 +78,11 @@ def test_composite_keeps_robot_and_bottle_pixels_only():
               "3": "/World/envs/env_0/Table/geometry/mesh", "4": "/World/ground/Environment", "0": "BACKGROUND"}  # fmt: skip
     out = isc.composite(rgb, seg, labels, bg)
     np.testing.assert_array_equal(out[..., 0], [[200, 200, 10], [10, 10, 200]])  # robot, bottle | case, floor, sky
+
+
+def test_parse_friction():
+    assert isc.parse_friction(None) is None and isc.parse_friction("") is None  # unset: PhysX default
+    assert isc.parse_friction("0.3") == (0.3, 0.3)
+    assert isc.parse_friction("0.4,0.3") == (0.4, 0.3)
+    with pytest.raises(ValueError):
+        isc.parse_friction("0.3,0.4")  # dynamic above static

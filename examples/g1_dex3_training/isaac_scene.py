@@ -71,6 +71,17 @@ assert (len(BODY), len(DEX3_MOTORS) // 2) == (NB, NH), "dds_publisher layout dif
 CAMERA_KEYS = ("parent", "pos", "rot_wxyz", "width", "height", "fx", "fy", "cx", "cy")
 
 
+def parse_friction(text: str | None) -> tuple[float, float] | None:
+    """BOTTLE_FRICTION / CASE_FRICTION: "mu" or "static,dynamic"; unset = the PhysX default (0.5, no material)."""
+    if not text:
+        return None
+    v = [float(x) for x in text.split(",")]
+    static, dynamic = (v[0], v[0]) if len(v) == 1 else v
+    if dynamic > static:
+        raise ValueError(f"dynamic friction {dynamic} above static {static}")
+    return static, dynamic
+
+
 def composite(rgb: np.ndarray, seg: np.ndarray, id_to_labels: dict, bg: np.ndarray) -> np.ndarray:
     """COMPOSITE_BG test: the rendered robot and bottle pixels over a real head frame (everything else from bg)."""
     keep = [int(i) for i, path in id_to_labels.items() if "/Robot/" in str(path) or "/Bottle/" in str(path)]
@@ -148,6 +159,11 @@ class Scene:
         ground_usd = os.environ.get("GROUND_USD")
         ground_cfg = sim_utils.GroundPlaneCfg(usd_path=ground_usd) if ground_usd else sim_utils.GroundPlaneCfg()
 
+        # contact experiments (the sim bottle tips under touches the real one survives): friction materials for the bottle
+        # and the case top (average combine, as PhysX), and BOTTLE_COM_Z = centre of mass above the bottle's base (m)
+        mats = {k: parse_friction(os.environ.get(f"{k}_FRICTION")) for k in ("BOTTLE", "CASE")}
+        mats = {k: v and sim_utils.RigidBodyMaterialCfg(static_friction=v[0], dynamic_friction=v[1]) for k, v in mats.items()}
+
         @configclass
         class CfgScene(InteractiveSceneCfg):
             ground = AssetBaseCfg(prim_path="/World/ground", spawn=ground_cfg)
@@ -185,7 +201,7 @@ class Scene:
                 spawn=sim_utils.CuboidCfg(
                     size=CASE,
                     rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
-                    collision_props=sim_utils.CollisionPropertiesCfg(),
+                    collision_props=sim_utils.CollisionPropertiesCfg(), physics_material=mats["CASE"],
                     visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.03, 0.03, 0.03), roughness=0.35),
                 ),
                 init_state=RigidObjectCfg.InitialStateCfg(pos=(10.0, 0.0, CASE[2] / 2)),  # parked, as sim_scene
@@ -224,8 +240,14 @@ class Scene:
         for name, shape, r, h, zc in BOTTLE_PARTS:
             look = sim_utils.PreviewSurfaceCfg(diffuse_color=(0.78, 0.86, 0.12)) if name == "cap" else pet
             part = (sim_utils.ConeCfg if shape == "cone" else sim_utils.CylinderCfg)(
-                radius=r, height=h, collision_props=sim_utils.CollisionPropertiesCfg(), visual_material=look)
+                radius=r, height=h, collision_props=sim_utils.CollisionPropertiesCfg(), visual_material=look,
+                physics_material=mats["BOTTLE"])
             part.func(f"/World/envs/env_0/Bottle/{name}", part, translation=(0.0, 0.0, zc - BOTTLE_H / 2))
+        if os.environ.get("BOTTLE_COM_Z"):  # default: uniform density over the colliders (~6.5 cm above the base)
+            from pxr import Gf, UsdPhysics
+
+            UsdPhysics.MassAPI(stage.GetPrimAtPath("/World/envs/env_0/Bottle")).CreateCenterOfMassAttr(
+                Gf.Vec3f(0.0, 0.0, float(os.environ["BOTTLE_COM_Z"]) - BOTTLE_H / 2))
         # the real Dex3 hands are black; the URDF meshes render white
         black = sim_utils.PreviewSurfaceCfg(diffuse_color=(0.03, 0.03, 0.03), roughness=0.4)
         black.func("/World/Looks/dex3_black", black)
