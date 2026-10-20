@@ -57,6 +57,7 @@ GROUP_SLUGS = {
     "g1_wbt_handover_20261002": "wbt-handover",
     "g1_wbt_dex_261009": "wbt-dex",
     "g1_wbt_handover_261014": "wbt-handover",
+    "g1_wbt_handover_261019": "wbt-handover",
 }
 
 

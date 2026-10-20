@@ -74,6 +74,19 @@ Risks:
   on the same setup. Details in the
   [handover note](2026-10-02-g1-wbt-handover-training.md#real-robot-94-episode-groot-he-2026-10-1516). The 5k
   checkpoint (equal sample budget) has not been tested.
+- **Merged set, `groot_handover261019_he_full` (10-19, h100_174 GPU 7):** dataset
+  `handover_bottle_merged_261019` (the user's merge of reviewed runs: old 43, 25 segments of the 10-14 recording,
+  7 episodes of the 10-19 recording) converted with `prepare_wbt_sonic78.py ... --heldout 27 35` to
+  `handover_bottle_merged_sonic78_50hz_261019` (75 episodes; 73 / 60,526 frames for training). Job root
+  `g1_wbt_handover_261019`, init `init/groot_he` copied and retargeted to the new stats, same 16,000 steps
+  (8.5 passes). Started 10-19 09:16 UTC, exit 0 at 11:41 UTC, loss 0.141 at step 100 and 0.024 at 16k. On the Hub
+  as private `mncai/g1-wbt-handover-groot-handover261019-he-full` and on the workstation in
+  `/mnt/data/jihun/g1_models/wbt_groot_handover261019_he_full/pretrained_model` (sha256 `bb15edc3…`, same on the
+  host, the Hub and the workstation).
+  - **Robot (10-20, s09): 3/10**, against 9/10 for the 94-episode model; the reach stalls near the bottle. The
+    10-19 episodes each hold several handover cycles (median 6), so cut them per cycle before training on them
+    again. Details in the
+    [handover note](2026-10-02-g1-wbt-handover-training.md#real-robot-75-episode-merged-groot-he-2026-10-20).
 
 ## 4. Recording command
 

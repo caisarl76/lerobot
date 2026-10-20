@@ -344,6 +344,35 @@ frames earlier.
   `_visualizer/workspace/drafts/98ad57bbb4114e41928ffc085c111ef9` (s07) and `…/5cb635dd2bc94a7db0be5957cc59302c` (s08),
   each under `retained-dataset`.
 
+## Real robot, 75-episode merged GR00T he (2026-10-20)
+
+`wbt_groot_handover261019_he_full` is GR00T he trained on `handover_bottle_merged_261019` (the user's merge of
+reviewed runs, converted to sonic78 50 Hz): 73 training episodes, 60,526 frames, held out 27/35. It holds the old
+41 episodes, 25 segments of the 10-14 recording (the review kept 21 of its 51 episodes) and 7 episodes of the
+10-19 recording (6 kept of 8, one split). Same init, recipe and server as s08 (GPU 1, noise 0, blend 0.3, slew 0.05,
+`--hold-rest-s 1.5`), but the session ran with the launcher's default 120 s cap instead of 30 s (`MAX_S` was not
+set). Training notes in the [2026-10-15 note](2026-10-15-g1-handover-261014-out-of-view.md#3-gr00t-he-run).
+
+| Session | Model                              | Trials | Success | Failures                                                                     |
+| ------- | ---------------------------------- | ------ | ------- | ---------------------------------------------------------------------------- |
+| s09     | `wbt_groot_handover261019_he_full` | 10     | 3/10    | did not reach the object ×3, stalled / froze ×2, dropped ×1, grasp missed ×1 |
+
+- **3/10 against 9/10 for the 94-episode model (s08).** Successful trials took 81, 72 and 21 s (s08: 11–16 s); with
+  s08's 30 s cap only trial 9 passes, 1/10.
+- **Operator:** the reach stalls about 2 cm from the bottle, with the arm still or creeping; the return to the
+  ready pose after the handover is good.
+- **Logs agree:** right-arm joint speed median 0.047 rad/s (s08 0.335), still (< 0.05 rad/s) 53 % of the policy
+  time (s08 18 %), longest still stretch 3.2 s per trial (s08 0.6 s).
+- **Likely cause, the 10-19 episodes:** each of them is a continuous recording of several pick-and-handover
+  cycles (median 6 right-hand closes per episode, 11 in 126 s for ep 68; every other episode has 1), and 5 of 7 start
+  with the hand closed. They are only 7 episodes but 35 % of the training frames. One cycle takes about 10 s, so the
+  operator was not moving slowly; the episodes are just not cut per attempt, so mid-task states such as "back at
+  ready, bottle on the table again" follow a handover instead of an episode start.
+- **Not isolated:** the model also has fewer single-attempt episodes than the 94-episode one (66 against 94), so
+  two things changed at once.
+- Session and export: `/mnt/data/jihun/g1_eval_sessions/s09_wbt_groot_handover261019_he_handover` (`raw/`,
+  `dataset/`); VLM failure labels and the human review are not done yet.
+
 ## Incidents
 
 - **GPU 7 shared (10-02 12:17 UTC).** Session `lerobot-f0` started `groot_joint28_ho5_official_full` (40 GB) on
