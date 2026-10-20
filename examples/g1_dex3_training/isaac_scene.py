@@ -51,6 +51,9 @@ BAND_Z = 1.0  # root height while hanging on the band (gear_sonic: the deploy st
 # (2026-10-19; the head-frame fit gave 0.42 x 0.32 x 0.846); replays and the parity runs used sim_scene's 0.80 m slab
 CASE = (0.475, 0.35, float(os.environ.get("CASE_TOP_Z", "0.845")))  # CASE_TOP_Z: e.g. the +5 cm runs
 TABLE_TOP_Z = CASE[2]
+# URDF_COLLIDER=convex_decomposition: the robot's collision meshes keep their concavity (convex_hull, the default, makes
+# the wrist_yaw mesh 10.5x and the Dex3 palm 1.5x their volume: the hand meets the bottle where the real one passes)
+COLLIDER = os.environ.get("URDF_COLLIDER", "convex_hull")
 # clear PET bottle: 17 cm with the cap (measured), radius from the head frames. BOTTLE_H is the body without the cap;
 # the root sits at its middle. Profile (base up): body r 3.3 cm to 11 cm, a shoulder cone, a 1.35 cm neck from 12.5 cm,
 # a solid 1.65 cm cap on top: the hand passes the narrow neck, a full-radius cylinder catches it (every knock-over hit
@@ -182,7 +185,9 @@ class Scene:
                 spawn=sim_utils.UrdfFileCfg(
                     asset_path=str(URDF), fix_base=False, merge_fixed_joints=True, activate_contact_sensors=True,
                     # one conversion reused by every run (default: a new timestamped dir per run, ~35 MB each)
-                    usd_dir=os.environ.get("ISAAC_USD_DIR", "/tmp/IsaacLab/g1_29dof_with_hand"),
+                    usd_dir=os.environ.get("ISAAC_USD_DIR", "/tmp/IsaacLab/g1_29dof_with_hand") + (
+                        "_decomp" if COLLIDER == "convex_decomposition" else ""),
+                    collider_type=COLLIDER,
                     joint_drive=sim_utils.UrdfConverterCfg.JointDriveCfg(
                         gains=sim_utils.UrdfConverterCfg.JointDriveCfg.PDGainsCfg(stiffness=0.0, damping=0.0)
                     ),
