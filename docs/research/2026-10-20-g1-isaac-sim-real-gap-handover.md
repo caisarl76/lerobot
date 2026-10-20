@@ -15,7 +15,7 @@ policy latency, execution lag, sampling noise, the arm-joint input and the bottl
 full-radius cylinder catches the hand where a real PET bottle narrows (tapered bottle committed); (2) the rendered
 scene delays the policy: with renders GR00T's commands trail the robot's by ~0.3 s, with the real room composited
 behind the live sim robot (`COMPOSITE_BG`) they match within 0.06 s and the hand follows the real hand path.
-**Update (push-force check): placement, not contact physics** - see "Push force and bottle placement". Earlier note: Even on that real path the sim hand meets the bottle's neck or cap 1.8-2.3 s into the
+**Update: the sim reproduces the real grasp; placement decides the outcome (GR00T 4/9 so far with randomized placements, robot 6/11)** - see "Push force and bottle placement" and "Placement-randomized evaluation". Before that: - see "Push force and bottle placement". Earlier note: Even on that real path the sim hand meets the bottle's neck or cap 1.8-2.3 s into the
 episode and the bottle slides 8-9 cm and tips, while in the real frames the hand also touches the bottle (thumb at the
 cap, fingers at the base) and it stays upright until grasped. Next: bottle/case friction, the bottle's mass
 distribution, and the sim arm's stiffness against contact.
@@ -140,6 +140,32 @@ barely moves, so the sim hand may push harder than the real one.
 So the sim reproduces the real grasp; the outcome turns on centimetre-level placement relative to the hand path, as
 it plausibly does on the robot (GR00T 6/11). Evaluation needs random placements over the real range, not one pinned
 spot.
+
+## Placement-randomized evaluation (in progress, started 2026-10-20 23:51)
+
+Composite view (`COMPOSITE_BG`, `HEAD_CAMERA_FPS=15`), measured case, tapered glass bottle, default friction and mass,
+server `--noise-scale 0`. The bottle is drawn per trial, uniform over the real trials' placement range clamped to stand
+on the case: `BOTTLE=0.3675,-0.005 BOTTLE_JITTER=0.0525,0.115` (x 0.315-0.42, y -0.12..+0.11; 5271c24b). The draw is
+seeded by the trial, so GR00T and Pi0.5 meet the same 20 placements (x 0.324-0.415, y -0.083..+0.107). Run:
+`<eval data>/analysis/run_random.sh`; summary: `random_summary.py rnd_groot rnd_pi05` (per trial, Wilson intervals).
+
+Interim, GR00T he after 9 of 20 trials: **4/9** (44%, 95% CI 19-73%); robot: 6/11 (55%).
+
+| Trial | Bottle (x, y) m | GR00T |
+| --- | --- | --- |
+| 1 | 0.382, -0.058 | knocked over |
+| 2 | 0.369, +0.099 | dropped after the lift |
+| 3 | 0.342, -0.051 | knocked over |
+| 4 | 0.324, -0.066 | success |
+| 5 | 0.414, -0.002 | knocked over |
+| 6 | 0.400, +0.066 | success |
+| 7 | 0.372, -0.041 | knocked over |
+| 8 | 0.381, +0.086 | success |
+| 9 | 0.349, +0.107 | success |
+
+So far the knock-overs cluster on the robot's right half (y -0.06..0.00), where the right hand's path crosses the
+bottle top first (trial 4 at y -0.066 is the exception); bottles further left (y > +0.06) were grasped 3 of 4 times. Pi0.5 follows on the same placements; the
+final rates, the paired comparison and the ranking against the robot go here when both sessions finish.
 
 ## Next experiments, in order
 
