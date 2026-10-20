@@ -81,7 +81,8 @@ PY
   for i in $(seq 0 $((TRIALS - 1))); do
     for attempt in $(seq "${MAX_ATTEMPTS:-5}"); do
       [ "$(done_n)" -gt "$i" ] && break
-      G=$OUTD/gate_${i}_$attempt; mkdir -p "$G" "$OUTD/sim"
+      # a fresh gate dir: a resumed session reuses the name, and a stale deploy_ready starts the streamer too early
+      G=$OUTD/gate_${i}_$attempt; rm -rf "$G"; mkdir -p "$G" "$OUTD/sim"
       kill -0 $TUNNEL 2>/dev/null || { echo "[trial $((i + 1))] ssh tunnel down: restarting" >&2; tunnel || exit 1; }
       # own PID namespace (with its /proc: CUDA fails without it): a hung host (Kit ignores SIGTERM) and its deploy end with the stack
       unshare -rn --pid --fork --kill-child --mount-proc bash -c '
