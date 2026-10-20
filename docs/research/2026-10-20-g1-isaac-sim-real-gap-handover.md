@@ -97,16 +97,32 @@ knock-overs, but:
   0.6-2.0 s later. The nearest hand parts at first contact are the wrist link and thumb or finger bases, 13-17 cm above
   the bottle's base (neck and cap).
 
+## Contact experiments (2026-10-20)
+
+Composite view, bottle pinned at s03 t0, GR00T, 3 trials per variant (`BOTTLE_FRICTION`, `CASE_FRICTION`,
+`BOTTLE_COM_Z`, 1ba842fe; `<eval data>/analysis/run_contact.sh`):
+
+| Variant | Success | First contact (all at 1.9-2.5 s) |
+| --- | --- | --- |
+| default (PhysX friction 0.5, uniform density: COM ~7 cm above the base) | 0/5 | tips over in 3/5 within 1 s |
+| bottle + case friction 0.3 | 1/3 | the success slid 5.9 cm upright, then was grasped |
+| bottle friction 0.15 | 1/3 | the success slid 5.0 cm upright |
+| COM 4 cm above the base | 2/3 | **survived first contact 3/3** (tilt <= 12 deg, slide <= 2.6 cm); the failure tipped later, at the grasp |
+| bottle + case friction 0.8 | 1/3 | the success barely moved (0.3 cm) |
+
+The hand always pushes the bottle at ~2 s; the outcome turns on whether it slides or stays upright vs tips. Friction is
+not monotonic (0.8 also 1/3), so with 3 trials it is noise-level; a low centre of mass is the one change that made the
+first contact survivable every time. Caveat: 4 cm is lower than a full 500 ml bottle (~6.5 cm with water to the
+shoulder); it would fit a bottle filled about halfway. In the real frames the hand also touches the bottle and it
+barely moves, so the sim hand may push harder than the real one.
+
 ## Next experiments, in order
 
-1. **Contact physics (the bottleneck).** The real hand touches the bottle without tipping it. Try, each with a short
-   composite run (bottle pinned, 3-5 trials, GR00T):
-   - physics materials for the bottle and the case (none set now: PhysX default friction 0.5, no compliance);
-   - the bottle's mass distribution: the water keeps a real bottle's centre of mass low (now uniform over the
-     colliders, 0.5 kg);
-   - how hard the sim hand pushes: compare the arm and hand PD gains and effort limits with the real motors, and log
-     the contact force at first touch.
-   Also measure in the real frames how much the real bottle moves before the grasp.
+1. **Contact physics (the bottleneck).** Measure the real bottle's mass and water level (its centre of mass) and set
+   `BOTTLE_COM_Z` from it; run 10 trials of that against 10 default to get a real rate (3-trial runs are noise-level).
+   Then check how hard the sim hand pushes: compare the arm and hand PD gains and effort limits with the real motors,
+   log the contact force at first touch, and compare the bottle's displacement with the real frames (the real bottle
+   barely moves under the same touch).
 2. **Then the rendered scene.** Once composite runs grasp, go back to renders and close the look gap that delays the
    policy (case texture, floor and background, the person's hands), or keep the composite as the evaluation view.
 3. **Measure the real bottle** (neck radius, shoulder start, cap size: the real cap looks larger in the frames) and
