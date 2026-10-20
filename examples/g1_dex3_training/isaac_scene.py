@@ -56,6 +56,8 @@ TABLE_TOP_Z = CASE[2]
 # a solid 1.65 cm cap on top: the hand passes the narrow neck, a full-radius cylinder catches it (every knock-over hit
 # the top 4 cm)
 BOTTLE_R, BOTTLE_H = 0.033, 0.155
+TOUCH = [f"{s}_{n}_link" for s in ("left", "right") for n in ("wrist_yaw", *(f"hand_{f}" for f in (
+    "thumb_0", "thumb_1", "thumb_2", "index_0", "index_1", "middle_0", "middle_1")))]  # touch_force columns
 BOTTLE_PARTS = (  # (name, shape, radius, height, centre height above the base)
     ("body", "cylinder", BOTTLE_R, 0.110, 0.055),
     ("shoulder", "cone", BOTTLE_R, 0.050, 0.135),
@@ -211,7 +213,7 @@ class Scene:
                 spawn=sim_utils.CylinderCfg(  # the rigid root; its own cylinder is hidden, BOTTLE_PARTS collide
                     radius=BOTTLE_R, height=BOTTLE_H,
                     rigid_props=sim_utils.RigidBodyPropertiesCfg(),
-                    mass_props=sim_utils.MassPropertiesCfg(mass=0.5),
+                    mass_props=sim_utils.MassPropertiesCfg(mass=0.5), activate_contact_sensors=True,
                     # clear PET: a light glossy surface (OmniGlass renders black in the real-time RTX path)
                     visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.72, 0.76, 0.78), roughness=0.05),
                 ),  # fmt: skip
@@ -219,6 +221,9 @@ class Scene:
             )
             feet = ContactSensorCfg(
                 prim_path="{ENV_REGEX_NS}/Robot/.*_ankle_roll_link", filter_prim_paths_expr=["/World/ground"]
+            )
+            touch = ContactSensorCfg(  # the hands' push on the bottle (contact experiments)
+                prim_path="{ENV_REGEX_NS}/Bottle", filter_prim_paths_expr=[f"/World/envs/env_0/Robot/{n}" for n in TOUCH]
             )
 
         self.sim = sim_utils.SimulationContext(sim_utils.SimulationCfg(dt=DT, render_interval=1, device=device))
@@ -271,7 +276,7 @@ class Scene:
         )  # fmt: skip
         self.sim.reset()
         self.robot, self.table_obj = self.scene["robot"], self.scene["table"]
-        self.bottle, self.feet = self.scene["bottle"], self.scene["feet"]
+        self.bottle, self.feet, self.touch = self.scene["bottle"], self.scene["feet"], self.scene["touch"]
         self._check_joints()
         self.body_ids, _ = self.robot.find_joints(BODY, preserve_order=True)
         self.hand_ids, _ = self.robot.find_joints(DEX3_MOTORS, preserve_order=True)
@@ -525,7 +530,9 @@ class Scene:
                 "wrist_R": np.stack([quat_wxyz_to_matrix(quats[i]) for i in self.wrist_ids]),
                 "torso_R": quat_wxyz_to_matrix(quats[self.torso_id]), "floor_contacts": self.floor_contacts(),
                 "table_clear": clear, "table_hits": hits, "bottle_pos": bottle_pos, "bottle_quat": bottle_quat,
-                "cmd_q": self.cmd["q"][: len(BODY)].copy(),  # the deploy's body setpoints (tracking vs the measured body_q)
+                "cmd_q": self.cmd["q"][: len(BODY)].copy(),
+                "touch_force": self.touch.data.force_matrix_w[0, 0].norm(dim=-1).cpu().numpy(),  # N, per TOUCH link
+                "cmd_kp": self.cmd["kp"][: len(BODY)].copy(), "cmd_kd": self.cmd["kd"][: len(BODY)].copy(),  # the deploy's body setpoints (tracking vs the measured body_q)
             }  # fmt: skip
         row.update(extra)
         for k, v in row.items():
