@@ -15,7 +15,7 @@ policy latency, execution lag, sampling noise, the arm-joint input and the bottl
 full-radius cylinder catches the hand where a real PET bottle narrows (tapered bottle committed); (2) the rendered
 scene delays the policy: with renders GR00T's commands trail the robot's by ~0.3 s, with the real room composited
 behind the live sim robot (`COMPOSITE_BG`) they match within 0.06 s and the hand follows the real hand path.
-**Update: the sim reproduces the real grasp; placement decides the outcome (GR00T 4/9 so far with randomized placements, robot 6/11)** - see "Push force and bottle placement" and "Placement-randomized evaluation". Before that: - see "Push force and bottle placement". Earlier note: Even on that real path the sim hand meets the bottle's neck or cap 1.8-2.3 s into the
+**Update: the sim reproduces the real grasp; placement decides the outcome (randomized placements: GR00T he 8/20, Pi0.5 he 14/20; the s10 GR00T model 0/20, unexplained)** - see "Push force and bottle placement" and "Placement-randomized evaluation". Before that: - see "Push force and bottle placement". Earlier note: Even on that real path the sim hand meets the bottle's neck or cap 1.8-2.3 s into the
 episode and the bottle slides 8-9 cm and tips, while in the real frames the hand also touches the bottle (thumb at the
 cap, fingers at the base) and it stays upright until grasped. Next: bottle/case friction, the bottle's mass
 distribution, and the sim arm's stiffness against contact.
@@ -141,43 +141,55 @@ So the sim reproduces the real grasp; the outcome turns on centimetre-level plac
 it plausibly does on the robot (GR00T 6/11). Evaluation needs random placements over the real range, not one pinned
 spot.
 
-## Placement-randomized evaluation (in progress, started 2026-10-20 23:51)
+## Placement-randomized evaluation (2026-10-20/21)
 
 Composite view (`COMPOSITE_BG`, `HEAD_CAMERA_FPS=15`), measured case, tapered glass bottle, default friction and mass,
-server `--noise-scale 0`. The bottle is drawn per trial, uniform over the real trials' placement range clamped to stand
-on the case: `BOTTLE=0.3675,-0.005 BOTTLE_JITTER=0.0525,0.115` (x 0.315-0.42, y -0.12..+0.11; 5271c24b). The draw is
-seeded by the trial, so GR00T and Pi0.5 meet the same 20 placements (x 0.324-0.415, y -0.083..+0.107). Run:
-`<eval data>/analysis/run_random.sh`; summary: `random_summary.py rnd_groot rnd_pi05` (per trial, Wilson intervals).
+server `--noise-scale 0` (GR00T bf16 backbone). The bottle is drawn per trial, uniform over the real trials' placement
+range clamped to stand on the case: `BOTTLE=0.3675,-0.005 BOTTLE_JITTER=0.0525,0.115` (x 0.315-0.42, y -0.12..+0.11;
+5271c24b), seeded by the trial, so every policy meets the same 20 placements (x 0.324-0.415, y -0.083..+0.107). Run:
+`<eval data>/analysis/run_random.sh`; summary: `random_summary.py <sessions>` (per trial, Wilson intervals).
 
-Interim, GR00T he after 9 of 20 trials: **4/9** (44%, 95% CI 19-73%); robot: 6/11 (55%).
+| Policy | Background | Sim (20 placements) | Bottle left (y > +0.02) / right-centre | Failures | Robot |
+| --- | --- | --- | --- | --- | --- |
+| GR00T he (`wbt_groot_he_full`) | s03 | **8/20** (40%, 95% CI 22-61%) | 6/9 / 2/11 | 11 knocked over, 1 dropped | 6/11 (s05-s07) |
+| Pi0.5 he (`wbt_pi05_he_full`, EMA) | s03 | **14/20** (70%, 48-85%) | 8/9 / 6/11 | 5 knocked over, 1 missed | 3/5 (operator score) |
+| GR00T handover261020 he (robot s10 model) | s03 | **0/20** (0-16%) | 0/9 / 0/11 | 11 missed grasp, 6 knocked over, 3 no reach | 8/10 (s10) |
+| GR00T handover261020 he | s10 | **0/20** (0-16%) | 0/9 / 0/11 | 15 no reach, 3 knocked over, 2 missed | 8/10 (s10) |
 
-| Trial | Bottle (x, y) m | GR00T |
-| --- | --- | --- |
-| 1 | 0.382, -0.058 | knocked over |
-| 2 | 0.369, +0.099 | dropped after the lift |
-| 3 | 0.342, -0.051 | knocked over |
-| 4 | 0.324, -0.066 | success |
-| 5 | 0.414, -0.002 | knocked over |
-| 6 | 0.400, +0.066 | success |
-| 7 | 0.372, -0.041 | knocked over |
-| 8 | 0.381, +0.086 | success |
-| 9 | 0.349, +0.107 | success |
+- **Pi0.5 vs GR00T he, paired:** both succeed on 7 placements, GR00T only on 1, Pi0.5 only on 7, neither on 5. The sim
+  still ranks Pi0.5 above GR00T he, the opposite of the robot impression, but the intervals overlap and the robot
+  scores come from few trials. GR00T's knock-overs concentrate on bottles on the robot's right and centre, where the
+  right hand's path crosses the bottle top first.
+- **The s10 model fails in sim, and not because of the room.** With the s03 background it moves little and never
+  closes the hand; with an s10 background (its own room: speckled floor, case turned around; `bg_s10_p9.npy`) it
+  raises the hand and stops to the right of the bottle ("did not reach"), resembling the s09 model's robot failure
+  (reach stalls ~2 cm short). Its policy server is verified: fed real s10 frames and states open loop it reproduces
+  the robot's commands (token distance 0.09-0.18 after the first second, same hand outputs).
+- Caveats: the composite background is one still frame, so it does not move with the head as the real view does during
+  the reach; the sim case is placed from the s03 fit, while in s10 the real case sits slightly differently. The s10
+  streamer also had `--max-camera-age-s 0.5 --token-echo-timeout-s 0.5` (safety watchdogs on
+  `feat/g1-streamer-fault-recovery`, absent here; they do not change the policy).
+- Launcher fix found on the way: a resumed session reused gate dir names and the old `deploy_ready` started the
+  streamer before the sim (55a8a91a).
 
-So far the knock-overs cluster on the robot's right half (y -0.06..0.00), where the right hand's path crosses the
-bottle top first (trial 4 at y -0.066 is the exception); bottles further left (y > +0.06) were grasped 3 of 4 times. Pi0.5 follows on the same placements; the
-final rates, the paired comparison and the ranking against the robot go here when both sessions finish.
+The s10 model (`groot_handover261020_he_full`): GR00T N1.7 he init fine-tuned on `handover_bottle_merged_261020`
+(105 episodes: old 43, 25 segments of the 10-14 recording, 39 single attempts of 10-19; held out 27/35); Hub (private)
+`mncai/g1-wbt-handover-groot-handover261020-he-full`; robot run with `g1_groot_real_run.sh` (bf16, noise 0, 0.3 s
+blend); write-up in `docs/research/2026-10-02-g1-wbt-handover-training.md` (s09, s10 sections, PR #42).
 
 ## Next experiments, in order
 
-1. **Placement-randomized evaluation (composite view).** Sample bottle positions over the real range (x 0.30-0.42,
-   y -0.12..+0.11 m, from the back-projected real placements; keep x >= 0.31 so the bottle stands on the case), 20+
-   trials per policy, GR00T and Pi0.5, and compare with the robot. Also stochastic sampling (noise scale 1) for a
-   distribution rather than one deterministic path per spot.
-2. **Then the rendered scene.** Once composite runs grasp, go back to renders and close the look gap that delays the
+1. **Why the s10 GR00T model fails in sim (8/10 on the robot).** Separate vision from state as for the old model:
+   real s10 frames + sim state (`--images dataset --dataset-root <s10>/dataset`, bottle pinned at the trial's spot);
+   compare its first-chunk tokens with the robot's at the same episode time; check the head motion the still composite
+   background cannot show (the new data's single attempts may move the torso more).
+2. **Ranking.** More trials per policy (and stochastic sampling, `--noise-scale 1`) to tighten the GR00T he vs Pi0.5
+   comparison; same-room background (s07/s10) for all policies.
+3. **Then the rendered scene.** Once composite runs grasp, go back to renders and close the look gap that delays the
    policy (case texture, floor and background, the person's hands), or keep the composite as the evaluation view.
-3. **Measure the real bottle** (neck radius, shoulder start, cap size: the real cap looks larger in the frames) and
+4. **Measure the real bottle** (neck radius, shoulder start, cap size: the real cap looks larger in the frames) and
    update `BOTTLE_PARTS`.
-4. **Ranking.** Once a policy succeeds in sim at the real geometry, rerun both policies (10+ trials) and compare with
+5. **Ranking on the robot geometry.** Once a policy succeeds in sim at the real geometry, rerun both policies (10+ trials) and compare with
    the robot (GR00T better there).
 
 ## How to run the variants
