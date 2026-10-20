@@ -1,0 +1,12 @@
+{
+  "parent": "torso_link",
+  "pos": [0.0576235, 0.01753, 0.41987],
+  "rot_wxyz": [0.91496, 0.0, 0.40355, 0.0],
+  "width": 640,
+  "height": 480,
+  "fx": 615.0,
+  "fy": 615.0,
+  "cx": 320.0,
+  "cy": 240.0,
+  "source": "nominal D435 colour 640x480 and the URDF d435_joint mount (xyz 0.0576235 0.01753 0.41987, rpy 0 0.8307767 0 on torso_link); replace fx fy cx cy with `rs-enumerate-devices -c` from the robot's head camera at 640x480"
+}

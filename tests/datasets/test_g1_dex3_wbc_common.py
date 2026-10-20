@@ -171,3 +171,11 @@ class WbcCommonTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_lag_stats():
+    from wbc_common import lag_stats
+
+    s = lag_stats([0.0] * 98 + [30.0, 150.0])
+    assert s["max_ms"] == 150.0 and s["over_20ms"] == 2 and s["steps"] == 100
+    assert 30.0 <= s["p99_ms"] <= 150.0

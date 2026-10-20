@@ -1,0 +1,85 @@
+{
+ "source": "real GR00T he handover sessions s03/s06/s07/s08 (16 right-hand successes): bottle = grasp point in front of the palm (MuJoCo FK of the logged arm+hand state, torso pitched 6 deg in the planner stance), zone = palm at the release; case size and height measured on the real setup (2026-10-19), its distance from the s03 trial 0 head frame with the URDF camera mount (fit: case top rectangular). Replay-derived values (derive_handover_task.py) kept under replay_derivation.",
+ "table_gap_cm": 20.0,
+ "table_xy_world": [
+  0.5175,
+  0.0
+ ],
+ "bottle_xy_world": [
+  0.33,
+  -0.065
+ ],
+ "jitter_m": 0.04,
+ "judge": {
+  "table_top_z": 0.845,
+  "table_half_xy": [
+   0.2375,
+   0.175
+  ],
+  "bottle_radius": 0.033,
+  "bottle_height": 0.155,
+  "zone_center_pelvis": [
+   0.359,
+   -0.126,
+   0.143
+  ],
+  "zone_radius": 0.1,
+  "lift_m": 0.03,
+  "hold_s": 0.5,
+  "grasp_hand": 1
+ },
+ "calibration": "judge success rule replayed on the real palm trajectories (palm as the bottle): lift 3 cm, zone 10 cm, hold 0.5 s passes 18 of 20 real successes (lift 10 cm / zone 8 cm / hold 1 s passed 0); real bottles at x 0.30-0.40, y -0.19..-0.015 from the pelvis; real lifts 2-10 cm (median 6.5)",
+ "replay_derivation": {
+  "table_gap_cm": 18.0,
+  "bottle_xy_world": [
+   0.3211,
+   0.025
+  ],
+  "judge": {
+   "table_top_z": 0.8,
+   "bottle_radius": 0.033,
+   "bottle_height": 0.2,
+   "zone_center_pelvis": [
+    0.3645,
+    -0.1705,
+    0.1438
+   ],
+   "zone_radius": 0.08,
+   "grasp_hand": 1
+  },
+  "per_episode": [
+   {
+    "run": "WBC_A28_ep27_r0",
+    "grasp_hand": 1,
+    "close_t": 340.95499999976244,
+    "release_t": 343.8749999997598,
+    "bottle_x_from_pelvis": 0.3755719369293383,
+    "bottle_y_from_pelvis": -0.112331042842188,
+    "bottle_z": 0.9446209147607465,
+    "zone_center_pelvis": [
+     0.37258134420010386,
+     -0.23065725961877362,
+     0.14802354822207875
+    ]
+   },
+   {
+    "run": "WBC_A28_ep35_r0",
+    "grasp_hand": 1,
+    "close_t": 339.0199999997642,
+    "release_t": 341.81999999976165,
+    "bottle_x_from_pelvis": 0.2666331596546886,
+    "bottle_y_from_pelvis": 0.1623905819790027,
+    "bottle_z": 0.9167022656577726,
+    "zone_center_pelvis": [
+     0.356447386153762,
+     -0.11030731386792066,
+     0.13965592573196825
+    ]
+   }
+  ],
+  "source_runs": [
+   "WBC_A28_ep27_r0",
+   "WBC_A28_ep35_r0"
+  ]
+ }
+}

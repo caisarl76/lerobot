@@ -136,6 +136,13 @@ def write_termination(out_dir: Path, reason: str, phase: str, detail: str = "", 
     (Path(out_dir) / "termination.json").write_text(json.dumps(record, indent=1, default=str))
 
 
+def lag_stats(lag_ms) -> dict:
+    """How far a paced sim ran behind the wall clock (ms per physics step): spec test 0b, per trial in sim trials."""
+    a = np.asarray(lag_ms, float)
+    return {"max_ms": float(a.max()), "p99_ms": float(np.percentile(a, 99)), "over_20ms": int((a > 20).sum()),
+            "steps": int(a.size)}  # fmt: skip
+
+
 def tilt_deg(quat_wxyz) -> float:
     _, x, y, _ = quat_wxyz
     return float(np.degrees(np.arccos(np.clip(1 - 2 * (x * x + y * y), -1, 1))))

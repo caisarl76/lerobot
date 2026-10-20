@@ -8,11 +8,16 @@ performs the confirmed operator steps that belong to the simulator, and exchange
                                              detection armed
   streamer writes GATE/done               -> stop 5 s later; termination.json says completed only if the streamer's
                                              episode completed
+With TRIALS=n (SIM=isaac, streamer in --trials n --gate-dir mode) the first settle starts judged trials instead
+(sim_trials.run_trials, tasks/handover_bottle.json): from trial next_trial(SESSION_DIR) up to n, and the stack ends on
+a redo. One stack per trial (TRIALS=i+1, a fresh GATE_DIR each) is the evaluation mode: the deploy's planner keeps its
+heading across a reset (test 4).
 Logs robot state every 20 ms with wall-clock time, the Dex3 gains the deploy sends (events.txt), and renders a video.
 Usage (in jihun/sonic-vla-sim, cwd gear_sonic_deploy): python sonic_official_sim_host.py OUT_DIR GATE_DIR
 """
 
 import contextlib
+import json
 import os
 import pty
 import subprocess
@@ -21,10 +26,30 @@ import threading
 import time
 from pathlib import Path
 
-from sim_scene import Scene
-from wbc_common import read_done
+SIM = os.environ.get("SIM", "mujoco")
+if SIM == "isaac":
+    from isaac_scene import GEAR_ROOT, Scene
+
+    sys.argv[1:3] = [str(Path(a).resolve()) for a in sys.argv[1:3]]  # OUT, GATE before the chdir
+    os.chdir(GEAR_ROOT / "gear_sonic_deploy")  # the deploy paths below are relative to gear_sonic_deploy
+elif SIM == "mujoco":
+    from sim_scene import Scene
+else:
+    raise SystemExit(f"SIM must be mujoco or isaac, not {SIM!r}")
+from wbc_common import lag_stats, read_done  # noqa: E402 - after the SIM switch (chdir)
 
 OUT, GATE = Path(sys.argv[1]), Path(sys.argv[2])
+# TRIALS > 0: judged trials (Isaac scene), streamer in --trials --gate-dir mode
+TRIALS = int(os.environ.get("TRIALS", "0"))
+SESSION_DIR = Path(os.environ["SESSION_DIR"]) if TRIALS else None
+SEED = int(os.environ.get("SEED", "0"))
+if TRIALS and SIM != "isaac":
+    raise SystemExit("TRIALS needs SIM=isaac (sim_scene has no reset_trial)")
+if TRIALS:  # the table comes from TABLE_GAP_CM, the bottle and the judge from the task: they must agree
+    _task = Path(__file__).parent / "tasks" / "handover_bottle.json"
+    _gap = json.loads(_task.read_text()).get("table_gap_cm")
+    if _gap is None or os.environ.get("TABLE_GAP_CM") is None or float(os.environ["TABLE_GAP_CM"]) != _gap:
+        raise SystemExit(f"TRIALS needs TABLE_GAP_CM={_gap} (tasks/handover_bottle.json)")
 GATE.mkdir(parents=True, exist_ok=True)
 DEPLOY = [
     "bash",
@@ -71,7 +96,7 @@ def seen(pattern):
 def log_hand_gains(when):
     """The Dex3 kp/kd the deploy's last hand commands carry (spec test 8: expected 1.5 / 0.1 on all 14 motors)."""
     try:
-        br = scene.env.unitree_bridge
+        br = scene.bridge
         cmds = [c for cmd in (br.left_hand_cmd, br.right_hand_cmd) for c in cmd.motor_cmd]
         kp, kd = sorted({round(float(c.kp), 3) for c in cmds}), sorted({round(float(c.kd), 3) for c in cmds})
         scene.mark(f"hand gains {when}: kp {kp} kd {kd}")
@@ -99,17 +124,26 @@ try:
             scene.view["phase"] = "planner mode, hung"
         if t_control is not None and "band" not in steps and t >= t_control + 4:
             steps["band"] = t
-            scene.sim.handle_keyboard_button("9")
+            scene.key("9")
             scene.mark("sim key '9': band released")
             scene.view["phase"] = "band released"
         if "band" in steps and "reset" not in steps and t >= steps["band"] + 1:
             steps["reset"] = t
-            scene.sim.handle_keyboard_button("backspace")
+            scene.key("backspace")
             scene.mark("sim key 'Backspace': reset onto ground")
             scene.view["phase"] = "settling on ground"
         if "reset" in steps and t_settled is None and t >= steps["reset"] + 5:
             t_settled = t
             scene.place_table()  # bring the table in now that the robot stands in planner mode
+            if os.environ.get(
+                "BOTTLE"
+            ):  # replays with a bottle (spec test 3), SIM=isaac: 1 = the task's, or "x,y"
+                xy = os.environ["BOTTLE"].split(",")
+                if len(xy) == 1:
+                    xy = json.loads((Path(__file__).parent / "tasks" / "handover_bottle.json").read_text())[
+                        "bottle_xy_world"
+                    ]
+                scene.place_bottle(SEED, [float(v) for v in xy], 0.0)
             scene.fall.armed = True
             (GATE / "settled").touch()
             scene.mark("settled -> streamer may hand off to POSE")
@@ -117,6 +151,25 @@ try:
         if t_settled is not None and "gains_streaming" not in steps and t >= t_settled + 8:
             steps["gains_streaming"] = t
             log_hand_gains("while streaming")
+        if TRIALS and t_settled is not None:
+            from sim_trials import run_trials
+
+            task = json.loads((Path(__file__).parent / "tasks" / "handover_bottle.json").read_text())
+            # BOTTLE=x,y: pinned bottle, no jitter (e.g. a real trial's spot for the real-frame runs)
+            if "," in os.environ.get("BOTTLE", ""):
+                task.update(bottle_xy_world=[float(v) for v in os.environ["BOTTLE"].split(",")], jitter_m=0.0)
+            reason, detail = run_trials(
+                scene,
+                GATE,
+                SESSION_DIR,
+                TRIALS,
+                SEED,
+                task,
+                wall0,
+                lambda: proc.poll() is None,
+                one_attempt=True,
+            )
+            break
         if t_done is None and (GATE / "done").exists():
             t_done, episode_end = t, read_done(GATE)
             scene.mark(f"streamer done: {episode_end}")
@@ -145,4 +198,13 @@ finally:
         os.write(master, b"o")
     time.sleep(0.5)
     proc.terminate()
-    scene.close(reason, detail)
+    lag = getattr(scene, "lag_ms", None)
+    if lag:
+        stats = lag_stats(lag)
+        scene.mark(f"lag vs wall clock: {stats}")
+        (OUT / "lag.json").write_text(json.dumps(stats))
+    try:
+        scene.close(reason, detail)
+    finally:
+        if SIM == "isaac":  # Kit can hang at interpreter exit, also after an error in close
+            os._exit(1 if reason in ("error", "timeout") else 0)

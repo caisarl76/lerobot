@@ -9,7 +9,8 @@ of the episodes present.
   G1  equal balance: every repeat valid; mean max tilt <= reference + 2 deg; mean table.hit_records (contact records during the episode) <= reference's
   G2  C better: mean joint_ref palm p95 over the episodes >= 1.0 cm lower than A28, lower on >= 4 of 6 episodes
       (other episode counts n: all n paired, lower on >= ceil(2n/3)); every pair needs REPEATS runs on both sides
---episodes sets the gated episodes of G0/G1/G2/closed loop (syn loops over the episodes present for its cfg); G2 needs all of them.
+  GI  Isaac parity: |I28 - A28| <= 1.0 cm palm p50, <= 2.0 cm p95 per episode; every repeat valid; mean max tilt <= A28 + 2 deg
+--episodes sets the gated episodes of G0/G1/G2/GI/closed loop (syn loops over the episodes present for its cfg); G2 needs all of them.
   syn 31D synthetic waist: valid, joint_ref palm p95 <= the same backend's 28D replay + 2 cm
 Usage: python wbc_compare.py AUDIT_DIR [--out compare.json] [--episodes 1293,1300,1455,2207,3555,3600]
 """
@@ -163,6 +164,27 @@ def g2(runs, episodes=None, test="C28") -> dict:
     }
 
 
+def gi(runs, test="I28", ref="A28", episodes=None) -> dict:
+    rows = []
+    for ep in episodes_of(runs, episodes, test, ref):
+        i_runs, a_runs = runs.get(test, {}).get(ep, []), runs.get(ref, {}).get(ep, [])
+        row = {"episode": ep}
+        if why := uncovered(**{test: i_runs, ref: a_runs}):
+            rows.append({**row, "pass": False, "why": why})
+            continue
+        ok = True
+        for q, tol in (("p50", 1.0), ("p95", 2.0)):
+            i, a = metric(i_runs, "palm_err_vs_original_cm", q), metric(a_runs, "palm_err_vs_original_cm", q)
+            diff = abs(np.mean(i) - np.mean(a))
+            row[f"{q}_diff_cm"] = round(float(diff), 2)
+            ok = ok and diff <= tol
+        it, at = metric(i_runs, "stability", "tilt_max_deg"), metric(a_runs, "stability", "tilt_max_deg")
+        row.update(tilt=mean(it), tilt_ref=mean(at))
+        ok = ok and bool(it) and bool(at) and np.mean(it) <= np.mean(at) + 2
+        rows.append({**row, "pass": bool(ok)})
+    return {"pass": bool(rows) and all(x["pass"] for x in rows), "rows": rows}
+
+
 def syn(runs, cfg="C31syn", base="C28", episodes=None) -> dict:
     rows = []
     for ep in episodes_of(runs, episodes if episodes is not None else runs.get(cfg, {}), cfg):
@@ -205,6 +227,7 @@ def main():
     runs = only(all_runs, a.episodes)
     out = {"counts": {cfg: {ep: len(v) for ep, v in eps.items()} for cfg, eps in runs.items()},
            "G0": g0(runs, a.episodes), "G1": g1(runs, a.test, "A28", a.episodes), "G2": g2(runs, a.episodes, a.test),
+           "GI": gi(runs, episodes=a.episodes),
            "syn_A": syn(all_runs, "A31syn", "A28"), "syn_C": syn(all_runs, "C31syn", "C28")}  # fmt: skip
     if "C28cl" in runs:
         out["G1_closed"] = g1(runs, "C28cl", "A28cl", a.episodes)
