@@ -20,6 +20,13 @@ class ChunkResampler:
     cross-fades linearly from the old chunk to the new one over ``blend_s`` seconds (both evaluated at the same
     time), so consecutive chunks that disagree do not make the target jump. Before ``t0`` the first token is
     returned; after the last one it is held.
+
+    With ``anchor_s > 0`` (``--chunk-anchor-s``; overrides ``blend_s``) the new chunk is instead offset to start
+    at the current output and keeps its own velocity; the offset decays as ``exp(-(t - now) / anchor_s)``, so the
+    output returns to the new chunk's absolute targets within a few ``anchor_s``. A policy that restarts its plan
+    from an unchanged observation at every replan then still makes progress; with the cross-fade each switch pulls
+    the command back toward the restart point, which kept the G1 arm inside its dead zone (stall "treadmill",
+    2026-10-21).
     """
 
     def __init__(self, source_fps: float = 30.0):
@@ -30,11 +37,21 @@ class ChunkResampler:
         self._t0 = 0.0
         self._prev: tuple[np.ndarray, float] | None = None  # outgoing chunk during a cross-fade
         self._blend = (0.0, 0.0)  # (start, duration) of the cross-fade
+        self._anchor: tuple[np.ndarray, float, float] | None = None  # (offset, start, time constant)
 
-    def set_chunk(self, chunk, t0: float, blend_s: float = 0.0, now: float | None = None) -> None:
+    def set_chunk(
+        self, chunk, t0: float, blend_s: float = 0.0, now: float | None = None, anchor_s: float = 0.0
+    ) -> None:
         chunk = np.asarray(chunk, dtype=np.float32)
         if chunk.ndim != 2 or len(chunk) == 0 or not np.isfinite(chunk).all():
             raise ValueError(f"expected a nonempty finite [N, D] token chunk, got shape {chunk.shape}")
+        if anchor_s > 0 and now is not None and self._chunk is not None:
+            # continue from what is being output now (itself possibly still offset) with the new chunk's motion
+            offset = self.token_at(now) - self._at(chunk, float(t0), now)
+            self._prev, self._chunk, self._t0 = None, chunk, float(t0)
+            self._anchor = (offset.astype(np.float32), float(now), float(anchor_s))
+            return
+        self._anchor = None
         if blend_s > 0 and now is not None and self._chunk is not None:
             # fade from what is being output now (itself possibly mid-fade) to the new chunk
             self._prev = (
@@ -61,6 +78,9 @@ class ChunkResampler:
         if self._chunk is None:
             raise RuntimeError("no chunk set")
         new = self._at(self._chunk, self._t0, t)
+        if self._anchor is not None:
+            offset, start, tau = self._anchor
+            return (new + offset * np.float32(np.exp(-max(t - start, 0.0) / tau))).astype(np.float32)
         if self._prev is not None:
             start, duration = self._blend
             w = (t - start) / duration

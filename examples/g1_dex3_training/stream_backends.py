@@ -321,7 +321,8 @@ class SonicBackend:
             )
 
     def set_chunk(self, chunk, joints, t0, blend_s, now):
-        self.resampler.set_chunk(chunk, t0=t0, blend_s=blend_s, now=now)
+        anchor_s = getattr(self.a, "chunk_anchor_s", 0.0) or 0.0
+        self.resampler.set_chunk(chunk, t0=t0, blend_s=blend_s, now=now, anchor_s=anchor_s)
         if joints is not None:
             self.jres.set_chunk(joints, t0=t0, blend_s=blend_s, now=now)
 
