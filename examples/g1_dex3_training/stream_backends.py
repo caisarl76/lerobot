@@ -10,7 +10,8 @@ The streamer drives either one the same way:
     begin(chunk, joints)    lead-in from the rest pose to the first chunk (time base 0)
     set_chunk(chunk, joints, t0, blend_s, now)   a newly arrived chunk
     episode_tick(t_ep, k, chunk_t0)               one episode tick from the latest chunk
-    finish()                blend out, then return / hand back / stop
+    finish()                (SonicBackend, operator runs: hold the last pose until Enter) blend out, then return /
+                            hand back / stop
 chunk is the 30 Hz token + hands chunk (None for decoupled), joints the 31D joint_ref chunk (None for sonic78).
 record(token, hands, phase, t_ep, k, chunk_t0, joint_ref) is the streamer's per-tick log.
 """
@@ -19,7 +20,10 @@ from __future__ import annotations
 
 import contextlib
 import json
+import os
+import select
 import struct
+import sys
 import time
 from collections import deque
 from pathlib import Path
@@ -187,6 +191,32 @@ def gate(name: str, gate_dir: Path | None, prefix: str = "", consume: bool = Fal
         path.unlink()
 
 
+def enter_pressed(pending: bytearray) -> bool | None:
+    """Non-blocking poll, once per tick: True once a whole line (Enter) has arrived, None if stdin cannot deliver one
+    (EOF, closed or not selectable). Reads only the bytes already there (os.read, not readline(), which waits for a
+    newline and stalls the 50 Hz stream) and keeps a partial line in `pending`: a line cut off by EOF is no Enter."""
+    try:
+        fd = sys.stdin.fileno()
+        if not select.select([fd], [], [], 0)[0]:
+            return False
+        data = os.read(fd, 4096)
+    except (OSError, ValueError):
+        return None
+    if not data:
+        return None
+    pending += data
+    return b"\n" in pending
+
+
+def flush_stdin() -> None:
+    """Drop Enters typed earlier (a double Enter at the operator stop must not pass the next prompt at once)."""
+    with contextlib.suppress(OSError, ValueError, ImportError):
+        if sys.stdin.isatty():
+            import termios
+
+            termios.tcflush(sys.stdin, termios.TCIFLUSH)
+
+
 def load_startup(path: Path) -> dict:
     """--startup-tokens .npz from sonic_table_startup.py plan: tokens/hands (and rev_*) arrays and the path's fps."""
     z = np.load(path)
@@ -200,7 +230,8 @@ class SonicBackend:
     """Token source for NVIDIA's deploy. Start: PLANNER mode -> POSE mode with the planner's current token ->
     --handoff-blend-s blend to the rest token (NVIDIA's standing token, the table path's end, or the planner token
     itself with --start planner). Episode: ChunkResampler.token_at(t), the 30 Hz chunk interpolated to 50 Hz.
-    End: 1 s blend back to the rest token, hold (or the table path reversed), then hand back to the planner or stop.
+    End: hold the last token and hands until the operator presses Enter (not with --gate-dir), 1 s blend back to the
+    rest token, hold (or the table path reversed), then hand back to the planner or stop.
     For joint action spaces it also logs the 50 Hz joint_ref from the joint chunk (not sent)."""
 
     def __init__(self, a, pub, state, record, fps: float, startup: dict | None):
@@ -316,10 +347,37 @@ class SonicBackend:
         joint_ref = None if self.jres is None else self.jres.token_at(t_ep)
         self.send(out[:64], out[64:], "episode", t_ep, k, chunk_t0, joint_ref=joint_ref)
 
+    def hold_for_operator(self):
+        """Keep streaming the last token and hands (hands stay closed on a held bottle) until the operator has cleared
+        the space and pressed Enter: the blend back to the rest pose sweeps the raised arm down (G1: into the box on
+        the table). Without usable stdin, hold until Ctrl-C. --gate-dir runs (sims) do not stop here."""
+        if self.a.gate_dir is not None:
+            return
+        token, hands = self.last_sent, self.last_hands
+        flush_stdin()
+        say(
+            "[streamer] holding the current pose: clear the space (move the box / take the bottle), then press Enter "
+            "to return to the initial pose"
+        )
+        usable, pending = True, bytearray()
+        try:
+            for _ in ticks(10**9):
+                self.send(token, hands, "hold for operator")
+                if usable:
+                    pressed = enter_pressed(pending)
+                    if pressed:
+                        return
+                    if pressed is None:
+                        usable = False
+                        say("[streamer] stdin unusable: holding the current pose until Ctrl-C")
+        except KeyboardInterrupt:
+            say("[streamer] Ctrl-C: returning to the initial pose")
+
     def finish(self):
         a, startup = self.a, self.startup
         rest_token, rest_hands = self.rest_token, self.rest_hands
         say(f"[streamer] token slew limit active on {self.slewed} ticks so far")
+        self.hold_for_operator()
         last_token, last_hands = self.last_sent, self.last_hands
         for i in ticks(
             50

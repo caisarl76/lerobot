@@ -1087,7 +1087,7 @@ def main():
             return run_episode(trial)
         except BaseException as exc:
             if getattr(backend, "pose", False):
-                say(f"[streamer] {exc!r}: blending out and handing back before exiting")
+                say(f"[streamer] {exc!r}: holding, then handing back before exiting")
                 backend.finish()
             raise
 
