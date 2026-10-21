@@ -5,6 +5,8 @@
 # Run from the workstation, each step in its own terminal, in this order; the PC2 steps go over `ssh -t pc2_222`.
 #
 #   g1_groot_real_run.sh server                  # workstation GPU 1, port 5560, waits for "ready on port"
+#   g1_groot_real_run.sh server46                # instead of server: an official Isaac-GR00T UNITREE_G1_SONIC checkpoint
+#                                                # (46D state) via gr00t_official_server.py; PORT 5562, POLICY_FPS=50
 #   g1_groot_real_run.sh deploy                  # PC2: NVIDIA SONIC deploy; wait for "Init Done"
 #   g1_groot_real_run.sh camera                  # PC2: D435i head camera, 640x480, stream "egocentric"
 #   g1_groot_real_run.sh stream RUN [TASK] [extra streamer args...]
@@ -21,7 +23,8 @@
 # Env: MODEL (checkpoint dir), GPU, PORT, NOISE_SCALE (default 0; empty = unscaled sampling), BLEND_S (streamer
 #      --chunk-blend-s, default 0.3; 0 = runs 20-21), CAM_FPS (default 30),
 #      POLICY_FPS (50 for the G1 WBT models; needs the PC2 streamer copy with --policy-fps),
-#      POLICY_SUBDIR (default pretrained_model), BACKBONE_DTYPE (default bfloat16, GR00T only; empty for others).
+#      POLICY_SUBDIR (default pretrained_model), BACKBONE_DTYPE (default bfloat16, GR00T only; empty for others),
+#      GR00T_PY / GR00T_SRC (server46: Isaac-GR00T 2a08eec python and repo).
 set -e
 MODEL=${MODEL:-/mnt/data/jihun/g1_models/he_groot_sonic78sonicstate_ho5_official_full}
 # Robot 2026-10-08 (docs/research/2026-09-29-issue-groot-jerky-predictions.md): noise 0 + blend 0.3 s removed the chunk
@@ -36,14 +39,22 @@ WS=192.168.0.62  # workstation address seen from PC2
 UNIT=groot-server-$PORT
 cd "$(dirname "$0")"
 
+GR00T_PY=${GR00T_PY:-/mnt/data/jihun/venvs/isaac-gr00t-2a08eec/bin/python}
+GR00T_SRC=${GR00T_SRC:-/mnt/data/jihun/code/isaac-gr00t-2a08eec}
+
 case $1 in
-server)
-  LOG=$MODEL/server_gpu${GPU}_${PORT}_t${NOISE_SCALE:-1}.log
+server|server46)
+  LOG=$MODEL/$1_gpu${GPU}_${PORT}_t${NOISE_SCALE:-1}.log
+  if [ "$1" = server ]; then
+    CMD="uv run --project ../.. python -u sonic_policy_server.py --policy-path $MODEL/$POLICY_SUBDIR \
+      ${BACKBONE_DTYPE:+--backbone-dtype $BACKBONE_DTYPE}"
+  else
+    CMD="env PYTHONPATH=$GR00T_SRC $GR00T_PY -u gr00t_official_server.py --model-path $MODEL"
+  fi
   # memory-capped user service: loading the fp32 checkpoint on the CPU first can trigger systemd-oomd otherwise
   systemd-run --user --unit=$UNIT -p MemoryMax=32G -p MemorySwapMax=0 -p WorkingDirectory="$PWD" \
     -E PATH="$PATH" -E HOME="$HOME" -E CUDA_VISIBLE_DEVICES=$GPU -E HF_HUB_OFFLINE=1 \
-    bash -c "exec uv run --project ../.. python -u sonic_policy_server.py --policy-path $MODEL/$POLICY_SUBDIR \
-      --port $PORT ${BACKBONE_DTYPE:+--backbone-dtype $BACKBONE_DTYPE} ${NOISE_SCALE:+--noise-scale $NOISE_SCALE} > $LOG 2>&1"
+    bash -c "exec $CMD --port $PORT ${NOISE_SCALE:+--noise-scale $NOISE_SCALE} > $LOG 2>&1"
   until grep -q "ready on port" "$LOG" 2>/dev/null; do
     systemctl --user is-active -q $UNIT || { tail -20 "$LOG"; exit 1; }
     sleep 5

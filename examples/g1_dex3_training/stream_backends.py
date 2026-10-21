@@ -96,6 +96,23 @@ def observation_state(msg: dict) -> np.ndarray:
     return np.concatenate([body[15:29], left, right[RIGHT_ORDER]]).astype(np.float32)
 
 
+# Dex3 hand_q -> the robot model's joint order (index 0/1, middle 0/1, thumb 0/1/2) for both hands: what NVIDIA's data
+# exporter stores (robot_model.get_configuration_from_actuated_joints, checked on marker values 2026-10-21).
+OFFICIAL_HAND_ORDER = np.array([3, 4, 5, 6, 0, 1, 2])
+
+
+def sonic46_state(msg: dict) -> np.ndarray:
+    """46D state of the official GR00T UNITREE_G1_SONIC config (gr00t_official_server.py), in its key order: left and
+    right leg 6+6, waist 3, left and right arm 7+7, left and right hand 7+7, projected gravity 3 (world [0, 0, -1] in the
+    pelvis frame from the IMU base_quat w, x, y, z, as gear_sonic compute_projected_gravity)."""
+    body = np.asarray(msg["body_q"], np.float64)
+    left, right = (np.asarray(msg[k], np.float64)[OFFICIAL_HAND_ORDER] for k in ("left_hand_q", "right_hand_q"))
+    quat = np.asarray(msg["base_quat"], np.float64)
+    w, x, y, z = quat / np.linalg.norm(quat)
+    gravity = [2 * (w * y - x * z), -2 * (y * z + w * x), 2 * (x * x + y * y) - 1]
+    return np.concatenate([body[0:29], left, right, gravity]).astype(np.float32)
+
+
 def say(text: str) -> None:
     """print() that cannot raise: a closed log pipe (tee gone) must not stop a blend out or handback."""
     with contextlib.suppress(OSError, ValueError):

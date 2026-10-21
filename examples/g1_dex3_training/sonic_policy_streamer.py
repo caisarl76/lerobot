@@ -89,6 +89,7 @@ try:
         measured_ref as measured_ref,  # re-exported for the tests
         observation_state,
         say,
+        sonic46_state,
         ticks,
         token_echo_err,
     )
@@ -125,6 +126,7 @@ except ImportError:
         measured_ref as measured_ref,  # re-exported for the tests
         observation_state,
         say,
+        sonic46_state,
         ticks,
         token_echo_err,
     )
@@ -497,6 +499,7 @@ class RemotePolicy:
         self.image_keys, self.n_obs = info["image_keys"], int(info["n_obs"])
         self.shapes = {k: tuple(v) for k, v in info["shapes"].items()}
         self.model = info.get("model")  # the served checkpoint (None from a server that predates the field)
+        self.state_dim = int(info.get("state_dim", 28))  # 46: official GR00T (gr00t_official_server.py)
 
     def _ask(self, req: dict) -> dict:
         import msgpack
@@ -845,6 +848,9 @@ def main():
             if a.policy_server
             else ChunkPolicy(a.policy_path, a.device, a.backbone_dtype, a.noise_seed, a.noise_scale)
         )
+    state_dim = getattr(policy, "state_dim", 28)
+    if state_dim != 28 and (a.images != "zmq" or a.rtc or policy.n_obs != 1):
+        p.error(f"a {state_dim}D-state policy server needs --images zmq (live robot state), one step and no --rtc")
     if a.images == "zmq":
         images = LiveImages(
             ctx, a.camera_host, a.camera_port, policy.image_keys, policy.shapes, a.stereo_camera, a.task
@@ -860,7 +866,7 @@ def main():
         check_synthetic_duration(a.duration_s or images.n / images.fps)
     worker = InferenceWorker()
     _, warm_imgs, warm_state, warm_task = images.frame(0.0)
-    warm_state = np.zeros(28, np.float32) if warm_state is None else warm_state
+    warm_state = np.zeros(state_dim, np.float32) if warm_state is None else warm_state
     for _ in range(
         3
     ):  # warm up in the inference thread: VLA first calls take 2-5 s (and checks the server link)
@@ -885,6 +891,8 @@ def main():
     log = {
         k: [] for k in ("wall", "t_ep", "phase", "frame", "token", "hands", "chunk_t0", "state", "joint_ref")
     }
+    if state_dim == 46:
+        log["state46"] = []  # what the official GR00T sees, for offline checks against its training data
     no_ref = np.full(31, np.nan, np.float32)
 
     def record(token, hands, phase, t_ep, k, chunk_t0, joint_ref):
@@ -902,6 +910,8 @@ def main():
             ("joint_ref", ref),
         ):
             log[key].append(val)  # fmt: skip
+        if state_dim == 46:
+            log["state46"].append(sonic46_state(msg) if msg else np.full(46, np.nan, np.float32))
         if msg and t_ep >= 0:
             history.append((t_ep, log["state"][-1], log["wall"][-1]))
             del history[:-200]
@@ -923,6 +933,8 @@ def main():
 
     def robot_states(t_ep):
         """Robot state at t_ep - i/fps (oldest first), nearest earlier tick; the current state if none yet."""
+        if state_dim == 46:  # official GR00T: the current 46D state, one observation step
+            return [sonic46_state(state.latest())]
         now = observation_state(state.latest())
         out = []
         for i in reversed(range(policy.n_obs)):
