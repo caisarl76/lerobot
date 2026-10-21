@@ -156,6 +156,17 @@ def _state_schema(table: pa.Table, values: np.ndarray) -> pa.Table:
     return table.replace_schema_metadata(metadata)
 
 
+def video_link(src: Path, out: Path) -> str:
+    """Symlink target for out/videos that shares src's videos. An absolute source link is kept as is (container
+    paths such as /run-output/...); anything else becomes a path relative to out, so the copy survives the host vs
+    container mount difference."""
+    videos = src / "videos"
+    target = os.readlink(videos) if videos.is_symlink() else "videos"
+    if os.path.isabs(target):
+        return target
+    return os.path.relpath(os.path.abspath(src / target), os.path.abspath(out))
+
+
 def write(src: Path, out: Path, states: dict[int, np.ndarray], provenance: dict) -> None:
     """Copy src to out with observation.state replaced by states[episode] (indexed by frame_index)."""
     tmp = out.with_name(out.name + ".incomplete")
@@ -166,9 +177,7 @@ def write(src: Path, out: Path, states: dict[int, np.ndarray], provenance: dict)
     for p in (tmp / "meta").rglob("*"):
         if p.is_file():
             p.chmod(p.stat().st_mode | 0o200)
-    videos = src / "videos"
-    target = os.readlink(videos) if videos.is_symlink() else os.path.join("..", src.name, "videos")
-    (tmp / "videos").symlink_to(target, target_is_directory=True)
+    (tmp / "videos").symlink_to(video_link(src, out), target_is_directory=True)
     if set(states) != set(_episode_index(src)):
         raise ValueError("episode sets differ")
     for f in sorted((src / "data").rglob("*.parquet")):
