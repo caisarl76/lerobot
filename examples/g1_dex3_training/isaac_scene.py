@@ -180,7 +180,14 @@ class Scene:
                  device: str = "cpu", render: bool = True, dds: bool = True):  # fmt: skip
         from isaaclab.app import AppLauncher
 
-        self.app = AppLauncher(headless=True, enable_cameras=True, device=device).app
+        # pinned (taskset, SIM_CPUS): size Kit's task pool, PhysX and USD threads to the allowed cores; Isaac otherwise
+        # starts a thread per machine core and oversubscribes the pin (a 6-8 core pin then ran at ~0.8x real time)
+        n = len(os.sched_getaffinity(0))
+        kit = ""
+        if n < (os.cpu_count() or n):
+            os.environ.update(PXR_WORK_THREAD_LIMIT=str(n), OPENBLAS_NUM_THREADS=str(n))
+            kit = f"--/plugins/carb.tasking.plugin/threadCount={n} --/physics/numThreads={max(1, n - 2)}"
+        self.app = AppLauncher(headless=True, enable_cameras=True, device=device, kit_args=kit).app
         import isaaclab.sim as sim_utils
         import zmq
         from isaaclab.actuators import ImplicitActuatorCfg
