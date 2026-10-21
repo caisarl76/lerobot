@@ -21,7 +21,24 @@ import msgpack
 import numpy as np
 import torch
 import zmq
+from gr00t.model.gr00t_n1d7 import processing_gr00t_n1d7
 from gr00t.policy.gr00t_policy import Gr00tPolicy
+from huggingface_hub import snapshot_download
+
+_build_processor = processing_gr00t_n1d7.build_processor
+
+
+def build_local_processor(model_name, loading_kwargs):
+    """transformers 4.57.3 asks the Hub about a tokenizer named by repo id (is_base_mistral) even offline; a cached
+    snapshot path does not (the same fix as the official training runs' launcher)."""
+    try:
+        model_name = snapshot_download(model_name, local_files_only=True)
+    except Exception:  # not cached: let the original call download it
+        pass
+    return _build_processor(model_name, loading_kwargs)
+
+
+processing_gr00t_n1d7.build_processor = build_local_processor
 
 IMAGE_KEY = "observation.images.egocentric"  # the PC2 head camera stream (g1_head_camera_server.py --name egocentric)
 IMAGE_SHAPE = (3, 480, 640)  # (C, H, W) as recorded in the training videos
