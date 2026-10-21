@@ -2,6 +2,7 @@
 
 import contextlib
 import io
+import os
 import struct
 import sys
 import tempfile
@@ -237,6 +238,64 @@ class SonicBackendTests(unittest.TestCase):
             b.take_over(1, 2)
         first = next(r for r in rec.rows[n:] if r.phase == "planner token")
         np.testing.assert_allclose(first.token, 1.0)
+
+    def _episode_then_finish(self, polls, rec):
+        """One short episode with gates, then finish() as an operator run (no --gate-dir) with enter_pressed()
+        answering `polls`. Returns the deploy messages."""
+        pub, state = FakePub(), FakeState()
+        a = SimpleNamespace(
+            handoff_blend_s=0.2, start="planner", end="planner", max_token_step=0.0, action_space="sonic78"
+        )
+        with backend_env() as a.gate_dir:
+            b = SonicBackend(a, pub, state, rec, 30, None)
+            b.start()
+            b.begin(ramp(40, 78, 0.5), None)
+            b.episode_tick(0.4, 12, 0.0)
+            a.gate_dir = None
+            with mock.patch.object(stream_backends, "enter_pressed", side_effect=polls) as poll:
+                b.finish()
+        return [decode(m) for m in pub.sent], poll
+
+    def test_finish_holds_the_last_pose_until_enter(self):
+        rec = Recorder()
+        msgs, poll = self._episode_then_finish([False, False, True], rec)
+        self.assertEqual(poll.call_count, 3)
+        phases = [r.phase for r in rec.rows]
+        i = phases.index("hold for operator")
+        self.assertEqual(phases[i - 1], "episode")
+        self.assertEqual(phases[i : i + 4], ["hold for operator"] * 3 + ["blend out"])
+        last = rec.rows[i - 1]
+        # the last episode token and hands (closed on a bottle), not the rest pose
+        for r in rec.rows[i : i + 3]:
+            np.testing.assert_array_equal(r.token, last.token)
+            np.testing.assert_array_equal(r.hands, last.hands)
+        self.assertEqual(phases[-1], "handback blend")
+        self.assertEqual([m[1:] for m in msgs if m[0] == "command"][-1], (1, 1))  # then PLANNER mode
+
+    def test_finish_without_stdin_holds_until_ctrl_c(self):
+        class InterruptAfterFiveHolds(Recorder):
+            def __call__(self, token, hands, phase, *rest):
+                super().__call__(token, hands, phase, *rest)
+                if phase == "hold for operator" and [r.phase for r in self.rows].count(phase) == 5:
+                    raise KeyboardInterrupt
+
+        rec = InterruptAfterFiveHolds()
+        msgs, poll = self._episode_then_finish([None], rec)
+        self.assertEqual(poll.call_count, 1)  # stdin unusable: not polled again
+        phases = [r.phase for r in rec.rows]
+        self.assertEqual(phases.count("hold for operator"), 5)
+        self.assertEqual(phases[-1], "handback blend")
+        self.assertEqual([m[1:] for m in msgs if m[0] == "command"][-1], (1, 1))
+
+    def test_enter_pressed_reads_a_line_and_reports_eof(self):
+        r, w = os.pipe()
+        with os.fdopen(r) as stdin, mock.patch.object(sys, "stdin", stdin):
+            self.assertFalse(stream_backends.enter_pressed())
+            os.write(w, b"\n")
+            self.assertTrue(stream_backends.enter_pressed())
+            self.assertFalse(stream_backends.enter_pressed())
+            os.close(w)
+            self.assertIsNone(stream_backends.enter_pressed())
 
 
 class MaxArmSpeedTests(unittest.TestCase):
