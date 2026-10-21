@@ -186,6 +186,16 @@ rendered frames: its sim failure is mostly what it sees. Its tokens trail the ro
 0.30-0.38 s with real frames), the delay attributed earlier to the state input. Unpinned, the same runs lagged
 0.4-4 s on the shared workstation (oversubscribed with other sessions' work); pinned, they ran clean.
 
+**Moving-background composite (2026-10-21).** `COMPOSITE_FOLLOW=1` warps the s10 background by the case-top plane's
+homography from the head pose at the trial's start to the current one (567c7502; the head pose from the torso link,
+since the camera prim's pose is not refreshed with CPU physics). Stack on 8 cores (`SIM_CPUS=8-15`), Isaac's threads
+sized to the pin (3b13ca38), camera 7.5 fps (15 fps on 8 cores ran at ~0.8x real time); lag p99 40-110 ms when the
+box is quiet. Result: **0/5** (s10 t0 spot 0/2, one trial lost to lag/server timeouts; s10 t1 spot 0/3). The tokens now
+track the robot's within 0.02-0.12 s (real frames: 0.36-0.44 s), but in 4 of 5 trials the right hand never closes
+(max command 0.00; real frames: 1.5) and the hand pushes the bottle over. So the s10 model does not close its hand on
+the rendered hand/bottle pixels; the old GR00T and Pi0.5 tolerate them. Next: the sim robot's look (silver forearm
+and wrist as in the real frames, Dex3 shading) and the bottle's look, then the same 6 trials.
+
 The s10 model (`groot_handover261020_he_full`): GR00T N1.7 he init fine-tuned on `handover_bottle_merged_261020`
 (105 episodes: old 43, 25 segments of the 10-14 recording, 39 single attempts of 10-19; held out 27/35); Hub (private)
 `mncai/g1-wbt-handover-groot-handover261020-he-full`; robot run with `g1_groot_real_run.sh` (bf16, noise 0, 0.3 s
