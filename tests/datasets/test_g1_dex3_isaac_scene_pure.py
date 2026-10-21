@@ -93,3 +93,27 @@ def test_bottle_xy_per_axis_jitter_is_seeded_and_bounded():
     assert (np.abs(xy[:, 0] - 0.3675) <= 0.0525).all() and (np.abs(xy[:, 1] + 0.005) <= 0.115).all()
     assert np.ptp(xy[:, 1]) > 0.15  # y spreads wider than x could
     np.testing.assert_array_equal(isc.sample_bottle_xy(7, [0.3, 0.0], 0.04), isc.sample_bottle_xy(7, [0.3, 0.0], 0.04))  # paired
+
+
+def test_plane_homography_follows_camera_motion():
+    cam = {"fx": 615.0, "fy": 615.0, "cx": 320.0, "cy": 240.0}
+    a = np.radians(48)  # pitched down, x forward / z up (Isaac "world" camera convention)
+    R = np.array([[np.cos(a), 0, np.sin(a)], [0, 1, 0], [-np.sin(a), 0, np.cos(a)]])
+    pos = np.array([0.08, 0.0, 1.26])
+    np.testing.assert_allclose(isc.plane_homography(cam, pos, R, pos, R, 0.845), np.eye(3), atol=1e-9)
+    # a camera moved 2 cm left sees a point on the plane 2 cm further right than the reference camera
+    M = isc.plane_homography(cam, pos, R, pos + [0.0, 0.02, 0.0], R, 0.845)
+    p = np.array([0.4, -0.05, 0.845])
+    def px(c, Rc):
+        q = Rc.T @ (p - c)
+        return np.array([cam["cx"] - cam["fx"] * q[1] / q[0], cam["cy"] - cam["fy"] * q[2] / q[0], 1.0])
+    ref, cur = px(pos, R), px(pos + [0.0, 0.02, 0.0], R)
+    w = M @ ref
+    np.testing.assert_allclose(w[:2] / w[2], cur[:2], atol=1e-6)
+
+
+def test_look_at_points_the_camera_x_axis_at_the_target():
+    pos, target = np.array([1.3, -0.9, 1.5]), np.array([0.4, -0.05, 0.9])
+    R = isc.quat_wxyz_to_matrix(isc.look_at_wxyz(pos, target))
+    np.testing.assert_allclose(R[:, 0], (target - pos) / np.linalg.norm(target - pos), atol=1e-9)  # x forward
+    assert abs(R[2, 1]) < 1e-9 and R[2, 2] > 0  # no roll: y stays horizontal, z up

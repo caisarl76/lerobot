@@ -124,6 +124,39 @@ def zero_cmd(n: int) -> dict:
     return {k: np.zeros(n) for k in ("q", "dq", "kp", "kd", "tau")}
 
 
+def look_at_wxyz(pos, target) -> np.ndarray:
+    """Quaternion (w, x, y, z) of a camera at pos looking at target, Isaac "world" convention (x forward, z up), no roll."""
+    f = np.asarray(target, float) - np.asarray(pos, float)
+    f /= np.linalg.norm(f)
+    left = np.cross([0.0, 0.0, 1.0], f)
+    left /= np.linalg.norm(left)
+    m = np.stack([f, left, np.cross(f, left)], 1)
+    w = np.sqrt(max(1.0 + np.trace(m), 1e-12)) / 2  # cameras here never look straight back (trace > -1)
+    return np.array([w, (m[2, 1] - m[1, 2]) / (4 * w), (m[0, 2] - m[2, 0]) / (4 * w), (m[1, 0] - m[0, 1]) / (4 * w)])
+
+
+def plane_homography(cam: dict, ref_pos, ref_rot, cur_pos, cur_rot, plane_z: float) -> np.ndarray:
+    """COMPOSITE_FOLLOW: the 3x3 map from the reference camera's pixels to the current camera's, for points on the plane
+    z = plane_z (the case top). Cameras in the Isaac "world" convention (x forward, y left, z up)."""
+    def ray(rot, u, v):
+        return rot @ np.array([1.0, (cam["cx"] - u) / cam["fx"], (cam["cy"] - v) / cam["fy"]])
+    def pix(pos, rot, p):
+        q = np.asarray(rot).T @ (p - np.asarray(pos))
+        return [cam["cx"] - cam["fx"] * q[1] / q[0], cam["cy"] - cam["fy"] * q[2] / q[0]]
+    src, dst = [], []
+    for u, v in ((100, 150), (540, 150), (540, 450), (100, 450)):  # well inside the image, below the horizon
+        d = ray(np.asarray(cur_rot), u, v)
+        p = np.asarray(cur_pos, float) + d * (plane_z - cur_pos[2]) / d[2]
+        src.append(pix(ref_pos, ref_rot, p))
+        dst.append([u, v])
+    rows = []
+    for (x, y), (u, v) in zip(src, dst, strict=True):  # DLT with h33 = 1
+        rows += [[x, y, 1, 0, 0, 0, -u * x, -u * y, u], [0, 0, 0, x, y, 1, -v * x, -v * y, v]]
+    a = np.asarray(rows, float)
+    h = np.linalg.solve(a[:, :8], a[:, 8])
+    return np.append(h, 1.0).reshape(3, 3)
+
+
 def quat_wxyz_to_matrix(q) -> np.ndarray:
     w, x, y, z = (float(v) for v in q)
     return np.array([
@@ -274,6 +307,9 @@ class Scene:
         # COMPOSITE_BG=<real head frame .npy, the camera server's array convention>: publish the rendered robot and bottle
         # over it (a test of the rendered scene's look; the case and room come from the real frame)
         self.bg = np.load(os.environ["COMPOSITE_BG"]) if os.environ.get("COMPOSITE_BG") else None
+        # COMPOSITE_FOLLOW=1: warp that background with the head's motion since the trial's start (the case-top plane's
+        # homography from the camera pose at place_bottle to the current one), as the real view moves during a reach
+        self.bg_follow, self.bg_ref, self.cam = os.environ.get("COMPOSITE_FOLLOW") == "1", None, cam
         self.camera = Camera(
             CameraCfg(
                 prim_path=f"/World/envs/env_0/Robot/{cam['parent']}/head_cam",
@@ -286,6 +322,16 @@ class Scene:
                 offset=CameraCfg.OffsetCfg(pos=tuple(cam["pos"]), rot=tuple(cam["rot_wxyz"]), convention="world"),
             )
         )  # fmt: skip
+        # THIRD_PERSON_CAM=1 (or "px,py,pz,tx,ty,tz"): a fixed world camera for videos, rendered on request only
+        self.view_cam = None
+        if os.environ.get("THIRD_PERSON_CAM"):
+            v = [float(x) for x in os.environ["THIRD_PERSON_CAM"].split(",")] if "," in os.environ["THIRD_PERSON_CAM"] \
+                else [1.25, -0.95, 1.45, 0.38, -0.05, 0.92]
+            self.view_cam = Camera(CameraCfg(
+                prim_path="/World/third_cam", height=480, width=640, data_types=["rgb"], update_period=0.0,
+                spawn=sim_utils.PinholeCameraCfg(focal_length=18.0, horizontal_aperture=20.955),
+                offset=CameraCfg.OffsetCfg(pos=tuple(v[:3]), rot=tuple(look_at_wxyz(v[:3], v[3:])), convention="world"),
+            ))  # fmt: skip
         self.sim.reset()
         self.robot, self.table_obj = self.scene["robot"], self.scene["table"]
         self.bottle, self.feet, self.touch = self.scene["bottle"], self.scene["feet"], self.scene["touch"]
@@ -413,6 +459,19 @@ class Scene:
             self.next_frame += 1 / CAMERA_FPS
             self._publish_frame()
 
+    def camera_pose(self) -> tuple[np.ndarray, np.ndarray]:
+        """Head camera position and rotation in the world, Isaac "world" convention (x forward, z up): the torso link's
+        physics pose and the mount (the camera prim's own pose is not refreshed with CPU physics)."""
+        d = self.robot.data
+        rt = quat_wxyz_to_matrix(d.body_link_quat_w[0, self.torso_id].cpu().numpy())
+        return d.body_link_pos_w[0, self.torso_id].cpu().numpy() + rt @ np.asarray(self.cam["pos"]), rt @ quat_wxyz_to_matrix(
+            self.cam["rot_wxyz"])
+
+    def third_person_rgb(self) -> np.ndarray:
+        """THIRD_PERSON_CAM view now (RGB uint8)."""
+        self.view_cam.update(0.0, force_recompute=True)
+        return self.view_cam.data.output["rgb"][0, ..., :3].cpu().numpy()
+
     def _publish_frame(self) -> None:
         import cv2
         import zmq
@@ -424,7 +483,11 @@ class Scene:
             raise SystemExit(f"head camera gives {rgb.shape[1]}x{rgb.shape[0]}, not {W}x{H}")
         if self.bg is not None:
             seg = self.camera.data.output["instance_id_segmentation_fast"][0, ..., 0].cpu().numpy()
-            rgb = composite(rgb, seg, self.camera.data.info[0]["instance_id_segmentation_fast"]["idToLabels"], self.bg)
+            bg = self.bg
+            if self.bg_follow and self.bg_ref is not None:
+                m = plane_homography(self.cam, *self.bg_ref, *self.camera_pose(), TABLE_TOP_Z)
+                bg = cv2.warpPerspective(self.bg, m, (W, H), borderMode=cv2.BORDER_REPLICATE)
+            rgb = composite(rgb, seg, self.camera.data.info[0]["instance_id_segmentation_fast"]["idToLabels"], bg)
         _, jpg = cv2.imencode(".jpg", rgb, [int(cv2.IMWRITE_JPEG_QUALITY), 90])  # RGB as is, like the camera server
         msg = {"timestamps": {"egocentric": time.time()}, "images": {"egocentric": base64.b64encode(jpg).decode()}}
         with contextlib.suppress(zmq.Again):  # no subscriber / buffer full: drop, as the camera server does
@@ -518,6 +581,8 @@ class Scene:
             self.bottle.write_root_pose_to_sim(pose)
             self.bottle.write_root_velocity_to_sim(torch.zeros(1, 6, device=dev))
         self.mark(f"bottle placed: seed {seed}, at ({x:.3f}, {y:.3f})")
+        if self.bg_follow:
+            self.bg_ref = self.camera_pose()  # the background frame shows the scene from the standing pose at the start
 
     def cut_trial(self, i: int) -> None:
         if self.rec["t"]:
