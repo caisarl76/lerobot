@@ -172,6 +172,20 @@ range clamped to stand on the case: `BOTTLE=0.3675,-0.005 BOTTLE_JITTER=0.0525,0
 - Launcher fix found on the way: a resumed session reused gate dir names and the old `deploy_ready` started the
   streamer before the sim (55a8a91a).
 
+**Real-frame test of the s10 model (2026-10-21).** Closed loop on the sim state, the policy sees s10's recorded head
+frames (`--images dataset --dataset-root <s10>/dataset`), bottle pinned at the trial's back-projected spot, 3 trials
+each, stack pinned to cores 10-15 (`SIM_CPUS`, 476f5c16; render 2 fps, 2 decode threads): lag p99 13-28 ms.
+
+| Real frames of | Bottle (x, y) m | Sim | Robot |
+| --- | --- | --- | --- |
+| s10 trial 0 (success) | 0.405, -0.055 | **3/3** | success |
+| s10 trial 1 (success) | 0.338, +0.025 | **1/3** (2 knocked over) | success |
+
+With real frames the s10 model grasps (4/6, hand closes to 1.5 as on the robot), against 0/40 with composite or
+rendered frames: its sim failure is mostly what it sees. Its tokens trail the robot's by 0.36-0.44 s (the old model:
+0.30-0.38 s with real frames), the delay attributed earlier to the state input. Unpinned, the same runs lagged
+0.4-4 s on the shared workstation (oversubscribed with other sessions' work); pinned, they ran clean.
+
 The s10 model (`groot_handover261020_he_full`): GR00T N1.7 he init fine-tuned on `handover_bottle_merged_261020`
 (105 episodes: old 43, 25 segments of the 10-14 recording, 39 single attempts of 10-19; held out 27/35); Hub (private)
 `mncai/g1-wbt-handover-groot-handover261020-he-full`; robot run with `g1_groot_real_run.sh` (bf16, noise 0, 0.3 s
@@ -179,10 +193,11 @@ blend); write-up in `docs/research/2026-10-02-g1-wbt-handover-training.md` (s09,
 
 ## Next experiments, in order
 
-1. **Why the s10 GR00T model fails in sim (8/10 on the robot).** Separate vision from state as for the old model:
-   real s10 frames + sim state (`--images dataset --dataset-root <s10>/dataset`, bottle pinned at the trial's spot);
-   compare its first-chunk tokens with the robot's at the same episode time; check the head motion the still composite
-   background cannot show (the new data's single attempts may move the torso more).
+1. **The s10 model's image gap.** Real frames: 4/6; composite (s03 or s10 still background + live sim robot and
+   bottle): 0/40. Candidates: the still background does not move with the head (the real view does during the
+   reach), the sim robot/bottle look, the s10 case pose vs the s03-fitted sim case. Test a composite whose background
+   follows the real head motion (the real trial's frame at the same episode time, its bottle and arm masked out), and
+   the sim hand/bottle rendering alone. Run with `SIM_CPUS=10-15`.
 2. **Ranking.** More trials per policy (and stochastic sampling, `--noise-scale 1`) to tighten the GR00T he vs Pi0.5
    comparison; same-room background (s07/s10) for all policies.
 3. **Then the rendered scene.** Once composite runs grasp, go back to renders and close the look gap that delays the
