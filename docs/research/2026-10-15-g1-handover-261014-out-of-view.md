@@ -83,7 +83,7 @@ Risks:
   as private `mncai/g1-wbt-handover-groot-handover261019-he-full` and on the workstation in
   `/mnt/data/jihun/g1_models/wbt_groot_handover261019_he_full/pretrained_model` (sha256 `bb15edc3…`, same on the
   host, the Hub and the workstation).
-  - **Robot (10-20, s09): 3/10**, against 9/10 for the 94-episode model; the reach stalls near the bottle. The
+  - **Robot (10-20, s09): 4/10**, against 9/10 for the 94-episode model; the reach stalls near the bottle. The
     10-19 episodes each hold several handover cycles (median 6), so cut them per cycle before training on them
     again. Details in the
     [handover note](2026-10-02-g1-wbt-handover-training.md#real-robot-75-episode-merged-groot-he-2026-10-20).

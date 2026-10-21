@@ -355,10 +355,18 @@ set). Training notes in the [2026-10-15 note](2026-10-15-g1-handover-261014-out-
 
 | Session | Model                              | Trials | Success | Failures                                                                     |
 | ------- | ---------------------------------- | ------ | ------- | ---------------------------------------------------------------------------- |
-| s09     | `wbt_groot_handover261019_he_full` | 10     | 3/10    | did not reach the object ×3, stalled / froze ×2, dropped ×1, grasp missed ×1 |
+| s09     | `wbt_groot_handover261019_he_full` | 10     | 4/10    | did not reach the object ×2, stalled / froze ×2, dropped ×1, grasp missed ×1 |
 
-- **3/10 against 9/10 for the 94-episode model (s08).** Successful trials took 81, 72 and 21 s (s08: 11–16 s); with
-  s08's 30 s cap only trial 9 passes, 1/10.
+- **4/10 against 9/10 for the 94-episode model (s08).** Trial 1 (index 0) holds two attempts: the first succeeded
+  (grasp 8.3 s, release ~11.6 s); the robot then went back toward ready, stood still for ~60 s and ended with the hand
+  opening and closing at ~3 Hz. The operator scored it a fail; the user corrected it to success at review (10-21),
+  in `results.jsonl` and `trial_000.npz` on PC2 and the workstation and in the dataset and draft
+  `eval_session.json` (originals kept as `results.jsonl.orig`). The other successes took 81, 72 and 21 s (s08:
+  11–16 s); with s08's 30 s cap only trials 1 (its first attempt) and 10 pass, 2/10.
+- **Why the second attempt stalled:** the policy has no memory (`n_obs_steps` 1), so the first attempt does not
+  carry over; the input does. 157 of the 200 training frames nearest the stalled pose are from the 10-19 recordings,
+  where the robot waited at ready while the operator reset the bottle, and in those frames the arm moves half as
+  much over the next 2 s as on average (0.35 against 0.67 rad). The old 43 episodes never start from that pose.
 - **Operator:** the reach stalls about 2 cm from the bottle, with the arm still or creeping; the return to the
   ready pose after the handover is good.
 - **Logs agree:** right-arm joint speed median 0.047 rad/s (s08 0.335), still (< 0.05 rad/s) 53 % of the policy
@@ -385,7 +393,7 @@ recordings into 39 single attempts (hand-marked exclusions; the old 43 and the 2
 | ------- | ---------------------------------- | ------ | ------- | ------------------------------------------------------------------------------ |
 | s10     | `wbt_groot_handover261020_he_full` | 10     | 8/10    | stalled, hand did not open (trial 3); wavy arm after the lift (trial 9, other) |
 
-- **8/10, against 3/10 before the cut (s09) and 9/10 for the 94-episode model (s08).** Cutting the attempts fixed
+- **8/10, against 4/10 before the cut (s09) and 9/10 for the 94-episode model (s08).** Cutting the attempts fixed
   the reach: the grasp comes at a median 5.9 s (s09 11.9 s, s08 4.8 s) and the arm is still 33 % of the time (s09
   52 %, s08 18 %).
 - **Slower than s08:** successes took 13–28 s (median 17), against 11–16 s; trials 1 and 2 needed 27–28 s.
