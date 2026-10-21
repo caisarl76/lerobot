@@ -287,15 +287,27 @@ class SonicBackendTests(unittest.TestCase):
         self.assertEqual(phases[-1], "handback blend")
         self.assertEqual([m[1:] for m in msgs if m[0] == "command"][-1], (1, 1))
 
-    def test_enter_pressed_reads_a_line_and_reports_eof(self):
+    def test_enter_pressed_needs_a_whole_line_and_never_blocks(self):
         r, w = os.pipe()
         with os.fdopen(r) as stdin, mock.patch.object(sys, "stdin", stdin):
-            self.assertFalse(stream_backends.enter_pressed())
+            pending = bytearray()
+            self.assertFalse(stream_backends.enter_pressed(pending))  # nothing typed
+            os.write(w, b"x")  # partial line, writer open: returns at once (readline() would block here)
+            self.assertFalse(stream_backends.enter_pressed(pending))
+            self.assertFalse(stream_backends.enter_pressed(pending))
             os.write(w, b"\n")
-            self.assertTrue(stream_backends.enter_pressed())
-            self.assertFalse(stream_backends.enter_pressed())
+            self.assertTrue(stream_backends.enter_pressed(pending))
             os.close(w)
-            self.assertIsNone(stream_backends.enter_pressed())
+            self.assertIsNone(stream_backends.enter_pressed(bytearray()))  # EOF
+
+    def test_enter_pressed_partial_line_then_eof_is_not_enter(self):
+        r, w = os.pipe()
+        with os.fdopen(r) as stdin, mock.patch.object(sys, "stdin", stdin):
+            pending = bytearray()
+            os.write(w, b"x")
+            os.close(w)
+            self.assertFalse(stream_backends.enter_pressed(pending))
+            self.assertIsNone(stream_backends.enter_pressed(pending))
 
 
 class MaxArmSpeedTests(unittest.TestCase):

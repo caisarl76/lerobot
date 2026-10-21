@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import os
 import select
 import struct
 import sys
@@ -173,15 +174,21 @@ def gate(name: str, gate_dir: Path | None, prefix: str = "", consume: bool = Fal
         path.unlink()
 
 
-def enter_pressed() -> bool | None:
-    """Non-blocking poll, once per tick: True if the operator pressed Enter, None if stdin cannot deliver one (EOF,
-    closed or not selectable)."""
+def enter_pressed(pending: bytearray) -> bool | None:
+    """Non-blocking poll, once per tick: True once a whole line (Enter) has arrived, None if stdin cannot deliver one
+    (EOF, closed or not selectable). Reads only the bytes already there (os.read, not readline(), which waits for a
+    newline and stalls the 50 Hz stream) and keeps a partial line in `pending`: a line cut off by EOF is no Enter."""
     try:
-        if not select.select([sys.stdin], [], [], 0)[0]:
+        fd = sys.stdin.fileno()
+        if not select.select([fd], [], [], 0)[0]:
             return False
-        return True if sys.stdin.readline() else None
+        data = os.read(fd, 4096)
     except (OSError, ValueError):
         return None
+    if not data:
+        return None
+    pending += data
+    return b"\n" in pending
 
 
 def flush_stdin() -> None:
@@ -335,12 +342,12 @@ class SonicBackend:
             "[streamer] holding the current pose: clear the space (move the box / take the bottle), then press Enter "
             "to return to the initial pose"
         )
-        usable = True
+        usable, pending = True, bytearray()
         try:
             for _ in ticks(10**9):
                 self.send(token, hands, "hold for operator")
                 if usable:
-                    pressed = enter_pressed()
+                    pressed = enter_pressed(pending)
                     if pressed:
                         return
                     if pressed is None:
