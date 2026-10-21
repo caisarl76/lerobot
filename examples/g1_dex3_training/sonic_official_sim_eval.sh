@@ -21,7 +21,7 @@ if [ "${SIM:-mujoco}" = isaac ]; then
   # Usage: SIM=isaac TRIALS=10 SESSION_DIR=DIR POLICY_PATH=DIR_ON_SIM_HOST ROBOT_ARGS=trial_000.npz \
   #          GROUND_USD=default_environment.usd ISAAC_PY=python-of-the-isaac-env \
   #          sonic_official_sim_eval.sh OUT - - - GPU TABLE_GAP_CM [extra streamer args...]
-  # Env: SERVER_EXTRA (e.g. "--backbone-dtype bfloat16 --noise-scale 0" for GR00T), ISAAC_GPU (default 0), SEED, MAX_ATTEMPTS
+  # Env: SERVER_EXTRA (e.g. "--backbone-dtype bfloat16 --noise-scale 0" for GR00T), ISAAC_GPU (default 0), SEED, SIM_CPUS (taskset core list for each trial stack), MAX_ATTEMPTS
   # (stacks per trial, default 5: a trial is redone when the sim lagged), CODE_DIR, LEROBOT_DIR, HF_CACHE as below.
   : "${TRIALS:?}" "${SESSION_DIR:?}" "${POLICY_PATH:?policy dir on SIM_HOST}" "${ROBOT_ARGS:?robot session trial_000.npz}"
   : "${GROUND_USD:?local copy of Isaac Grid/default_environment.usd}" "${ISAAC_PY:?python of the Isaac Lab env}"
@@ -85,7 +85,8 @@ PY
       G=$OUTD/gate_${i}_$attempt; rm -rf "$G"; mkdir -p "$G" "$OUTD/sim"
       kill -0 $TUNNEL 2>/dev/null || { echo "[trial $((i + 1))] ssh tunnel down: restarting" >&2; tunnel || exit 1; }
       # own PID namespace (with its /proc: CUDA fails without it): a hung host (Kit ignores SIGTERM) and its deploy end with the stack
-      unshare -rn --pid --fork --kill-child --mount-proc bash -c '
+      # SIM_CPUS (e.g. 10-15): the whole stack (Isaac, deploy, DDS bridge, streamer) on those cores only, on a shared box
+      ${SIM_CPUS:+taskset -c $SIM_CPUS} unshare -rn --pid --fork --kill-child --mount-proc bash -c '
         SOCK=$0 HERE=$1 N=$2 SESS=$3 GAP=$4 OUTD=$5 G=$6 TAG=$7 EXTRA=$8
         mapfile -t FL < <(python3 -c "import json, sys; print(*json.load(open(sys.argv[1])), sep=chr(10))" "$OUTD/streamer_flags.json")
         ip link set lo up
