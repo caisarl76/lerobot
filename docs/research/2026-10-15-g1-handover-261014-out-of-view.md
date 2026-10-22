@@ -96,7 +96,8 @@ Risks:
   `/mnt/data/jihun/g1_models/wbt_groot_handover261020_he_full/pretrained_model` (sha256 `b7ee9c8c…`, same as the
   Hub). The 261019 workstation copy was deleted (Hub only).
   - **Robot (10-20, s10): 8/10**; the reach is fixed, but successes are slower than s08's and one trial swayed after
-    the lift. Details in the
+    the lift. Neither merged model replaced `groot_handover261015_he_full`: the user kept it as the reference model
+    (2026-10-22). Details in the
     [handover note](2026-10-02-g1-wbt-handover-training.md#real-robot-105-episode-groot-he-with-the-10-19-attempts-cut-2026-10-20).
 
 ## 4. Recording command

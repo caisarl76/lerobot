@@ -407,6 +407,47 @@ recordings into 39 single attempts (hand-marked exclusions; the old 43 and the 2
 - Session and export: `/mnt/data/jihun/g1_eval_sessions/s10_wbt_groot_handover261020_he_handover` (`raw/`,
   `dataset/`); VLM failure labels and the human review are not done yet.
 
+## Stall investigation and inference tests (2026-10-21)
+
+Stalls (right arm still for 2 s or more during the policy phase) were analysed in s08, s09 and s10 from the session logs
+and with an offline probe (the streamer's `ChunkPolicy` re-run on the logged state and camera frame).
+
+- **Mechanism, the same in all three models:** chunks keep arriving (2.6–2.9 per s) and the token slew limiter is never
+  active, but each new chunk restarts from the unchanged view and the 0.3 s blend pulls the command back. In stalls the
+  sent tokens go nowhere (net / path 0.01–0.07, against 0.30–0.35 when moving), the next chunk reverses the previous
+  one (cos −0.16 to −0.43, against +0.3 to +0.6), and the arm moves 0–0.2° per chunk (6–10° when moving).
+- **Dead zone:** over 2,075 chunk segments the arm moves 6–10° per unit of token change below 0.06 token per chunk,
+  but 35–52° above 0.1. The residual command in a stall (~0.035 per chunk) sits inside it.
+- **What drives the slow prediction:** the camera image more than the state (swapping in a moving moment's image
+  restores most chunk motion). Near the bottle and in the holding posture the model predicts slow motion.
+- **Ruled out:** unmasked padding at episode ends (GR00T masks `action_is_pad` correctly), sampling noise (noise 1.0
+  over 10 seeds gives the same small motion), and the chunk's motion sitting only in its second half.
+
+Inference tests on the robot, all with `wbt_groot_handover261020_he_full` except s08 (30 s cap, noise 0, token step
+limit 0.05):
+
+| Session | Change                                  | Success | Stall per trial | Success time (median) | Grasp time (median) |
+| ------- | --------------------------------------- | ------- | --------------- | --------------------- | ------------------- |
+| s08     | 94-episode model, blend 0.3, replan 0.4 | 9/10    | 0.9 s           | 12.4 s                | 4.8 s               |
+| s10     | blend 0.3, replan 0.4                   | 8/10    | 2.5 s           | 17.0 s                | 5.8 s               |
+| s11     | `--replan-s 0.8 --max-chunk-age-s 1.5`  | 8/10    | 0.2 s           | 19.1 s                | 8.2 s               |
+| s12     | `--replan-s 0.6 --max-chunk-age-s 1.5`  | 6/9     | 1.1 s           | 20.8 s                | 9.2 s               |
+| s13     | `--chunk-anchor-s 1.0` (PR #46)         | 7/10    | 0.0 s           | 13.5 s                | 5.3 s               |
+| s14     | `--chunk-anchor-s 0.5` (PR #46)         | 6/10    | 0.0 s           | 15.1 s                | 7.4 s               |
+
+- **Longer replans** remove stalls but the chunk runs out before the next arrives (inference 0.21–0.28 s): the command
+  is frozen 30 % (s11) or 7 % (s12) of the time and the arm pulses at the replan rate (stop-and-go), and the grasp gets
+  slower. The first s11 attempts ended with "no valid chunk for 1 s" (0.8 s replan + inference > the 1 s default),
+  and the return to rest hit the box; raise `--max-chunk-age-s` with `--replan-s`.
+- **Chunk anchoring** (each new chunk continues from the current command; the offset decays with time constant τ)
+  removes every stall and brings the success time close to s08, but the reach gets less accurate: in s13 all failures
+  came from an inaccurate reach (weak grasp, then the bottle falls; twice the palm knocked it over), and τ 0.5 (s14)
+  did not help (4 missed grasps). The observer rated s13 above s14.
+
+**Decision (user, 2026-10-22): the reference handover model is `wbt_groot_handover261015_he_full`** (s08): faster
+and more accurate than the 261019 and 261020 models and their inference variants. Keep the s08 settings (blend 0.3,
+replan 0.4); chunk anchoring stays unmerged (PR #46) and, if tried again, should be tested on this model first.
+
 ## Incidents
 
 - **GPU 7 shared (10-02 12:17 UTC).** Session `lerobot-f0` started `groot_joint28_ho5_official_full` (40 GB) on
