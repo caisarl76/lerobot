@@ -128,3 +128,29 @@ class ChunkAnchorTests(unittest.TestCase):
         r2.set_chunk(np.ones((40, 4)), t0=0.3, blend_s=0.2, now=0.5, anchor_s=1.0)
         np.testing.assert_allclose(r2.token_at(0.5), np.zeros(4), atol=1e-6)  # anchored: starts where it was
         np.testing.assert_allclose(r2.token_at(0.6), np.full(4, 1 - np.exp(-0.1)), atol=1e-5)
+
+    def test_only_anchor_dims_are_offset_the_rest_keep_the_cross_fade(self):
+        """Hand targets are absolute joint positions with no slew limit downstream: they must not be anchored, or
+        restarting chunks would accumulate offsets past the finger limits (PR #46 review)."""
+        r = ChunkResampler(50)
+        # every chunk restarts 0 -> 1.0 (a valid finger range)
+        ramp = np.linspace(0, 1.0, 41).astype(np.float32)
+        chunk = np.stack([ramp] * 6, axis=1)
+        r.set_chunk(chunk, t0=0.0)
+        hands_seen = []
+        for k in range(1, 11):
+            t0, now = 0.4 * k, 0.4 * k + 0.2
+            r.set_chunk(chunk, t0=t0, now=now, blend_s=0.3, anchor_s=1.0, anchor_dims=4)
+            for j in range(20):
+                hands_seen.append(r.token_at(now + j * 0.02)[4:])
+        self.assertLessEqual(np.max(hands_seen), 1.0 + 1e-6)  # hands never leave the chunks' own range
+        self.assertGreater(float(r.token_at(4.4)[0]), 1.3)  # anchored dims still build their lead
+
+    def test_anchor_offset_is_taken_from_the_command_actually_sent(self):
+        """A slew limiter downstream can leave the sent command behind the resampler's output; anchoring must
+        continue from what was sent (PR #46 review: desired 1.0, sent 0.05, new chunk asks for 0)."""
+        r = ChunkResampler(50)
+        r.set_chunk(np.ones((40, 2), np.float32), t0=0.0)
+        r.set_chunk(np.zeros((40, 2), np.float32), t0=0.2, now=0.2, anchor_s=1.0, current=np.full(2, 0.05))
+        np.testing.assert_allclose(r.token_at(0.2), np.full(2, 0.05), atol=1e-6)
+        self.assertLess(float(r.token_at(0.3)[0]), 0.05)  # heading to the new chunk, never back up toward 1.0

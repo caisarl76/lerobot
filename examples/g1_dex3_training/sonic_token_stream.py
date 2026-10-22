@@ -26,7 +26,10 @@ class ChunkResampler:
     output returns to the new chunk's absolute targets within a few ``anchor_s``. A policy that restarts its plan
     from an unchanged observation at every replan then still makes progress; with the cross-fade each switch pulls
     the command back toward the restart point, which kept the G1 arm inside its dead zone (stall "treadmill",
-    2026-10-21).
+    2026-10-21). ``anchor_dims`` limits the offset to the first dims (the 64 SONIC token dims): the rest (absolute
+    Dex3 hand targets, which have no slew limit downstream) keep the plain cross-fade, so they stay inside the
+    chunks' own range. ``current`` is the command actually sent (after a downstream slew limit); the offset is taken
+    from it rather than from this resampler's output.
     """
 
     def __init__(self, source_fps: float = 30.0):
@@ -37,19 +40,40 @@ class ChunkResampler:
         self._t0 = 0.0
         self._prev: tuple[np.ndarray, float] | None = None  # outgoing chunk during a cross-fade
         self._blend = (0.0, 0.0)  # (start, duration) of the cross-fade
-        self._anchor: tuple[np.ndarray, float, float] | None = None  # (offset, start, time constant)
+        # (offset, start, time constant, anchored dims)
+        self._anchor: tuple[np.ndarray, float, float, int] | None = None
 
     def set_chunk(
-        self, chunk, t0: float, blend_s: float = 0.0, now: float | None = None, anchor_s: float = 0.0
+        self,
+        chunk,
+        t0: float,
+        blend_s: float = 0.0,
+        now: float | None = None,
+        anchor_s: float = 0.0,
+        anchor_dims: int | None = None,
+        current=None,
     ) -> None:
         chunk = np.asarray(chunk, dtype=np.float32)
         if chunk.ndim != 2 or len(chunk) == 0 or not np.isfinite(chunk).all():
             raise ValueError(f"expected a nonempty finite [N, D] token chunk, got shape {chunk.shape}")
         if anchor_s > 0 and now is not None and self._chunk is not None:
-            # continue from what is being output now (itself possibly still offset) with the new chunk's motion
-            offset = self.token_at(now) - self._at(chunk, float(t0), now)
-            self._prev, self._chunk, self._t0 = None, chunk, float(t0)
-            self._anchor = (offset.astype(np.float32), float(now), float(anchor_s))
+            # continue from the command being sent now (itself possibly still offset) with the new chunk's motion
+            n = chunk.shape[1] if anchor_dims is None else min(int(anchor_dims), chunk.shape[1])
+            ref = self.token_at(now)
+            if current is not None:
+                cur = np.asarray(current, np.float32)[:n]
+                ref[: len(cur)] = cur
+            offset = np.zeros(chunk.shape[1], np.float32)
+            offset[:n] = ref[:n] - self._at(chunk, float(t0), now)[:n]
+            if blend_s > 0 and n < chunk.shape[1]:  # the dims that are not anchored keep the cross-fade
+                self._prev = (
+                    (self.token_at(now)[None], now) if self._prev is not None else (self._chunk, self._t0)
+                )
+                self._blend = (float(now), float(blend_s))
+            else:
+                self._prev = None
+            self._chunk, self._t0 = chunk, float(t0)
+            self._anchor = (offset, float(now), float(anchor_s), n)
             return
         self._anchor = None
         if blend_s > 0 and now is not None and self._chunk is not None:
@@ -78,18 +102,21 @@ class ChunkResampler:
         if self._chunk is None:
             raise RuntimeError("no chunk set")
         new = self._at(self._chunk, self._t0, t)
-        if self._anchor is not None:
-            offset, start, tau = self._anchor
-            return (new + offset * np.float32(np.exp(-max(t - start, 0.0) / tau))).astype(np.float32)
+        out = new
         if self._prev is not None:
             start, duration = self._blend
             w = (t - start) / duration
             if w < 1:
                 old = self._at(*self._prev, t)
                 w = max(w, 0.0)
-                return ((1 - w) * old + w * new).astype(np.float32)
-            self._prev = None
-        return new
+                out = ((1 - w) * old + w * new).astype(np.float32)
+            else:
+                self._prev = None
+        if self._anchor is not None:
+            offset, start, tau, n = self._anchor
+            out = out.copy()
+            out[:n] = new[:n] + offset[:n] * np.float32(np.exp(-max(t - start, 0.0) / tau))
+        return out
 
 
 if __name__ == "__main__":

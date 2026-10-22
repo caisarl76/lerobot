@@ -143,6 +143,42 @@ class DecoupledBackendTests(unittest.TestCase):
 
 
 class SonicBackendTests(unittest.TestCase):
+    def test_chunk_anchor_follows_the_slew_limited_command_and_leaves_hands_bounded(self):
+        """--chunk-anchor-s with the token slew limit active (PR #46 review): a new chunk that asks for less must
+        not make the sent token climb, and repeated anchored switches must not push the hands past their range."""
+        pub, rec, state = FakePub(), Recorder(), FakeState()
+        a = SimpleNamespace(
+            handoff_blend_s=0.0,
+            start="standing",
+            end="planner",
+            max_token_step=0.05,
+            action_space="sonic78",
+            chunk_anchor_s=1.0,
+        )
+        up = np.ones((40, 78), np.float32)  # token target 1.0
+        # every chunk restarts its hand ramp 0 -> 1.0 (inside the +-1.0472 thumb limit)
+        up[:, 64:] = np.linspace(0, 1.0, 40)[:, None]
+        with backend_env() as a.gate_dir:
+            b = SonicBackend(a, pub, state, rec, 30, None)
+            b.start()
+            b.begin(up, None)  # blends in to the first chunk (1.0)
+            far = np.full((40, 78), 5.0, np.float32)
+            b.set_chunk(far, None, 0.0, 0.3, 0.0)  # the anchored command now rises faster than 0.05 per tick
+            for i in range(1, 11):
+                b.episode_tick(i * 0.02, i, 0.0)
+            sent = b.last_sent.copy()
+            self.assertGreater(b.slewed, 0)  # the limiter held the sent token behind the resampler's output
+            b.set_chunk(np.zeros((40, 78), np.float32), None, 0.2, 0.3, 0.2)
+            b.episode_tick(0.22, 11, 0.2)
+            # each dim heads to the new chunk (0) from what was sent: no dim climbs back toward the old 1.0
+            self.assertTrue(np.all(np.abs(b.last_sent) <= np.abs(sent) + 1e-6))
+            for k in range(1, 20):  # many anchored switches with valid, restarting hand ramps
+                t0 = 0.2 + 0.4 * k
+                b.set_chunk(up, None, t0, 0.3, t0 + 0.2)
+                for j in range(20):
+                    b.episode_tick(t0 + 0.2 + j * 0.02, j, t0)
+                    self.assertLessEqual(float(np.max(b.last_hands)), 1.0 + 1e-6)
+
     def test_commands_handoff_blend_in_episode_and_handback(self):
         pub, rec, state = FakePub(), Recorder(), FakeState()
         a = SimpleNamespace(
