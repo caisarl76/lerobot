@@ -443,6 +443,11 @@ limit 0.05):
   removes every stall and brings the success time close to s08, but the reach gets less accurate: in s13 all failures
   came from an inaccurate reach (weak grasp, then the bottle falls; twice the palm knocked it over), and τ 0.5 (s14)
   did not help (4 missed grasps). The observer rated s13 above s14.
+- **Caveat (found in review, 2026-10-22):** s13 and s14 ran a first version of anchoring that also offset the 14 Dex3
+  hand targets, which have no slew limit. The right-hand targets sent went to −1.48 / +3.18 rad (s13) and
+  −1.24 / +2.67 rad (s14), against −0.72 / +1.53 rad in s10, so their weak grasps and drops may come partly from
+  corrupted finger commands rather than from anchoring the token. Fixed in PR #46 (`ef31309e`: only the 64 token dims are
+  anchored, from the token actually sent); a fair anchoring test needs a new session with the fixed code.
 
 **Decision (user, 2026-10-22): the reference handover model is `wbt_groot_handover261015_he_full`** (s08): faster
 and more accurate than the 261019 and 261020 models and their inference variants. Keep the s08 settings (blend 0.3,
