@@ -97,10 +97,15 @@ First real session (2026-10-14, `s00_test_he_groot_laptop`, HE GR00T, "close a l
   to clear the space and press Enter, then run the existing blend and handback.
 - **Safe hand settle (this item):** return to the rest pose automatically and without contact, so the operator does not
   have to clear the space. Candidates:
-  1. _Retrace:_ play the episode's own streamed tokens in reverse (every tick is logged) back to the start pose, then
-     the usual handback. The hand came in along that path without hitting anything; the streamer already plays a
-     reversed path at the table (`rev_tokens`, "table shutdown"). Needs a speed cap, skipping stalled or oscillating
-     stretches, and a rule for the hands (keep holding, or open only at a safe point).
+  1. _Retrace:_ take the episode's measured arm trajectory (the logged 50 Hz `state`), reverse it back to the start
+     pose, **re-encode the reversed joint path with the SONIC encoder** and play those tokens, then the usual handback.
+     Never play the streamed tokens backward: tokens encode about 1 s of future motion, so a reversed token sequence
+     is not a reversed motion ([round-trip audit](2026-09-23-sonic-roundtrip-audit.md), end-of-episode notes). The
+     existing table shutdown is built this way: `sonic_table_startup.py` encodes a reversed joint path into
+     `rev_tokens` offline. The hand came in along that path without hitting anything. Needs the encoder on the
+     streamer side, a speed cap (on the way down SONIC's arm sags toward the table edge; the audit found 1.5–2 rad/s
+     kept clearance at a 5 cm table, see `--reverse-max-speed`), skipping stalled or oscillating stretches, and a rule
+     for the hands (keep holding, or open only at a safe point).
   2. _Lift, then lower:_ first move the hand up and back to a clearance waypoint above the table, then descend to rest.
   3. Choose the route from the measured arm pose and the known table height.
 - **Done when:** no contact with the table or the box from varied end poses (mid-reach, holding in the handover
