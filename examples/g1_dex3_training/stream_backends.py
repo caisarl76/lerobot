@@ -321,7 +321,12 @@ class SonicBackend:
             )
 
     def set_chunk(self, chunk, joints, t0, blend_s, now):
-        self.resampler.set_chunk(chunk, t0=t0, blend_s=blend_s, now=now)
+        anchor_s = getattr(self.a, "chunk_anchor_s", 0.0) or 0.0
+        # anchor only the 64 token dims (the hands are absolute joint targets with no slew limit) and from the token
+        # actually sent, which the slew limit in send() can hold behind the resampler's output
+        self.resampler.set_chunk(
+            chunk, t0=t0, blend_s=blend_s, now=now, anchor_s=anchor_s, anchor_dims=64, current=self.last_sent
+        )
         if joints is not None:
             self.jres.set_chunk(joints, t0=t0, blend_s=blend_s, now=now)
 

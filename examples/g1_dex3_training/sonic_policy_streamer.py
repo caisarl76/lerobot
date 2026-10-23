@@ -635,6 +635,14 @@ def main():
         "once, the evaluated setting); smooths chunk switches of stochastic policies such as GR00T",
     )
     p.add_argument(
+        "--chunk-anchor-s",
+        type=float,
+        default=0.0,
+        help="sonic backend: start each new chunk at the current command and keep its motion, the offset decaying "
+        "with this time constant (s); overrides --chunk-blend-s. Stops a policy that replans from an unchanged view "
+        "from pulling the command back at every switch (stall treadmill, 2026-10-21). 0 = off",
+    )
+    p.add_argument(
         "--noise-seed",
         type=int,
         help="--policy-path: reseed the sampling noise before every chunk (GR00T flow matching; see the server)",
