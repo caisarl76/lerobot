@@ -210,6 +210,11 @@ class Scene:
         # internet (private network namespace); the default fetches it from NVIDIA's asset server
         ground_usd = os.environ.get("GROUND_USD")
         ground_cfg = sim_utils.GroundPlaneCfg(usd_path=ground_usd) if ground_usd else sim_utils.GroundPlaneCfg()
+        # FLOOR_FRICTION=mu (or static,dynamic): the feet-floor friction ("max" combine: the floor's value wins over the
+        # feet's default 0.5). Default PhysX 0.5: the robot pivots ~4x more than on the real rubber tiles during a reach
+        if (fl := parse_friction(os.environ.get("FLOOR_FRICTION"))) is not None:
+            ground_cfg.physics_material = sim_utils.RigidBodyMaterialCfg(
+                static_friction=fl[0], dynamic_friction=fl[1], friction_combine_mode="max")
 
         # contact experiments (the sim bottle tips under touches the real one survives): friction materials for the bottle
         # and the case top (average combine, as PhysX), and BOTTLE_COM_Z = centre of mass above the bottle's base (m)
