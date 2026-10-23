@@ -127,3 +127,88 @@ def test_gate_verdict_does_not_consume_a_half_written_file(tmp_path):
     got, waited = _gate_after(tmp_path, "", good)
     assert got == {"verdict": "success", "reason": "", "note": ""}
     assert waited >= 0.15
+
+
+# --end-on-handover: one pick-and-handover attempt per trial (s17, 2026-10-23: second attempts in a trial are slower and
+# less accurate because the training episodes end ~2 s after the release)
+OPEN, CLOSED = 0.0, 0.38  # mean of the 7 measured right-hand joints, open vs closed around the bottle
+
+
+def run_detector(samples, **kw):
+    """samples: [(t, right_hand_mean)] -> first t at which the detector fires, or None."""
+    d = es.HandoverDetector(**kw)
+    for t, h in samples:
+        if d.update(h, now=t):
+            return t
+    return None
+
+
+def ticks(t0, t1, value):
+    return [(round(t, 2), value) for t in np.arange(t0, t1, 0.02)]
+
+
+def test_handover_fires_after_grasp_then_release():
+    s = ticks(0, 2, OPEN) + ticks(2, 4, CLOSED) + ticks(4, 6, OPEN)  # reach, grasp 2 s, release
+    assert run_detector(s, open_s=1.0) == pytest.approx(5.0, abs=0.03)
+
+
+def test_startup_fist_that_opens_is_not_a_handover():
+    s = ticks(0, 1.5, CLOSED) + ticks(1.5, 5, OPEN)  # the hand starts closed and only opens: no grasp yet
+    assert run_detector(s, open_s=1.0) is None
+
+
+def test_brief_close_is_not_a_grasp():
+    s = ticks(0, 1, OPEN) + ticks(1, 1.3, CLOSED) + ticks(1.3, 4, OPEN)  # 0.3 s flick < min hold 0.5 s
+    assert run_detector(s, open_s=1.0) is None
+
+
+def test_short_reopen_during_a_regrasp_does_not_end_the_trial():
+    s = (
+        ticks(0, 1, OPEN)
+        + ticks(1, 2, CLOSED)
+        + ticks(2, 2.5, OPEN)
+        + ticks(2.5, 4, CLOSED)
+        + ticks(4, 6, OPEN)
+    )
+    assert run_detector(s, open_s=1.0) == pytest.approx(5.0, abs=0.03)  # the 0.5 s reopen is a regrasp
+
+
+def test_missing_state_is_ignored():
+    s = ticks(0, 1, OPEN) + ticks(1, 2, CLOSED) + [(2.0, float("nan"))] + ticks(2.02, 4, OPEN)
+    assert run_detector(s, open_s=1.0) == pytest.approx(3.02, abs=0.03)
+
+
+def test_handover_uses_real_elapsed_time_not_caught_up_ticks(monkeypatch):
+    """PR #47 review: ticks() catches up late ticks without sleeping, so after a 0.7 s stall the scheduled episode
+    time races ahead. A hand closed for only ~0.08 s of real time must not count as a 0.5 s grasp."""
+    import stream_backends as sb
+
+    clock = [0.0]
+    monkeypatch.setattr(sb.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(sb.time, "sleep", lambda dt: clock.__setitem__(0, clock[0] + dt))
+    monkeypatch.setattr(es.time, "monotonic", lambda: clock[0])
+    d = es.HandoverDetector(open_s=1.0)
+    fired = False
+    for i in sb.ticks(200):
+        if i == 1:
+            clock[0] += 0.7  # the process was descheduled; the hand closes as execution resumes
+        closed = i > 0 and clock[0] < 0.80  # ~0.08 s of real time closed, during the catch-up burst
+        fired = fired or d.update(0.38 if closed else 0.0)
+    assert not d.held and not fired
+
+
+def test_handover_real_clock_still_detects_a_real_grasp(monkeypatch):
+    import stream_backends as sb
+
+    clock = [0.0]
+    monkeypatch.setattr(sb.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(sb.time, "sleep", lambda dt: clock.__setitem__(0, clock[0] + dt))
+    monkeypatch.setattr(es.time, "monotonic", lambda: clock[0])
+    d = es.HandoverDetector(open_s=1.0)
+    fired_at = None
+    for _ in sb.ticks(400):
+        h = 0.38 if 1.0 <= clock[0] < 2.0 else 0.0  # open, closed 1 s, open
+        if d.update(h):
+            fired_at = clock[0]
+            break
+    assert fired_at == pytest.approx(3.0, abs=0.03)

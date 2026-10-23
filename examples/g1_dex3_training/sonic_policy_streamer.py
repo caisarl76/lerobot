@@ -66,6 +66,7 @@ if TYPE_CHECKING or _zmq_available:
 
 try:
     from .eval_session import (
+        HandoverDetector,
         ask_verdict,
         first_trial_args,
         gate_verdict,
@@ -102,6 +103,7 @@ try:
     )
 except ImportError:
     from eval_session import (
+        HandoverDetector,
         ask_verdict,
         first_trial_args,
         gate_verdict,
@@ -663,6 +665,14 @@ def main():
         "--duration-s becomes the per-trial cap; Enter stops a trial)",
     )
     p.add_argument(
+        "--end-on-handover",
+        type=float,
+        default=0.0,
+        metavar="OPEN_S",
+        help="end the episode once one pick-and-handover attempt is done: the measured right hand held a grasp >= 0.5 s "
+        "and then stayed open this many seconds (eval_session.HandoverDetector). One attempt per trial; 0 = off",
+    )
+    p.add_argument(
         "--session-dir", type=Path, help="--trials: directory for the trial files and results.jsonl"
     )
     p.add_argument(
@@ -1011,6 +1021,7 @@ def main():
         last_accepted = True  # the first chunk is playing
         echo_lost = None  # t_ep since the deploy's token_state stopped matching our tokens
         episode_end = "completed"
+        handover = HandoverDetector(open_s=a.end_on_handover) if a.end_on_handover > 0 else None
         for i in ticks(int(duration / TICK)):
             t_ep = i * TICK
             if trial is not None and stop_requested(a.gate_dir, trial):
@@ -1057,6 +1068,13 @@ def main():
             reason = arm_watchdog()
             if reason:
                 episode_end = f"watchdog: {reason}"
+                print(f"[streamer] {episode_end}: ending episode", flush=True)
+                break
+            # the freshly read robot state, timed by the detector's own monotonic clock (not t_ep: late ticks are
+            # caught up without sleeping, so t_ep can race ahead of real time after a stall)
+            msg = state.latest()
+            if handover is not None and msg and handover.update(float(observation_state(msg)[21:28].mean())):
+                episode_end = "handover complete"
                 print(f"[streamer] {episode_end}: ending episode", flush=True)
                 break
             # slot is None: the previous result was consumed at the top of this tick (a request that finished after
