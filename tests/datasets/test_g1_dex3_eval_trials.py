@@ -410,3 +410,97 @@ def test_a_closed_log_pipe_does_not_prevent_the_handback(tmp_path):
     code, _, commands, _ = run_faulted_trial(tmp_path, None, duration_s=8, close_stdout=True)
     assert code != 0
     assert commands == [START_PLANNER, POSE, START_PLANNER]
+
+
+def test_ready_pose_session_waits_at_the_ready_pose_and_hands_back_once(tmp_path):
+    """--ready-pose (2026-10-23): POSE mode once, the ready pose streamed between trials (also while the verdict is
+    pending), trial 2 starts from a ready.1 gate without a planner handoff, PLANNER only after the last trial."""
+    ports = {k: free_port() for k in ("policy", "state", "camera", "action")}
+    ctx, stop, commands, echo, poses = zmq.Context(), threading.Event(), [], {"token": [0.0] * 64}, []
+    ready_tok = np.full(64, 0.25, np.float32)
+    np.savez(tmp_path / "ready.npz", token=ready_tok, hands=np.zeros(14, np.float32))
+
+    def state(pub, i):
+        msg = {
+            "body_q": [0.0] * 29,
+            "left_hand_q": [0.0] * 7,
+            "right_hand_q": [0.0] * 7,
+            "token_state": echo["token"],
+        }
+        pub.send(b"g1_debug" + msgpack.packb(msg, use_bin_type=True))
+
+    def listen(ctx, port, stop):
+        sub = ctx.socket(zmq.SUB)
+        sub.setsockopt(zmq.SUBSCRIBE, b"command")
+        sub.setsockopt(zmq.SUBSCRIBE, b"pose")
+        sub.connect(f"tcp://127.0.0.1:{port}")
+        while not stop.is_set():
+            if sub.poll(50):
+                msg = sub.recv()
+                if msg.startswith(b"pose"):
+                    start = len(b"pose") + 1280
+                    echo["token"] = np.frombuffer(msg[start : start + 256], "<f4").tolist()
+                    poses.append((time.monotonic(), echo["token"][0]))
+                else:
+                    commands.append(tuple(msg[-3:]))
+        sub.close(0)
+
+    threads = [
+        threading.Thread(target=serve_policy, args=(ctx, ports["policy"], stop)),
+        threading.Thread(target=publish, args=(ctx, ports["state"], stop, 0.02, state)),
+        threading.Thread(target=publish, args=(ctx, ports["camera"], stop, 1 / 30, camera)),
+        threading.Thread(target=listen, args=(ctx, ports["action"], stop)),
+    ]
+    gate, session = tmp_path / "gate", tmp_path / "session"
+    gate.mkdir()
+    for t in threads:
+        t.start()
+    held = {}
+    try:
+        proc = subprocess.Popen(
+            [sys.executable, str(HERE / "sonic_policy_streamer.py"),
+             "--policy-server", f"tcp://127.0.0.1:{ports['policy']}", "--images", "zmq",
+             "--camera-host", "127.0.0.1", "--camera-port", str(ports["camera"]),
+             "--deploy-host", "127.0.0.1", "--state-port", str(ports["state"]), "--action-port", str(ports["action"]),
+             "--task", "pick", "--duration-s", "3", "--start", "planner", "--end", "planner",
+             "--handoff-blend-s", "0.2", "--trials", "2", "--session-dir", str(session), "--gate-dir", str(gate),
+             "--ready-pose", str(tmp_path / "ready.npz")],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, stdin=subprocess.DEVNULL,
+        )  # fmt: skip
+        lines = []
+        threading.Thread(target=lambda: lines.extend(proc.stdout), daemon=True).start()
+        for name in ("deploy_ready", "settled.0"):
+            (gate / name).touch()
+        for trial in (0, 1):
+            (gate / f"ready.{trial}").touch()  # the operator placed the bottle at the ready pose
+            wait_gone(gate / f"ready.{trial}")
+            deadline = time.monotonic() + 60
+            while not any(f"waiting for {gate / f'verdict.{trial}'}" in s for s in lines):
+                assert proc.poll() is None and time.monotonic() < deadline, "".join(lines)[-3000:]
+                time.sleep(0.05)
+            t0 = time.monotonic()
+            time.sleep(0.6)  # the verdict is pending: the ready pose must keep streaming
+            held[trial] = [p for t, p in poses if t > t0]
+            (gate / f"verdict.{trial}").write_text(json.dumps({"verdict": "success"}))
+        proc.wait(timeout=60)
+        time.sleep(0.2)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+        stop.set()
+        for t in threads:
+            t.join()
+        ctx.term()
+    out = "".join(lines)
+    assert proc.returncode == 0, out[-3000:]
+    assert commands == [START_PLANNER, POSE, START_PLANNER], out[
+        -2000:
+    ]  # one takeover, one hand-back at the end
+    for trial in (0, 1):
+        assert len(held[trial]) > 15, (
+            f"trial {trial}: {len(held[trial])} poses in 0.6 s while the verdict was pending"
+        )
+        assert np.allclose(held[trial], 0.25, atol=1e-4)  # the ready token
+    assert out.count("command: POSE mode") == 1
+    lines_json = [json.loads(s) for s in (session / "results.jsonl").read_text().splitlines()]
+    assert [x["verdict"] for x in lines_json] == ["success", "success"]

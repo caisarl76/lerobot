@@ -143,6 +143,122 @@ class DecoupledBackendTests(unittest.TestCase):
 
 
 class SonicBackendTests(unittest.TestCase):
+    def _ready_backend(self):
+        """A backend in POSE mode at the stance with a ready pose, interactive (no gate dir), as in PR #48's review."""
+        pub = FakePub()
+        a = SimpleNamespace(
+            action_space="sonic78", max_token_step=0.0, gate_dir=None, ready_pose=None, end="planner",
+            handoff_blend_s=0.2,
+        )  # fmt: skip
+        b = SonicBackend(a, pub, None, lambda *a, **kw: None, 30, None)
+        b.pose = True
+        b.ready = (np.full(64, 0.25, np.float32), np.zeros(14, np.float32))
+        b.last_sent, b.last_hands = np.zeros(64, np.float32), np.zeros(14, np.float32)
+        b.stance = (b.last_sent.copy(), b.last_hands.copy())
+        b.planner = b.last_sent.copy()
+        return b, pub
+
+    def _no_wait(self, enter):
+        """Patch the hold loop: no sleeping, no stdin; enter_pressed behaves as `enter` (a value or an exception)."""
+        side = {"side_effect": enter} if isinstance(enter, type) else {"return_value": enter}
+        return contextlib.ExitStack(), [
+            mock.patch.object(stream_backends, "ticks", lambda n: iter(range(min(n, 1000)))),
+            mock.patch.object(stream_backends, "flush_stdin"),
+            mock.patch.object(stream_backends, "enter_pressed", **side),
+            contextlib.redirect_stdout(io.StringIO()),
+        ]
+
+    def test_hold_for_operator_tells_enter_from_ctrl_c(self):
+        for enter, confirmed in ((True, True), (KeyboardInterrupt, False)):
+            b, _ = self._ready_backend()
+            stack, patches = self._no_wait(enter)
+            with stack:
+                for cm in patches:
+                    stack.enter_context(cm)
+                self.assertIs(b.hold_for_operator(), confirmed)
+
+    def test_ctrl_c_at_the_raise_prompt_does_not_raise_the_arm(self):
+        b, pub = self._ready_backend()
+        stack, patches = self._no_wait(KeyboardInterrupt)
+        with stack:
+            for cm in patches:
+                stack.enter_context(cm)
+            with self.assertRaises(KeyboardInterrupt):
+                b.raise_to_ready("clear the space, then press Enter to raise")
+        self.assertFalse(b.at_ready)
+        np.testing.assert_allclose(b.last_sent, 0.0)  # still the stance: no move toward the ready token
+
+    def test_ctrl_c_at_the_trial_end_hold_goes_to_cleanup_not_to_the_ready_pose(self):
+        b, pub = self._ready_backend()
+        b.at_ready, (b.rest_token, b.rest_hands) = True, b.ready
+        b.last_sent = np.full(64, 0.6, np.float32)  # where the trial ended
+        stack, patches = self._no_wait(KeyboardInterrupt)
+        with stack:
+            for cm in patches:
+                stack.enter_context(cm)
+            with self.assertRaises(KeyboardInterrupt):
+                b.finish(to_ready=True)
+            np.testing.assert_allclose(b.last_sent, 0.6)  # held: no move to the ready pose
+            self.assertTrue(b.pose)
+            b.finish()  # the session cleanup: hold again; a second Ctrl-C returns to the stance and hands back (#43)
+        self.assertFalse(b.pose or b.at_ready)
+        np.testing.assert_allclose(b.last_sent, 0.0, atol=1e-6)  # the stance / planner token
+        self.assertEqual(decode(pub.sent[-1]), ("command", 1, 1))
+
+    def test_ready_pose_session_waits_over_the_table_between_trials(self):
+        """--ready-pose (2026-10-23): trials end at a recorded ready pose (hand over the box) and the next trial starts
+        from it, so the arm never sweeps down through the box between trials; only the session start (raise) and end
+        (lower to the stance, planner mode) cross it, each after an operator Enter."""
+        import threading
+
+        pub, rec, state = FakePub(), Recorder(), FakeState()
+        ready_tok, ready_h = np.full(64, 0.3, np.float32), np.full(14, 0.05, np.float32)
+        with backend_env() as gd:
+            path = gd / "ready.npz"
+            np.savez(path, token=ready_tok, hands=ready_h)
+            a = SimpleNamespace(
+                handoff_blend_s=1.5,
+                start="planner",
+                end="planner",
+                max_token_step=0.0,
+                action_space="sonic78",
+                chunk_anchor_s=0.0,
+                ready_pose=path,
+                gate_dir=gd,
+            )
+            b = SonicBackend(a, pub, state, rec, 30, None)
+            b.start()  # planner -> POSE on the planner stance (--start planner)
+            stance = b.rest_token.copy()
+            b.go_ready()  # session start: raise to the ready pose
+            self.assertTrue(b.at_ready)
+            np.testing.assert_allclose(b.last_sent, ready_tok, atol=1e-6)
+            n0 = len(pub.sent)
+            with b.holding():  # verdict / start prompts: the pose keeps streaming at 50 Hz from a thread
+                threading.Event().wait(0.05)
+            held = [decode(m) for m in pub.sent[n0:]]
+            self.assertGreater(len(held), 0)
+            self.assertTrue(all(m[0] == "pose" for m in held))
+            for m in held:
+                np.testing.assert_allclose(m[1], ready_tok, atol=1e-6)
+                np.testing.assert_allclose(m[3], ready_h, atol=1e-6)
+            frames = [decode(m)[2] for m in pub.sent if decode(m)[0] == "pose"]
+            self.assertEqual(frames, list(range(len(frames))))  # one frame counter across both threads
+            chunk = np.ones((40, 78), np.float32)
+            b.begin(chunk, None)  # the episode blends in from the ready pose
+            self.assertEqual(rec.rows[-50].phase, "blend in")
+            np.testing.assert_allclose(rec.rows[-50].token, 0.98 * ready_tok + 0.02, atol=1e-6)
+            b.finish(to_ready=True)  # trial end: back to the ready pose, still in POSE mode
+            self.assertEqual(rec.rows[-1].phase, "to ready")
+            np.testing.assert_allclose(b.last_sent, ready_tok, atol=1e-6)
+            self.assertTrue(b.pose and b.at_ready)
+            commands = [decode(m) for m in pub.sent if decode(m)[0] == "command"]
+            self.assertEqual(commands, [("command", 1, 1), ("command", 1, 0)])  # no planner hand-back yet
+            b.finish()  # session end: down to the stance, then planner mode
+            self.assertFalse(b.at_ready or b.pose)
+            blend_out = [r for r in rec.rows if r.phase == "blend out"]
+            np.testing.assert_allclose(blend_out[-1].token, stance, atol=1e-6)
+            self.assertEqual(decode(pub.sent[-1]), ("command", 1, 1))
+
     def test_chunk_anchor_follows_the_slew_limited_command_and_leaves_hands_bounded(self):
         """--chunk-anchor-s with the token slew limit active (PR #46 review): a new chunk that asks for less must
         not make the sent token climb, and repeated anchored switches must not push the hands past their range."""

@@ -22,7 +22,9 @@
 #      --chunk-blend-s, default 0.3; 0 = runs 20-21), ANCHOR_S (streamer --chunk-anchor-s, default 1.0 since 2026-10-23:
 #      s15 vs s16 with the s08 model, no stalls and a steadier pick-up; overrides the blend for the token; 0 = off),
 #      END_ON_HANDOVER (session only: --end-on-handover OPEN_S, default 1.0 since 2026-10-23; each trial ends once one
-#      pick-and-handover attempt is done, s17 showed later attempts in a trial are worse; 0 = off), CAM_FPS (default 30),
+#      pick-and-handover attempt is done, s17 showed later attempts in a trial are worse; 0 = off), READY_POSE (session
+#      only: --ready-pose, default ready_pose_261020_ep76.npz since 2026-10-23; trials end and start at a recorded ready
+#      pose with the hand over the box instead of the standing stance; empty = off), CAM_FPS (default 30),
 #      POLICY_FPS (50 for the G1 WBT models; needs the PC2 streamer copy with --policy-fps),
 #      POLICY_SUBDIR (default pretrained_model), BACKBONE_DTYPE (default bfloat16, GR00T only; empty for others).
 set -e
@@ -31,7 +33,7 @@ MODEL=${MODEL:-/mnt/data/jihun/g1_models/he_groot_sonic78sonicstate_ho5_official
 # seams (runs 24-27, jerk p95 214-276 vs 315-514 without blend); blend 0.5 s similar (run 28); noise 0.5 was jerky inside
 # the chunks (run 29, jerk p95 669), so the default is back to 0. At noise 0 the arm can stall after ~15 s; if that
 # becomes the main problem, raise the noise only while the arm is stalled (impl log 10, option 4; not implemented).
-GPU=${GPU:-1}; PORT=${PORT:-5560}; NOISE_SCALE=${NOISE_SCALE-0}; BLEND_S=${BLEND_S-0.3}; ANCHOR_S=${ANCHOR_S-1.0}; END_ON_HANDOVER=${END_ON_HANDOVER-1.0}
+GPU=${GPU:-1}; PORT=${PORT:-5560}; NOISE_SCALE=${NOISE_SCALE-0}; BLEND_S=${BLEND_S-0.3}; ANCHOR_S=${ANCHOR_S-1.0}; END_ON_HANDOVER=${END_ON_HANDOVER-1.0}; READY_POSE=${READY_POSE-ready_pose_261020_ep76.npz}
 POLICY_SUBDIR=${POLICY_SUBDIR:-pretrained_model}  # pretrained_model_ema for Pi0.5
 BACKBONE_DTYPE=${BACKBONE_DTYPE-bfloat16}  # GR00T only; set empty (BACKBONE_DTYPE=) for other policies
 CAM_FPS=${CAM_FPS:-30}  # camera publish rate; capture is 30 Hz, so 30 is the max (server default 10)
@@ -73,7 +75,7 @@ session)
   SESSION=${2:?session name, e.g. s01_he_groot_laptop}; TASK=${3:-close a laptop g1}; shift $(($# < 3 ? $# : 3))
   ssh -t pc2_222 "mkdir -p ~/g1_sonic_eval/sessions && cd ~/g1_sonic_eval/code && ../.venv/bin/python -u sonic_policy_streamer.py \
     --policy-server tcp://$WS:$PORT --images zmq --camera-host localhost --task '$TASK' \
-    --start planner --end planner --duration-s ${MAX_S:-120} --replan-s 0.4 --max-token-step 0.1 ${BLEND_S:+--chunk-blend-s $BLEND_S} ${ANCHOR_S:+--chunk-anchor-s $ANCHOR_S} ${END_ON_HANDOVER:+--end-on-handover $END_ON_HANDOVER} \
+    --start planner --end planner --duration-s ${MAX_S:-120} --replan-s 0.4 --max-token-step 0.1 ${BLEND_S:+--chunk-blend-s $BLEND_S} ${ANCHOR_S:+--chunk-anchor-s $ANCHOR_S} ${END_ON_HANDOVER:+--end-on-handover $END_ON_HANDOVER} ${READY_POSE:+--ready-pose $READY_POSE} \
     ${POLICY_FPS:+--policy-fps $POLICY_FPS} --trials ${TRIALS:-10} --session-dir ../sessions/$SESSION $* \
     2>&1 | tee -a ../sessions/$SESSION.log" ;;
 pull)
@@ -83,7 +85,8 @@ pull)
   rsync -a "pc2_222:g1_sonic_eval/sessions/$SESSION.log" "$DEST/"
   echo "$DEST/raw" ;;
 sync)
-  scp sonic_policy_streamer.py stream_backends.py eval_session.py sonic_targets.py wbc_common.py sonic_token_stream.py pc2_222:g1_sonic_eval/code/ ;;
+  scp sonic_policy_streamer.py stream_backends.py eval_session.py sonic_targets.py wbc_common.py sonic_token_stream.py \
+    ready_pose_261020_ep76.npz pc2_222:g1_sonic_eval/code/ ;;
 stop)
   # a stopped transient unit stays "failed" (non-zero exit) and blocks the next start under the same name
   systemctl --user stop $UNIT; systemctl --user reset-failed $UNIT 2>/dev/null || true ;;
