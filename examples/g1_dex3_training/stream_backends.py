@@ -24,6 +24,7 @@ import os
 import select
 import struct
 import sys
+import threading
 import time
 from collections import deque
 from pathlib import Path
@@ -157,6 +158,7 @@ def wait_state(state) -> None:
 GATE_PROMPTS = {
     "deploy_ready": "when the deploy has printed 'Init Done', press Enter to start control in PLANNER mode",
     "settled": "move the robot into position at the table (planner mode), then press Enter to start the episode",
+    "ready": "the robot holds the ready pose (hand over the table): place the bottle, then press Enter to start",
 }
 
 
@@ -200,6 +202,16 @@ def flush_stdin() -> None:
             termios.tcflush(sys.stdin, termios.TCIFLUSH)
 
 
+def load_ready(path: Path) -> tuple[np.ndarray, np.ndarray]:
+    """--ready-pose .npz from make_ready_pose.py: the recorded SONIC token (64) and Dex3 hand targets (14) of a ready
+    pose, hand over the table (the 10-19 handover recordings return there between attempts)."""
+    z = np.load(path)
+    token, hands = z["token"].astype(np.float32), z["hands"].astype(np.float32)
+    if token.shape != (64,) or hands.shape != (14,):
+        raise ValueError(f"{path}: expected token (64,) and hands (14,), got {token.shape} and {hands.shape}")
+    return token, hands
+
+
 def load_startup(path: Path) -> dict:
     """--startup-tokens .npz from sonic_table_startup.py plan: tokens/hands (and rev_*) arrays and the path's fps."""
     z = np.load(path)
@@ -228,6 +240,13 @@ class SonicBackend:
         self.frame, self.last_sent, self.last_hands, self.slewed = 0, None, None, 0
         self.pose = False  # POSE mode commanded and not yet handed back: an error must still call finish()
         self.recent = deque(maxlen=25)  # tokens sent in the last 0.5 s: the deploy's echo lags by a few ticks
+        # --ready-pose: --trials sessions wait between trials at this pose (hand over the table) instead of handing back
+        ready = getattr(a, "ready_pose", None)
+        self.ready = load_ready(Path(ready)) if ready else None
+        self.at_ready = False
+        self.stance: tuple[np.ndarray, np.ndarray] | None = (
+            None  # the take-over rest pose, for the session end
+        )
 
     def send(self, token, hands, phase, t_ep=-1.0, k=-1, chunk_t0=np.nan, joint_ref=None):
         token = np.asarray(token, np.float32)
@@ -299,6 +318,7 @@ class SonicBackend:
                 self.send(LATENT_INITIAL_MOTION_TOKEN, self.zero_h, "initial")
             self.pub.send(command_message(start=True, planner=False))
             self.pose = True
+        self.stance = (self.rest_token.copy(), self.rest_hands.copy())
         print("[streamer] command: POSE mode (streamed tokens)", flush=True)
 
     def wait_tick(self):
@@ -335,7 +355,40 @@ class SonicBackend:
         joint_ref = None if self.jres is None else self.jres.token_at(t_ep)
         self.send(out[:64], out[64:], "episode", t_ep, k, chunk_t0, joint_ref=joint_ref)
 
-    def hold_for_operator(self):
+    def go_ready(self):
+        """--ready-pose: 1 s blend from the current command to the ready pose, which then is the rest pose (the next
+        trial's hold and blend in start there)."""
+        token, hands = self.ready
+        last_token, last_hands = self.last_sent, self.last_hands
+        for i in ticks(50):
+            w = (i + 1) / 50
+            self.send((1 - w) * last_token + w * token, (1 - w) * last_hands + w * hands, "to ready")
+        self.rest_token, self.rest_hands, self.at_ready = token, hands, True
+
+    @contextlib.contextmanager
+    def holding(self):
+        """Keep streaming the last command at 50 Hz from a thread while the main thread blocks on the operator (the
+        verdict prompt, the next trial's start): POSE mode needs a token every 20 ms. Not recorded (the trial log is
+        being written meanwhile); the main thread sends nothing until it ends."""
+        stop = threading.Event()
+        token, hands = self.last_sent, self.last_hands
+
+        def run():
+            for _ in ticks(10**9):
+                if stop.is_set():
+                    return
+                self.pub.send(pose_message(token, hands, self.frame))
+                self.frame += 1
+
+        thread = threading.Thread(target=run, daemon=True)
+        thread.start()
+        try:
+            yield
+        finally:
+            stop.set()
+            thread.join()
+
+    def hold_for_operator(self, prompt: str | None = None):
         """Keep streaming the last token and hands (hands stay closed on a held bottle) until the operator has cleared
         the space and pressed Enter: the blend back to the rest pose sweeps the raised arm down (G1: into the box on
         the table). Without usable stdin, hold until Ctrl-C. --gate-dir runs (sims) do not stop here."""
@@ -344,8 +397,9 @@ class SonicBackend:
         token, hands = self.last_sent, self.last_hands
         flush_stdin()
         say(
-            "[streamer] holding the current pose: clear the space (move the box / take the bottle), then press Enter "
-            "to return to the initial pose"
+            prompt
+            or "[streamer] holding the current pose: clear the space (move the box / take the bottle), then press "
+            "Enter to return to the initial pose"
         )
         usable, pending = True, bytearray()
         try:
@@ -361,10 +415,21 @@ class SonicBackend:
         except KeyboardInterrupt:
             say("[streamer] Ctrl-C: returning to the initial pose")
 
-    def finish(self):
+    def finish(self, to_ready: bool = False):
+        """End of an episode. to_ready (--ready-pose, all but the last trial): hold, then go to the ready pose and stay
+        in POSE mode. Otherwise (and at the session end): hold, back to the take-over rest pose, hand back."""
         a, startup = self.a, self.startup
-        rest_token, rest_hands = self.rest_token, self.rest_hands
         say(f"[streamer] token slew limit active on {self.slewed} ticks so far")
+        if to_ready and self.ready is not None:
+            self.hold_for_operator(
+                "[streamer] holding the current pose: press Enter to move to the ready pose (hand over the table)"
+            )
+            self.go_ready()
+            return
+        if self.at_ready and self.stance is not None:  # session end: from the ready pose down to the stance
+            self.rest_token, self.rest_hands = self.stance
+            self.at_ready = False
+        rest_token, rest_hands = self.rest_token, self.rest_hands
         self.hold_for_operator()
         last_token, last_hands = self.last_sent, self.last_hands
         for i in ticks(
@@ -446,7 +511,7 @@ class DecoupledBackend:
     def episode_tick(self, t_ep, k, chunk_t0):
         self.send(self.jres.token_at(t_ep), "episode", t_ep, k, chunk_t0)
 
-    def finish(self):
+    def finish(self, to_ready: bool = False):  # to_ready: --ready-pose is sonic backend only
         last = self.last
         for i in ticks(100):  # 2 s back to the measured start pose
             w = (i + 1) / 100

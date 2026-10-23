@@ -38,6 +38,7 @@ the next trial. eval_session_to_lerobot.py turns the session into a LeRobot data
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import math
 import queue
@@ -85,6 +86,7 @@ try:
         TICK,
         DecoupledBackend,
         SonicBackend,
+        gate,
         load_startup,
         max_arm_speed,
         measured_ref as measured_ref,  # re-exported for the tests
@@ -122,6 +124,7 @@ except ImportError:
         TICK,
         DecoupledBackend,
         SonicBackend,
+        gate,
         load_startup,
         max_arm_speed,
         measured_ref as measured_ref,  # re-exported for the tests
@@ -665,6 +668,14 @@ def main():
         "--duration-s becomes the per-trial cap; Enter stops a trial)",
     )
     p.add_argument(
+        "--ready-pose",
+        type=Path,
+        help="--trials, sonic backend: .npz from make_ready_pose.py (a recorded ready pose, hand over the table). Each "
+        "trial ends there (hold, Enter, 1 s move) and the next trial starts from it, so the arm does not sweep down "
+        "through the box between trials; only the session start (raise) and end (lower to the stance, planner mode) "
+        "cross it, each after an Enter",
+    )
+    p.add_argument(
         "--end-on-handover",
         type=float,
         default=0.0,
@@ -995,7 +1006,22 @@ def main():
             # flush first too: an Enter typed after the last verdict answer (double Enter at the note prompt, or during
             # the save) would otherwise pass this trial's "in position" gate at once
             start_trial_input(a.gate_dir, trial)
-            backend.take_over(trial, a.trials)
+            if getattr(
+                backend, "at_ready", False
+            ):  # --ready-pose: already in POSE mode, holding the ready pose
+                with backend.holding():
+                    gate(f"ready.{trial}", a.gate_dir, f"trial {trial + 1}/{a.trials}: ", consume=True)
+            else:
+                backend.take_over(trial, a.trials)
+                if (
+                    getattr(backend, "ready", None) is not None
+                ):  # session start: raise to the ready pose first
+                    backend.hold_for_operator(
+                        "[streamer] clear the space over the table, then press Enter to raise the arm to the ready pose"
+                    )
+                    backend.go_ready()
+                    with backend.holding():
+                        gate(f"ready.{trial}", a.gate_dir, f"trial {trial + 1}/{a.trials}: ", consume=True)
             start_trial_input(a.gate_dir, trial)
         # Optional hold on the rest pose (hands open unless a startup path sets them) before the first observation: in
         # planner mode the deploy keeps the Dex3 hands closed, so without it the policy's first input shows a fist although
@@ -1093,7 +1119,8 @@ def main():
                 f"[streamer] chunk inference s: median {np.median(latencies):.2f}, max {max(latencies):.2f}, n {len(latencies)}",
                 flush=True,
             )
-        backend.finish()
+        # --ready-pose: every trial ends at the ready pose (the session end lowers the arm once, after the last verdict)
+        backend.finish(to_ready=trial is not None and getattr(backend, "ready", None) is not None)
         return episode_end, frames
 
     def run_episode_or_hand_back(trial: int | None) -> tuple[str, list]:
@@ -1111,42 +1138,66 @@ def main():
         trial = next_trial(a.session_dir)
         if trial:
             print(f"[eval] {a.session_dir} has {trial} trials: continuing with trial {trial + 1}", flush=True)
-        while trial < a.trials:
-            # the checkpoint serving this trial, asked anew each trial: a model swapped behind the same port must
-            # not continue a session (a fresh RemotePolicy uses its own socket, apart from the inference thread's)
-            model = (
-                RemotePolicy(a.policy_server, a.policy_timeout_s).model if a.policy_server else a.policy_path
-            )
-            first = (
-                json.loads(Path(a.session_dir, "results.jsonl").read_text().splitlines()[0]).get("model")
-                if trial
-                else None
-            )
-            if first and model != first:
-                raise SystemExit(
-                    f"[eval] the policy server now serves {model}, trial 1 used {first}: use a new --session-dir"
+
+        def held():
+            """--ready-pose: keep streaming the ready pose while the main thread waits (verdict, save, model check)."""
+            return backend.holding() if getattr(backend, "at_ready", False) else contextlib.nullcontext()
+
+        try:
+            while trial < a.trials:
+                # the checkpoint serving this trial, asked anew each trial: a model swapped behind the same port must
+                # not continue a session (a fresh RemotePolicy uses its own socket, apart from the inference thread's)
+                with held():
+                    model = (
+                        RemotePolicy(a.policy_server, a.policy_timeout_s).model
+                        if a.policy_server
+                        else a.policy_path
+                    )
+                    first = (
+                        json.loads(Path(a.session_dir, "results.jsonl").read_text().splitlines()[0]).get(
+                            "model"
+                        )
+                        if trial
+                        else None
+                    )
+                if first and model != first:
+                    raise SystemExit(
+                        f"[eval] the policy server now serves {model}, trial 1 used {first}: use a new --session-dir"
+                    )
+                episode_end, frames = run_episode_or_hand_back(trial)
+                print(f"[eval] trial {trial + 1}/{a.trials} ended: {episode_end}", flush=True)
+                with held():
+                    verdict = (
+                        gate_verdict(a.gate_dir, trial, reasons)
+                        if a.gate_dir
+                        else ask_verdict(reasons, episode_end)
+                    )
+                    if verdict is not None:
+                        extra = {
+                            "episode_end": episode_end,
+                            "args": json.dumps(vars(a), default=str),
+                            "model": model or "",
+                            **verdict,
+                        }
+                        print(f"[eval] saving trial {trial + 1}...", flush=True)
+                        write_trial(a.session_dir, trial, log, extra, frames)
+                if verdict is None:
+                    print(f"[eval] trial {trial + 1} discarded: redo", flush=True)
+                    continue
+                print(
+                    f"[eval] trial {trial + 1}/{a.trials} saved: {verdict['verdict']} {verdict['reason']}".rstrip(),
+                    flush=True,
                 )
-            episode_end, frames = run_episode_or_hand_back(trial)
-            print(f"[eval] trial {trial + 1}/{a.trials} ended: {episode_end}", flush=True)
-            verdict = (
-                gate_verdict(a.gate_dir, trial, reasons) if a.gate_dir else ask_verdict(reasons, episode_end)
-            )
-            if verdict is None:
-                print(f"[eval] trial {trial + 1} discarded: redo", flush=True)
-                continue
-            extra = {
-                "episode_end": episode_end,
-                "args": json.dumps(vars(a), default=str),
-                "model": model or "",
-                **verdict,
-            }
-            print(f"[eval] saving trial {trial + 1}...", flush=True)
-            write_trial(a.session_dir, trial, log, extra, frames)
-            print(
-                f"[eval] trial {trial + 1}/{a.trials} saved: {verdict['verdict']} {verdict['reason']}".rstrip(),
-                flush=True,
-            )
-            trial += 1
+                trial += 1
+            if getattr(backend, "at_ready", False):  # session end: lower the arm from the ready pose once
+                backend.finish()
+        except BaseException as exc:
+            if getattr(
+                backend, "pose", False
+            ):  # e.g. Ctrl-C at the verdict prompt while holding the ready pose
+                say(f"[streamer] {exc!r}: holding, then handing back before exiting")
+                backend.finish()
+            raise
         print(f"[eval] session {a.session_dir}: {summarize(a.session_dir)}", flush=True)
     else:
         episode_end, _ = run_episode_or_hand_back(None)
