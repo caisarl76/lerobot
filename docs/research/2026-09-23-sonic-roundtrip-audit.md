@@ -24,6 +24,28 @@ Datasets built with limits off (existing `sonic78` datasets are unchanged):
 `/run-output/humanoid_everyday_g1_20260923/datasets/sonic78_nolimit` (4064 ep, 1,779,287 frames).
 `/run-output` = `/mnt/data01/jhkim/model_weight/g1_dex3_20260922` on the H100 host.
 
+### Caveat: Dex3 finger order in Humanoid Everyday (unverified, 2026-10-21)
+
+The Dex3 right-hand decision above was checked only against the Unitree datasets. The HE finger order has not been checked:
+
+- The HE converter (`humanoid_everyday_g1_20260923/datasets/joint28/meta/provenance.json`, `action_mapping`) keeps
+  the left hand as recorded and swaps the right hand's last two pairs, in both `action` and `observation.state`:
+  28D right = raw `hand_joints[7:][[0, 1, 2, 5, 6, 3, 4]]`. The streamer sends and reads `right_hand_q` unpermuted
+  (`RIGHT_ORDER` = identity). If raw HE `hand_joints` are Dex3 `hand_q` slots for both hands (the SDK motor array
+  the deploy also reads), every HE-trained 28D/78D model sees and commands the right index and middle pairs swapped
+  on the robot. If HE stored the right hand in URDF order (thumb, index, middle), the converter's swap is correct.
+- The data cannot settle it. Index and middle have the same joint ranges. On our robot both pairs close together
+  (right-hand correlation ≥ 0.93 on `handover_bottle_merged_261020`), so their distributions do not separate. HE ships no joint
+  names. Thumbs are unaffected either way.
+- The 46-D datasets (`sonic78_nolimit_sonicstate46`, `examples/g1_dex3_training/prepare_state46.py`) assume the
+  Dex3 slot order: 46-D hand = raw `hand_joints[[3, 4, 5, 6, 0, 1, 2]]` per hand, as `sonic46_state` computes from
+  `hand_q` (branch `feat/g1-groot-official46`). If that assumption is wrong, 46-D[36:43] has the right index and
+  middle pairs swapped.
+- To settle it: find HE frames where only one right finger pair flexes (raw slots 3–4 far from 5–6) and check in the
+  egocentric video which finger moves. Then command raw slots 3–4 alone on our robot's right Dex3 and compare.
+- Related, also unverified: the WBT handover sonic78 datasets map hands by URDF name, and NVIDIA's robot model reads
+  `hand_q[3:5]` as index on both hands, so 28D WBT models may swap the left index and middle pairs.
+
 ## Results
 
 Offline harness (validated against the official deploy to within 0.2–0.8 cm), stored tokens, same episode picks

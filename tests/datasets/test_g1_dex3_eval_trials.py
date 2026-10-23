@@ -2,6 +2,7 @@
 
 import base64
 import json
+import signal
 import socket
 import subprocess
 import sys
@@ -64,6 +65,37 @@ def test_live_images_records_received_jpegs():
     assert [name for _, name, _ in rec] == ["egocentric"] * 3
     assert [b for _, _, b in rec] == [jpeg(20), jpeg(30), jpeg(40)]  # the bytes as sent, not re-encoded
     assert all(abs(t - time.time()) < 5 for t, _, _ in rec)
+
+
+def test_camera_age_follows_the_camera_frame_reads(tmp_path):
+    """A named camera that stalls while the stereo stream continues: frame() keeps serving the cached named image,
+    so age() must report that image's age, not the stereo stream's."""
+    port, ctx = free_port(), zmq.Context()
+    pub = ctx.socket(zmq.PUB)
+    pub.bind(f"tcp://127.0.0.1:{port}")
+    key = "observation.images.egocentric"
+    images = LiveImages(ctx, "127.0.0.1", port, [key], {key: (3, 48, 64)}, "head_camera", "t")
+
+    def send(*names):
+        pub.send_string(
+            json.dumps({"images": {n: base64.b64encode(jpeg(10)).decode("ascii") for n in names}})
+        )
+
+    try:
+        deadline = time.monotonic() + 10
+        while images.age() > 0.2 and time.monotonic() < deadline:  # PUB/SUB slow joiner
+            send("egocentric", "head_camera")
+            time.sleep(0.05)
+        assert images.age() < 0.2
+        for _ in range(12):  # 0.6 s of stereo frames only
+            send("head_camera")
+            time.sleep(0.05)
+        assert images.age() > 0.5
+        assert images.frame(0.0)[1][key].shape == (48, 64, 3)  # still the cached named image
+    finally:
+        images.close()
+        pub.close(0)
+        ctx.term()
 
 
 def serve_policy(ctx, port, stop):
@@ -179,3 +211,202 @@ def test_two_trial_session_against_a_fake_rig(tmp_path):
     log = np.load(session / "trial_000.npz")
     assert str(log["verdict"]) == "success" and json.loads(str(log["args"]))["trials"] == 2
     assert "success 1/2" in r.stdout
+
+
+# ---------------------------------------------------------------- faults during a trial: the robot is handed back
+# The deploy holds the last streamed token in POSE mode (no stream timeout in g1_deploy_onnx_ref's zmq_manager), so the
+# streamer must blend out and send PLANNER on every fault, including errors that end the process.
+FAULT_AT_S = 3.5  # after settled.0 is consumed: past the takeover and the 1 s blend-in, inside the episode
+
+
+def fault_policy(ctx, port, stop, fault):
+    """serve_policy, but chunk requests go unanswered once fault["policy"] is set (or after n warm-up chunks)."""
+    rep = ctx.socket(zmq.REP)
+    rep.bind(f"tcp://127.0.0.1:{port}")
+    key, chunks = "observation.images.egocentric", 0
+    while not stop.is_set():
+        if not rep.poll(50):
+            continue
+        req = msgpack.unpackb(rep.recv(), raw=False)
+        if req["op"] != "info":
+            chunks += 1
+            if fault.get("policy") or chunks > fault.get("policy_after_chunks", 10**9):
+                rep.close(0)  # a dead server: the REQ times out; rebind for its reconnect
+                rep = ctx.socket(zmq.REP)
+                rep.bind(f"tcp://127.0.0.1:{port}")
+                continue
+        out = (
+            {
+                "image_keys": [key],
+                "n_obs": 1,
+                "shapes": {key: [3, 48, 64]},
+                "model": "/m/fake/pretrained_model",
+            }
+            if req["op"] == "info"
+            else {"chunk": np.full((40, 78), 0.1, np.float32).tobytes(), "shape": [40, 78]}
+        )
+        rep.send(msgpack.packb(out, use_bin_type=True))
+    rep.close(0)
+
+
+def listen_commands(ctx, port, stop, out, echo):
+    """The deploy's side of the action port: (start, stop, planner) of every command message, in order, and the
+    latest pose token in echo["token"] (the deploy copies it into g1_debug token_state)."""
+    sub = ctx.socket(zmq.SUB)
+    sub.setsockopt(zmq.SUBSCRIBE, b"command")
+    sub.setsockopt(zmq.SUBSCRIBE, b"pose")
+    sub.connect(f"tcp://127.0.0.1:{port}")
+    while not stop.is_set():
+        if sub.poll(50):
+            msg = sub.recv()
+            if msg.startswith(b"pose"):
+                start = len(b"pose") + 1280
+                echo["token"] = np.frombuffer(msg[start : start + 256], "<f4").tolist()
+            else:
+                out.append(tuple(msg[-3:]))
+    sub.close(0)
+
+
+def run_faulted_trial(
+    tmp_path, fault_name, sigint=False, policy_after_chunks=None, duration_s=20, close_stdout=False
+):
+    ports = {k: free_port() for k in ("policy", "state", "camera", "action")}
+    ctx, stop, fault, commands, echo = zmq.Context(), threading.Event(), {}, [], {"token": [0.0] * 64}
+    if policy_after_chunks is not None:
+        fault["policy_after_chunks"] = policy_after_chunks
+
+    def state(pub, i):
+        if fault.get("state_undecodable"):
+            pub.send(b"g1_debug\xc1")  # 0xc1: never valid msgpack
+        elif fault.get("state_malformed"):
+            pub.send(b"g1_debug" + msgpack.packb({"body_q": [0.0] * 28, "left_hand_q": [0.0] * 7}))
+        elif fault.get("state_short_hand"):  # a 27D observation if accepted
+            msg = {
+                "body_q": [0.0] * 29,
+                "left_hand_q": [0.0] * 6,
+                "right_hand_q": [0.0] * 7,
+                "token_state": echo["token"],
+            }
+            pub.send(b"g1_debug" + msgpack.packb(msg, use_bin_type=True))
+        elif not fault.get("state_stopped"):
+            # a deploy listening to another command source reports that source's tokens, not ours
+            token = [0.7] * 64 if fault.get("deploy_elsewhere") else echo["token"]
+            msg = {
+                "body_q": [0.0] * 29,
+                "left_hand_q": [0.0] * 7,
+                "right_hand_q": [0.0] * 7,
+                "token_state": token,
+            }
+            pub.send(b"g1_debug" + msgpack.packb(msg, use_bin_type=True))
+
+    def cam(pub, i):
+        if fault.get("camera_empty"):  # the image server's message while capture is stalled
+            pub.send_string(json.dumps({"images": {}}))
+        elif fault.get("camera_undecodable"):
+            pub.send_string(json.dumps({"images": {"egocentric": base64.b64encode(b"not a jpeg").decode()}}))
+        elif not fault.get("camera_frozen"):
+            camera(pub, i)
+
+    threads = [
+        threading.Thread(target=fault_policy, args=(ctx, ports["policy"], stop, fault)),
+        threading.Thread(target=publish, args=(ctx, ports["state"], stop, 0.02, state)),
+        threading.Thread(target=publish, args=(ctx, ports["camera"], stop, 1 / 30, cam)),
+        threading.Thread(target=listen_commands, args=(ctx, ports["action"], stop, commands, echo)),
+    ]
+    gate, session = tmp_path / "gate", tmp_path / "session"
+    gate.mkdir()
+    for t in threads:
+        t.start()
+    try:
+        proc = subprocess.Popen(
+            [sys.executable, str(HERE / "sonic_policy_streamer.py"),
+             "--policy-server", f"tcp://127.0.0.1:{ports['policy']}", "--images", "zmq",
+             "--camera-host", "127.0.0.1", "--camera-port", str(ports["camera"]),
+             "--deploy-host", "127.0.0.1", "--state-port", str(ports["state"]), "--action-port", str(ports["action"]),
+             "--task", "pick", "--duration-s", str(duration_s), "--start", "planner", "--end", "planner",
+             "--handoff-blend-s", "0.2", "--trials", "1", "--session-dir", str(session), "--gate-dir", str(gate)],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, stdin=subprocess.DEVNULL,
+        )  # fmt: skip
+        lines = []
+        reader = threading.Thread(target=lambda: lines.extend(proc.stdout), daemon=True)
+        if not close_stdout:  # else nothing reads the pipe, so closing it races no reader
+            reader.start()
+        for name in ("deploy_ready", "settled.0"):
+            (gate / name).touch()
+        wait_gone(gate / "settled.0")
+        time.sleep(FAULT_AT_S)
+        if sigint:
+            proc.send_signal(signal.SIGINT)
+        elif close_stdout:  # the log consumer (tee) goes away: every later print raises BrokenPipeError
+            proc.stdout.close()
+        elif fault_name:
+            fault[fault_name] = True
+        deadline = time.monotonic() + 60
+        while proc.poll() is None and not any("waiting for" in s for s in lines):
+            assert time.monotonic() < deadline, "the trial never ended"
+            time.sleep(0.05)
+        if proc.poll() is None:  # the trial ended normally: the operator scores it
+            (gate / "verdict.0").write_text(json.dumps({"verdict": "fail", "reason": 1}))
+        proc.wait(timeout=60)
+        if reader.is_alive() or not close_stdout:
+            reader.join(timeout=10)
+        time.sleep(0.2)  # the last command in flight
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+        stop.set()
+        for t in threads:
+            t.join()
+        ctx.term()
+    out = "".join(lines)
+    ended = next((s.split("ended: ", 1)[1].strip() for s in lines if "[eval] trial 1/1 ended: " in s), None)
+    return proc.returncode, out, commands, ended
+
+
+START_PLANNER, POSE = (1, 0, 1), (1, 0, 0)
+
+
+@pytest.mark.parametrize(
+    "fault_name, episode_end",
+    [
+        ("policy", "no valid chunk for 1 s"),
+        ("state_stopped", "robot state"),
+        ("state_undecodable", "robot state"),
+        ("state_malformed", "robot state"),
+        ("camera_frozen", "camera frame"),
+        ("camera_empty", "camera frame"),
+        ("camera_undecodable", "camera frame"),
+        ("state_short_hand", "robot state"),
+        ("deploy_elsewhere", "deploy token_state"),
+    ],
+)
+def test_a_fault_inside_the_episode_ends_the_trial_and_hands_back(tmp_path, fault_name, episode_end):
+    code, out, commands, ended = run_faulted_trial(tmp_path, fault_name)
+    assert code == 0, out[-3000:]
+    assert ended is not None and episode_end in ended, (ended, out[-3000:])
+    assert commands == [START_PLANNER, POSE, START_PLANNER], out[-3000:]
+
+
+def test_a_policy_dead_at_the_first_chunk_still_hands_back(tmp_path):
+    # the 3 warm-up chunks are answered, the first episode chunk is not
+    code, out, commands, _ = run_faulted_trial(tmp_path, None, policy_after_chunks=3)
+    assert code != 0 and "did not answer" in out, out[-3000:]
+    assert commands == [START_PLANNER, POSE, START_PLANNER], out[-3000:]
+
+
+def test_ctrl_c_inside_the_episode_hands_back_before_exiting(tmp_path):
+    code, out, commands, _ = run_faulted_trial(tmp_path, None, sigint=True)
+    assert code != 0 and "KeyboardInterrupt" in out, out[-3000:]
+    assert commands == [START_PLANNER, POSE, START_PLANNER], out[-3000:]
+
+
+def test_a_deploy_that_echoes_the_streamed_tokens_runs_to_the_cap(tmp_path):
+    code, out, commands, ended = run_faulted_trial(tmp_path, None, duration_s=8)
+    assert code == 0 and ended == "completed", (ended, out[-3000:])
+    assert commands == [START_PLANNER, POSE, START_PLANNER], out[-3000:]
+
+
+def test_a_closed_log_pipe_does_not_prevent_the_handback(tmp_path):
+    code, _, commands, _ = run_faulted_trial(tmp_path, None, duration_s=8, close_stdout=True)
+    assert code != 0
+    assert commands == [START_PLANNER, POSE, START_PLANNER]

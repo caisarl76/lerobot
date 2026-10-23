@@ -75,3 +75,82 @@ class ChunkResamplerTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ChunkAnchorTests(unittest.TestCase):
+    """--chunk-anchor-s: a new chunk is offset to start at the current output, the offset decays with time
+    constant anchor_s, so a policy that keeps restarting its plan from an unchanged observation still makes
+    progress (the stall "treadmill" of 2026-10-21) instead of being pulled back at every switch."""
+
+    def test_switch_is_continuous_and_keeps_the_new_velocity(self):
+        r = ChunkResampler(50)
+        r.set_chunk(np.linspace(0, 0.8, 41)[:, None].repeat(4, 1), t0=0.0)  # slope 1 / s
+        before = r.token_at(0.5)
+        r.set_chunk(np.linspace(0, 0.8, 41)[:, None].repeat(4, 1), t0=0.4, now=0.5, anchor_s=1.0)
+        np.testing.assert_allclose(r.token_at(0.5), before, atol=1e-6)  # no jump at the switch
+        # 0.1 s later: new chunk advanced 0.1, offset (0.4) decayed by exp(-0.1)
+        np.testing.assert_allclose(r.token_at(0.6), np.full(4, 0.2 + 0.4 * np.exp(-0.1)), atol=1e-5)
+
+    def test_offset_decays_back_to_the_new_chunk(self):
+        r = ChunkResampler(50)
+        r.set_chunk(np.ones((40, 2), np.float32), t0=0.0)
+        r.set_chunk(np.zeros((400, 2), np.float32), t0=0.0, now=0.0, anchor_s=0.5)
+        np.testing.assert_allclose(r.token_at(0.0), np.ones(2), atol=1e-6)
+        np.testing.assert_allclose(r.token_at(1.5), np.full(2, np.exp(-3)), atol=1e-5)  # 3 time constants
+
+    def test_restarting_plans_still_make_progress(self):
+        """Every chunk restarts at 0 with slope 1/s (observation never changes), replanned every 0.4 s and
+        arriving 0.2 s after its t0. The cross-fade never gets past one chunk's own travel (0.8); anchoring
+        builds a lead (bounded by the decay: steady offset 0.4 / (1 - exp(-0.4)) = 1.21 at anchor_s 1)."""
+
+        def run(**kw):
+            r = ChunkResampler(50)
+            chunk = np.linspace(0, 0.8, 41)[:, None].astype(np.float32)
+            r.set_chunk(chunk, t0=0.0)
+            for k in range(1, 11):
+                t0, now = 0.4 * k, 0.4 * k + 0.2
+                r.set_chunk(chunk, t0=t0, now=now, **kw)
+            return float(r.token_at(4.4)[0])
+
+        blended, anchored = run(blend_s=0.3), run(anchor_s=1.0)
+        self.assertLessEqual(blended, 0.8 + 1e-6)  # pulled back toward the restart point at every switch
+        self.assertGreater(anchored, 1.3)  # a lead well past one chunk's travel ...
+        steady = 0.4 + 0.4 / (1 - np.exp(-0.4)) * np.exp(-0.2)
+        self.assertLess(anchored, steady)  # ... but bounded by the decay
+
+    def test_anchor_overrides_blend_and_zero_keeps_old_behaviour(self):
+        r = ChunkResampler(30)
+        r.set_chunk(np.zeros((40, 4)), t0=0.0)
+        r.set_chunk(np.ones((40, 4)), t0=0.3, blend_s=0.2, now=0.5, anchor_s=0.0)
+        np.testing.assert_allclose(r.token_at(0.6), np.full(4, 0.5), atol=1e-6)  # plain cross-fade
+        r2 = ChunkResampler(30)
+        r2.set_chunk(np.zeros((40, 4)), t0=0.0)
+        r2.set_chunk(np.ones((40, 4)), t0=0.3, blend_s=0.2, now=0.5, anchor_s=1.0)
+        np.testing.assert_allclose(r2.token_at(0.5), np.zeros(4), atol=1e-6)  # anchored: starts where it was
+        np.testing.assert_allclose(r2.token_at(0.6), np.full(4, 1 - np.exp(-0.1)), atol=1e-5)
+
+    def test_only_anchor_dims_are_offset_the_rest_keep_the_cross_fade(self):
+        """Hand targets are absolute joint positions with no slew limit downstream: they must not be anchored, or
+        restarting chunks would accumulate offsets past the finger limits (PR #46 review)."""
+        r = ChunkResampler(50)
+        # every chunk restarts 0 -> 1.0 (a valid finger range)
+        ramp = np.linspace(0, 1.0, 41).astype(np.float32)
+        chunk = np.stack([ramp] * 6, axis=1)
+        r.set_chunk(chunk, t0=0.0)
+        hands_seen = []
+        for k in range(1, 11):
+            t0, now = 0.4 * k, 0.4 * k + 0.2
+            r.set_chunk(chunk, t0=t0, now=now, blend_s=0.3, anchor_s=1.0, anchor_dims=4)
+            for j in range(20):
+                hands_seen.append(r.token_at(now + j * 0.02)[4:])
+        self.assertLessEqual(np.max(hands_seen), 1.0 + 1e-6)  # hands never leave the chunks' own range
+        self.assertGreater(float(r.token_at(4.4)[0]), 1.3)  # anchored dims still build their lead
+
+    def test_anchor_offset_is_taken_from_the_command_actually_sent(self):
+        """A slew limiter downstream can leave the sent command behind the resampler's output; anchoring must
+        continue from what was sent (PR #46 review: desired 1.0, sent 0.05, new chunk asks for 0)."""
+        r = ChunkResampler(50)
+        r.set_chunk(np.ones((40, 2), np.float32), t0=0.0)
+        r.set_chunk(np.zeros((40, 2), np.float32), t0=0.2, now=0.2, anchor_s=1.0, current=np.full(2, 0.05))
+        np.testing.assert_allclose(r.token_at(0.2), np.full(2, 0.05), atol=1e-6)
+        self.assertLess(float(r.token_at(0.3)[0]), 0.05)  # heading to the new chunk, never back up toward 1.0

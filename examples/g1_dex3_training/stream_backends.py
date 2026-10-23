@@ -10,16 +10,22 @@ The streamer drives either one the same way:
     begin(chunk, joints)    lead-in from the rest pose to the first chunk (time base 0)
     set_chunk(chunk, joints, t0, blend_s, now)   a newly arrived chunk
     episode_tick(t_ep, k, chunk_t0)               one episode tick from the latest chunk
-    finish()                blend out, then return / hand back / stop
+    finish()                (SonicBackend, operator runs: hold the last pose until Enter) blend out, then return /
+                            hand back / stop
 chunk is the 30 Hz token + hands chunk (None for decoupled), joints the 31D joint_ref chunk (None for sonic78).
 record(token, hands, phase, t_ep, k, chunk_t0, joint_ref) is the streamer's per-tick log.
 """
 
 from __future__ import annotations
 
+import contextlib
 import json
+import os
+import select
 import struct
+import sys
 import time
+from collections import deque
 from pathlib import Path
 
 import numpy as np
@@ -88,8 +94,26 @@ def observation_state(msg: dict) -> np.ndarray:
     body = np.asarray(msg["body_q"], np.float32)
     if body.shape != (29,):
         raise ValueError(f"expected 29 body joints, got {body.shape}")
-    right = np.asarray(msg["right_hand_q"], np.float32)[RIGHT_ORDER]
-    return np.concatenate([body[15:29], msg["left_hand_q"], right]).astype(np.float32)
+    left, right = (np.asarray(msg[k], np.float32) for k in ("left_hand_q", "right_hand_q"))
+    if left.shape != (7,) or right.shape != (7,):
+        raise ValueError(f"expected 7 joints per Dex3 hand, got {left.shape} and {right.shape}")
+    return np.concatenate([body[15:29], left, right[RIGHT_ORDER]]).astype(np.float32)
+
+
+def say(text: str) -> None:
+    """print() that cannot raise: a closed log pipe (tee gone) must not stop a blend out or handback."""
+    with contextlib.suppress(OSError, ValueError):
+        print(text, flush=True)
+
+
+def token_echo_err(msg: dict | None, recent) -> float:
+    """Smallest max-abs difference between the deploy's g1_debug token_state and a recently sent token. In POSE mode
+    the deploy copies each received token into token_state; a deploy fed by another command source (or still in
+    planner mode) reports other tokens. inf without a 64D token_state or sent tokens."""
+    echo = np.asarray((msg or {}).get("token_state", []), np.float32)
+    if echo.shape != (64,) or not recent:
+        return float("inf")
+    return float(np.abs(np.asarray(recent) - echo).max(axis=1).min())
 
 
 def measured_ref(msg: dict, action_space: str) -> np.ndarray:
@@ -150,6 +174,32 @@ def gate(name: str, gate_dir: Path | None, prefix: str = "", consume: bool = Fal
         path.unlink()
 
 
+def enter_pressed(pending: bytearray) -> bool | None:
+    """Non-blocking poll, once per tick: True once a whole line (Enter) has arrived, None if stdin cannot deliver one
+    (EOF, closed or not selectable). Reads only the bytes already there (os.read, not readline(), which waits for a
+    newline and stalls the 50 Hz stream) and keeps a partial line in `pending`: a line cut off by EOF is no Enter."""
+    try:
+        fd = sys.stdin.fileno()
+        if not select.select([fd], [], [], 0)[0]:
+            return False
+        data = os.read(fd, 4096)
+    except (OSError, ValueError):
+        return None
+    if not data:
+        return None
+    pending += data
+    return b"\n" in pending
+
+
+def flush_stdin() -> None:
+    """Drop Enters typed earlier (a double Enter at the operator stop must not pass the next prompt at once)."""
+    with contextlib.suppress(OSError, ValueError, ImportError):
+        if sys.stdin.isatty():
+            import termios
+
+            termios.tcflush(sys.stdin, termios.TCIFLUSH)
+
+
 def load_startup(path: Path) -> dict:
     """--startup-tokens .npz from sonic_table_startup.py plan: tokens/hands (and rev_*) arrays and the path's fps."""
     z = np.load(path)
@@ -163,7 +213,8 @@ class SonicBackend:
     """Token source for NVIDIA's deploy. Start: PLANNER mode -> POSE mode with the planner's current token ->
     --handoff-blend-s blend to the rest token (NVIDIA's standing token, the table path's end, or the planner token
     itself with --start planner). Episode: ChunkResampler.token_at(t), the 30 Hz chunk interpolated to 50 Hz.
-    End: 1 s blend back to the rest token, hold (or the table path reversed), then hand back to the planner or stop.
+    End: hold the last token and hands until the operator presses Enter (not with --gate-dir), 1 s blend back to the
+    rest token, hold (or the table path reversed), then hand back to the planner or stop.
     For joint action spaces it also logs the 50 Hz joint_ref from the joint chunk (not sent)."""
 
     def __init__(self, a, pub, state, record, fps: float, startup: dict | None):
@@ -175,6 +226,8 @@ class SonicBackend:
         self.jres = ChunkResampler(fps) if a.action_space != "sonic78" else None  # 50 Hz joint_ref
         self.planner = None  # the planner's token at the POSE switch (gradual handoff only)
         self.frame, self.last_sent, self.last_hands, self.slewed = 0, None, None, 0
+        self.pose = False  # POSE mode commanded and not yet handed back: an error must still call finish()
+        self.recent = deque(maxlen=25)  # tokens sent in the last 0.5 s: the deploy's echo lags by a few ticks
 
     def send(self, token, hands, phase, t_ep=-1.0, k=-1, chunk_t0=np.nan, joint_ref=None):
         token = np.asarray(token, np.float32)
@@ -185,6 +238,7 @@ class SonicBackend:
                 token = self.last_sent + np.clip(step, -step_max, step_max)
                 self.slewed += 1
         self.last_sent, self.last_hands = token, hands
+        self.recent.append(token)
         self.pub.send(pose_message(token, hands, self.frame))
         self.frame += 1
         self.record(token, hands, phase, t_ep, k, chunk_t0, joint_ref)
@@ -228,6 +282,7 @@ class SonicBackend:
             for _ in ticks(50):
                 self.send(planner, self.zero_h, "planner token")
             self.pub.send(command_message(start=True, planner=False))
+            self.pose = True
             n = int(a.handoff_blend_s * 50)
             # table startup: switch into the table-safe arm path instead of NVIDIA's standing token, whose hands rise
             # to ~0.8 m, 0.3 m forward (into an 80 cm table)
@@ -243,6 +298,7 @@ class SonicBackend:
             for _ in ticks(50):  # latent initial token, then POSE mode
                 self.send(LATENT_INITIAL_MOTION_TOKEN, self.zero_h, "initial")
             self.pub.send(command_message(start=True, planner=False))
+            self.pose = True
         print("[streamer] command: POSE mode (streamed tokens)", flush=True)
 
     def wait_tick(self):
@@ -265,7 +321,12 @@ class SonicBackend:
             )
 
     def set_chunk(self, chunk, joints, t0, blend_s, now):
-        self.resampler.set_chunk(chunk, t0=t0, blend_s=blend_s, now=now)
+        anchor_s = getattr(self.a, "chunk_anchor_s", 0.0) or 0.0
+        # anchor only the 64 token dims (the hands are absolute joint targets with no slew limit) and from the token
+        # actually sent, which the slew limit in send() can hold behind the resampler's output
+        self.resampler.set_chunk(
+            chunk, t0=t0, blend_s=blend_s, now=now, anchor_s=anchor_s, anchor_dims=64, current=self.last_sent
+        )
         if joints is not None:
             self.jres.set_chunk(joints, t0=t0, blend_s=blend_s, now=now)
 
@@ -274,10 +335,37 @@ class SonicBackend:
         joint_ref = None if self.jres is None else self.jres.token_at(t_ep)
         self.send(out[:64], out[64:], "episode", t_ep, k, chunk_t0, joint_ref=joint_ref)
 
+    def hold_for_operator(self):
+        """Keep streaming the last token and hands (hands stay closed on a held bottle) until the operator has cleared
+        the space and pressed Enter: the blend back to the rest pose sweeps the raised arm down (G1: into the box on
+        the table). Without usable stdin, hold until Ctrl-C. --gate-dir runs (sims) do not stop here."""
+        if self.a.gate_dir is not None:
+            return
+        token, hands = self.last_sent, self.last_hands
+        flush_stdin()
+        say(
+            "[streamer] holding the current pose: clear the space (move the box / take the bottle), then press Enter "
+            "to return to the initial pose"
+        )
+        usable, pending = True, bytearray()
+        try:
+            for _ in ticks(10**9):
+                self.send(token, hands, "hold for operator")
+                if usable:
+                    pressed = enter_pressed(pending)
+                    if pressed:
+                        return
+                    if pressed is None:
+                        usable = False
+                        say("[streamer] stdin unusable: holding the current pose until Ctrl-C")
+        except KeyboardInterrupt:
+            say("[streamer] Ctrl-C: returning to the initial pose")
+
     def finish(self):
         a, startup = self.a, self.startup
         rest_token, rest_hands = self.rest_token, self.rest_hands
-        print(f"[streamer] token slew limit active on {self.slewed} ticks so far", flush=True)
+        say(f"[streamer] token slew limit active on {self.slewed} ticks so far")
+        self.hold_for_operator()
         last_token, last_hands = self.last_sent, self.last_hands
         for i in ticks(
             50
@@ -307,10 +395,11 @@ class SonicBackend:
                 w = (i + 1) / n
                 self.send((1 - w) * held + w * self.planner, (1 - w) * held_h, "handback blend")
             self.pub.send(command_message(start=True, planner=True))
-            print("[streamer] command: PLANNER mode (deploy left running)", flush=True)
+            say("[streamer] command: PLANNER mode (deploy left running)")
         else:
             self.pub.send(command_message(start=False, planner=False))
-            print("[streamer] command: stop", flush=True)
+            say("[streamer] command: stop")
+        self.pose = False
 
 
 class DecoupledBackend:
