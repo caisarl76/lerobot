@@ -138,7 +138,7 @@ def run_detector(samples, **kw):
     """samples: [(t, right_hand_mean)] -> first t at which the detector fires, or None."""
     d = es.HandoverDetector(**kw)
     for t, h in samples:
-        if d.update(t, h):
+        if d.update(h, now=t):
             return t
     return None
 
@@ -176,3 +176,39 @@ def test_short_reopen_during_a_regrasp_does_not_end_the_trial():
 def test_missing_state_is_ignored():
     s = ticks(0, 1, OPEN) + ticks(1, 2, CLOSED) + [(2.0, float("nan"))] + ticks(2.02, 4, OPEN)
     assert run_detector(s, open_s=1.0) == pytest.approx(3.02, abs=0.03)
+
+
+def test_handover_uses_real_elapsed_time_not_caught_up_ticks(monkeypatch):
+    """PR #47 review: ticks() catches up late ticks without sleeping, so after a 0.7 s stall the scheduled episode
+    time races ahead. A hand closed for only ~0.08 s of real time must not count as a 0.5 s grasp."""
+    import stream_backends as sb
+
+    clock = [0.0]
+    monkeypatch.setattr(sb.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(sb.time, "sleep", lambda dt: clock.__setitem__(0, clock[0] + dt))
+    monkeypatch.setattr(es.time, "monotonic", lambda: clock[0])
+    d = es.HandoverDetector(open_s=1.0)
+    fired = False
+    for i in sb.ticks(200):
+        if i == 1:
+            clock[0] += 0.7  # the process was descheduled; the hand closes as execution resumes
+        closed = i > 0 and clock[0] < 0.80  # ~0.08 s of real time closed, during the catch-up burst
+        fired = fired or d.update(0.38 if closed else 0.0)
+    assert not d.held and not fired
+
+
+def test_handover_real_clock_still_detects_a_real_grasp(monkeypatch):
+    import stream_backends as sb
+
+    clock = [0.0]
+    monkeypatch.setattr(sb.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(sb.time, "sleep", lambda dt: clock.__setitem__(0, clock[0] + dt))
+    monkeypatch.setattr(es.time, "monotonic", lambda: clock[0])
+    d = es.HandoverDetector(open_s=1.0)
+    fired_at = None
+    for _ in sb.ticks(400):
+        h = 0.38 if 1.0 <= clock[0] < 2.0 else 0.0  # open, closed 1 s, open
+        if d.update(h):
+            fired_at = clock[0]
+            break
+    assert fired_at == pytest.approx(3.0, abs=0.03)

@@ -1070,11 +1070,10 @@ def main():
                 episode_end = f"watchdog: {reason}"
                 print(f"[streamer] {episode_end}: ending episode", flush=True)
                 break
-            if (
-                handover is not None
-                and history
-                and handover.update(history[-1][0], float(history[-1][1][21:28].mean()))
-            ):
+            # the freshly read robot state, timed by the detector's own monotonic clock (not t_ep: late ticks are
+            # caught up without sleeping, so t_ep can race ahead of real time after a stall)
+            msg = state.latest()
+            if handover is not None and msg and handover.update(float(observation_state(msg)[21:28].mean())):
                 episode_end = "handover complete"
                 print(f"[streamer] {episode_end}: ending episode", flush=True)
                 break

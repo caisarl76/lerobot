@@ -116,7 +116,11 @@ class HandoverDetector:
     open, stayed closed for at least ``min_hold_s`` (a grasp, not a flick) and then stayed open for ``open_s`` (the
     release; a shorter reopen is a regrasp). A hand that starts closed (the startup fist) and only opens is not a
     handover. One attempt per trial: in s17 (2026-10-23) second attempts within a trial were slower and less accurate,
-    because the training episodes end about 2 s after the release."""
+    because the training episodes end about 2 s after the release.
+
+    Durations use real elapsed time (``time.monotonic()``; ``now`` only for tests), never the streamer's scheduled
+    episode time: ticks() catches up late ticks without sleeping, so after a stall the scheduled time races ahead and a
+    brief closure would look like a held grasp (PR #47 review)."""
 
     def __init__(self, open_s: float = 1.0, min_hold_s: float = 0.5, closed_above: float = 0.19):
         self.open_s, self.min_hold_s, self.closed_above = open_s, min_hold_s, closed_above
@@ -124,7 +128,8 @@ class HandoverDetector:
         self.closed_since: float | None = None
         self.open_since: float | None = None
 
-    def update(self, t: float, right_hand: float) -> bool:
+    def update(self, right_hand: float, now: float | None = None) -> bool:
+        t = time.monotonic() if now is None else now
         if not math.isfinite(right_hand):
             return False
         if right_hand > self.closed_above:
