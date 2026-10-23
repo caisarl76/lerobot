@@ -344,6 +344,132 @@ frames earlier.
   `_visualizer/workspace/drafts/98ad57bbb4114e41928ffc085c111ef9` (s07) and `…/5cb635dd2bc94a7db0be5957cc59302c` (s08),
   each under `retained-dataset`.
 
+## Real robot, 75-episode merged GR00T he (2026-10-20)
+
+`wbt_groot_handover261019_he_full` is GR00T he trained on `handover_bottle_merged_261019` (the user's merge of
+reviewed runs, converted to sonic78 50 Hz): 73 training episodes, 60,526 frames, held out 27/35. It holds the old
+41 episodes, 25 segments of the 10-14 recording (the review kept 21 of its 51 episodes) and 7 episodes of the
+10-19 recording (6 kept of 8, one split). Same init, recipe and server as s08 (GPU 1, noise 0, blend 0.3, slew 0.05,
+`--hold-rest-s 1.5`), but the session ran with the launcher's default 120 s cap instead of 30 s (`MAX_S` was not
+set). Training notes in the [2026-10-15 note](2026-10-15-g1-handover-261014-out-of-view.md#3-gr00t-he-run).
+
+| Session | Model                              | Trials | Success | Failures                                                                     |
+| ------- | ---------------------------------- | ------ | ------- | ---------------------------------------------------------------------------- |
+| s09     | `wbt_groot_handover261019_he_full` | 10     | 4/10    | did not reach the object ×2, stalled / froze ×2, dropped ×1, grasp missed ×1 |
+
+- **4/10 against 9/10 for the 94-episode model (s08).** Trial 1 (index 0) holds two attempts: the first succeeded
+  (grasp 8.3 s, release ~11.6 s); the robot then went back toward ready, stood still for ~60 s and ended with the hand
+  opening and closing at ~3 Hz. The operator scored it a fail; the user corrected it to success at review (10-21),
+  in `results.jsonl` and `trial_000.npz` on PC2 and the workstation and in the dataset and draft
+  `eval_session.json` (originals kept as `results.jsonl.orig`). The other successes took 81, 72 and 21 s (s08:
+  11–16 s); with s08's 30 s cap only trials 1 (its first attempt) and 10 pass, 2/10.
+- **Why the second attempt stalled:** the policy has no memory (`n_obs_steps` 1), so the first attempt does not
+  carry over; the input does. 157 of the 200 training frames nearest the stalled pose are from the 10-19 recordings,
+  where the robot waited at ready while the operator reset the bottle, and in those frames the arm moves half as
+  much over the next 2 s as on average (0.35 against 0.67 rad). The old 43 episodes never start from that pose.
+- **Operator:** the reach stalls about 2 cm from the bottle, with the arm still or creeping; the return to the
+  ready pose after the handover is good.
+- **Logs agree:** right-arm joint speed median 0.047 rad/s (s08 0.335), still (< 0.05 rad/s) 53 % of the policy
+  time (s08 18 %), longest still stretch 3.2 s per trial (s08 0.6 s).
+- **Likely cause, the 10-19 episodes:** each of them is a continuous recording of several pick-and-handover
+  cycles (median 6 right-hand closes per episode, 11 in 126 s for ep 68; every other episode has 1), and 5 of 7 start
+  with the hand closed. They are only 7 episodes but 35 % of the training frames. One cycle takes about 10 s, so the
+  operator was not moving slowly; the episodes are just not cut per attempt, so mid-task states such as "back at
+  ready, bottle on the table again" follow a handover instead of an episode start.
+  The old 43 episodes run init pose (standing) → reach → pick → handover posture and end there; only the 10-19
+  recordings go back to a ready pose between attempts, so s09's good return to ready can only come from them.
+- **Not isolated:** the model also has fewer single-attempt episodes than the 94-episode one (66 against 94), so
+  two things changed at once.
+- Session and export: `/mnt/data/jihun/g1_eval_sessions/s09_wbt_groot_handover261019_he_handover` (`raw/`,
+  `dataset/`); VLM failure labels and the human review are not done yet.
+
+## Real robot, 105-episode GR00T he with the 10-19 attempts cut (2026-10-20)
+
+`wbt_groot_handover261020_he_full`: same recipe, on `handover_bottle_merged_261020`, where the user cut the 10-19
+recordings into 39 single attempts (hand-marked exclusions; the old 43 and the 25 10-14 segments are unchanged):
+105 training episodes, 58,054 frames, held out 27/35. Same server and settings as s08, 30 s cap.
+
+| Session | Model                              | Trials | Success | Failures                                                                       |
+| ------- | ---------------------------------- | ------ | ------- | ------------------------------------------------------------------------------ |
+| s10     | `wbt_groot_handover261020_he_full` | 10     | 8/10    | stalled, hand did not open (trial 3); wavy arm after the lift (trial 9, other) |
+
+- **8/10, against 4/10 before the cut (s09) and 9/10 for the 94-episode model (s08).** Cutting the attempts fixed
+  the reach: the grasp comes at a median 5.9 s (s09 11.9 s, s08 4.8 s) and the arm is still 33 % of the time (s09
+  52 %, s08 18 %).
+- **Slower than s08:** successes took 13–28 s (median 17), against 11–16 s; trials 1 and 2 needed 27–28 s.
+- **Trial 3 (index 2):** grasped, then stood still for 15 s with the bottle and did not open the hand.
+- **Trial 9 (index 8), corrected success → fail at review:** after the grasp and lift the right arm swayed at
+  1.2 Hz (elbow and wrist pitch ~18° peak to peak, shoulder roll 10°) until the 30 s cap. The policy's tokens carry the
+  same 1.2 Hz motion (70 % of their first principal component in 0.7–3 Hz), so the sway comes from the policy, not the
+  controller. No other trial of s08 or s10 has more than 10 % of the elbow motion in that band (this one 68 %). Fixed in
+  `results.jsonl` and `trial_008.npz` on PC2 and the workstation (reason "other"; originals kept as
+  `results.jsonl.orig`).
+- Session and export: `/mnt/data/jihun/g1_eval_sessions/s10_wbt_groot_handover261020_he_handover` (`raw/`,
+  `dataset/`); VLM failure labels and the human review are not done yet.
+
+## Stall investigation and inference tests (2026-10-21)
+
+Stalls (right arm still for 2 s or more during the policy phase) were analysed in s08, s09 and s10 from the session logs
+and with an offline probe (the streamer's `ChunkPolicy` re-run on the logged state and camera frame).
+
+- **Mechanism, the same in all three models:** chunks keep arriving (2.6–2.9 per s) and the token slew limiter is never
+  active, but each new chunk restarts from the unchanged view and the 0.3 s blend pulls the command back. In stalls the
+  sent tokens go nowhere (net / path 0.01–0.07, against 0.30–0.35 when moving), the next chunk reverses the previous
+  one (cos −0.16 to −0.43, against +0.3 to +0.6), and the arm moves 0–0.2° per chunk (6–10° when moving).
+- **Dead zone:** over 2,075 chunk segments the arm moves 6–10° per unit of token change below 0.06 token per chunk,
+  but 35–52° above 0.1. The residual command in a stall (~0.035 per chunk) sits inside it.
+- **What drives the slow prediction:** the camera image more than the state (swapping in a moving moment's image
+  restores most chunk motion). Near the bottle and in the holding posture the model predicts slow motion.
+- **Ruled out:** unmasked padding at episode ends (GR00T masks `action_is_pad` correctly), sampling noise (noise 1.0
+  over 10 seeds gives the same small motion), and the chunk's motion sitting only in its second half.
+
+Inference tests on the robot, all with `wbt_groot_handover261020_he_full` except s08 (30 s cap, noise 0, token step
+limit 0.05):
+
+| Session | Change                                  | Success | Stall per trial | Success time (median) | Grasp time (median) |
+| ------- | --------------------------------------- | ------- | --------------- | --------------------- | ------------------- |
+| s08     | 94-episode model, blend 0.3, replan 0.4 | 9/10    | 0.9 s           | 12.4 s                | 4.8 s               |
+| s10     | blend 0.3, replan 0.4                   | 8/10    | 2.5 s           | 17.0 s                | 5.8 s               |
+| s11     | `--replan-s 0.8 --max-chunk-age-s 1.5`  | 8/10    | 0.2 s           | 19.1 s                | 8.2 s               |
+| s12     | `--replan-s 0.6 --max-chunk-age-s 1.5`  | 6/9     | 1.1 s           | 20.8 s                | 9.2 s               |
+| s13     | `--chunk-anchor-s 1.0` (PR #46)         | 7/10    | 0.0 s           | 13.5 s                | 5.3 s               |
+| s14     | `--chunk-anchor-s 0.5` (PR #46)         | 6/10    | 0.0 s           | 15.1 s                | 7.4 s               |
+
+- **Longer replans** remove stalls but the chunk runs out before the next arrives (inference 0.21–0.28 s): the command
+  is frozen 30 % (s11) or 7 % (s12) of the time and the arm pulses at the replan rate (stop-and-go), and the grasp gets
+  slower. The first s11 attempts ended with "no valid chunk for 1 s" (0.8 s replan + inference > the 1 s default),
+  and the return to rest hit the box; raise `--max-chunk-age-s` with `--replan-s`.
+- **Chunk anchoring** (each new chunk continues from the current command; the offset decays with time constant τ)
+  removes every stall and brings the success time close to s08, but the reach gets less accurate: in s13 all failures
+  came from an inaccurate reach (weak grasp, then the bottle falls; twice the palm knocked it over), and τ 0.5 (s14)
+  did not help (4 missed grasps). The observer rated s13 above s14.
+- **Caveat (found in review, 2026-10-22):** s13 and s14 ran a first version of anchoring that also offset the 14 Dex3
+  hand targets, which have no slew limit. The right-hand targets sent went to −1.48 / +3.18 rad (s13) and
+  −1.24 / +2.67 rad (s14), against −0.72 / +1.53 rad in s10, so their weak grasps and drops may come partly from
+  corrupted finger commands rather than from anchoring the token. Fixed in PR #46 (`ef31309e`: only the 64 token dims are
+  anchored, from the token actually sent); a fair anchoring test needs a new session with the fixed code.
+
+**Decision (user, 2026-10-22): the reference handover model is `wbt_groot_handover261015_he_full`** (s08): faster
+and more accurate than the 261019 and 261020 models and their inference variants. Keep the s08 settings (blend 0.3,
+replan 0.4); chunk anchoring stays unmerged (PR #46) and, if tried again, should be tested on this model first.
+
+### Fixed anchoring with the reference model (2026-10-23)
+
+Same day, same server (`wbt_groot_handover261015_he_full` on workstation GPU 1, port 5571), 10 trials each, 30 s cap,
+fixed anchoring (PR #46 `ef31309e`: token dims only, from the sent token):
+
+| Session | Setting                | Success | Success time (median) | Stall per trial | 0.7–3 Hz share | Reversals at pick-up | Right-hand targets |
+| ------- | ---------------------- | ------- | --------------------- | --------------- | -------------- | -------------------- | ------------------ |
+| s16     | blend 0.3 (as s08)     | 8/10    | 14.6 s                | 0.2 s           | 0.90           | 2.68 / s             | −0.72 / +1.55 rad  |
+| s15     | `--chunk-anchor-s 1.0` | 8/10    | 12.4 s                | 0.0 s           | 0.69           | 2.01 / s             | −0.72 / +1.55 rad  |
+
+- Same success (s16: 2 drops; s15: 2 missed grasps). With anchoring there are no stalls, s08's speed comes back, and the
+  pick-up is steadier (fewer joint reversals, less 0.7–3 Hz wobble). The user saw more unstable output with the blend,
+  in unseen scenes and during the pick-up. The hand targets stay in range with the fixed code.
+- **Decision (user, 2026-10-23): anchoring τ 1.0 is the default.** PR #46 merged (`ec0f5750`); the real-robot
+  launcher passes `--chunk-anchor-s 1.0` (`ANCHOR_S`, 0 = off); the streamer's own default stays 0, so sims are
+  unchanged. Reference setup: `wbt_groot_handover261015_he_full` + anchoring 1.0.
+
 ## Incidents
 
 - **GPU 7 shared (10-02 12:17 UTC).** Session `lerobot-f0` started `groot_joint28_ho5_official_full` (40 GB) on

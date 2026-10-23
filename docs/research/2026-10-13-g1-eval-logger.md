@@ -83,3 +83,30 @@ End-to-end check (2026-10-13, no VLM): the visualizer backend on a converted fak
 Tests in this environment need `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1` (a ROS pytest plugin breaks collection), e.g. `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 uv run pytest tests/... -q`.
 
 First real session (2026-10-14, `s00_test_he_groot_laptop`, HE GR00T, "close a laptop g1", `TRIALS=2 MAX_S=60`): both trials fail "stalled / froze" (laptop half closed); converted to 2 episodes of 60 s; Qwen3.6-27B labelled both as fail in "push the lid down" (frames 274 and 357), agreeing with the operator; both labels saved and reviewed in the browser.
+
+## 8. Future work: safe hand settle
+
+**Status: not started (marked by the user, 2026-10-21).**
+
+- **Problem:** at every episode end (operator stop, time cap, "no valid chunk", watchdog, stale state or camera)
+  `SonicBackend.finish()` (`stream_backends.py`) blends from the last sent token straight to the rest token in 1 s,
+  then hands back to PLANNER mode. The blend is in token space and knows nothing about the table, so a raised right
+  hand sweeps down through whatever is below it: on 2026-10-21 it hit the black box. The line
+  `token slew limit active on N ticks` printed just before it is only a counter, not the trigger.
+- **Interim fix (requested 2026-10-21, session lerobot-11):** hold the current pose at the episode end, ask the operator
+  to clear the space and press Enter, then run the existing blend and handback.
+- **Safe hand settle (this item):** return to the rest pose automatically and without contact, so the operator does not
+  have to clear the space. Candidates:
+  1. _Retrace:_ take the episode's measured arm trajectory (the logged 50 Hz `state`), reverse it back to the start
+     pose, **re-encode the reversed joint path with the SONIC encoder** and play those tokens, then the usual handback.
+     Never play the streamed tokens backward: tokens encode about 1 s of future motion, so a reversed token sequence
+     is not a reversed motion ([round-trip audit](2026-09-23-sonic-roundtrip-audit.md), end-of-episode notes). The
+     existing table shutdown is built this way: `sonic_table_startup.py` encodes a reversed joint path into
+     `rev_tokens` offline. The hand came in along that path without hitting anything. Needs the encoder on the
+     streamer side, a speed cap (on the way down SONIC's arm sags toward the table edge; the audit found 1.5–2 rad/s
+     kept clearance at a 5 cm table, see `--reverse-max-speed`), skipping stalled or oscillating stretches, and a rule
+     for the hands (keep holding, or open only at a safe point).
+  2. _Lift, then lower:_ first move the hand up and back to a clearance waypoint above the table, then descend to rest.
+  3. Choose the route from the measured arm pose and the known table height.
+- **Done when:** no contact with the table or the box from varied end poses (mid-reach, holding in the handover
+  posture, watchdog stop), checked in sim with the table scene first (Isaac handover eval), then on the robot.

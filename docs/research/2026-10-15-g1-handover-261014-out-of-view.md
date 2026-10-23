@@ -74,6 +74,31 @@ Risks:
   on the same setup. Details in the
   [handover note](2026-10-02-g1-wbt-handover-training.md#real-robot-94-episode-groot-he-2026-10-1516). The 5k
   checkpoint (equal sample budget) has not been tested.
+- **Merged set, `groot_handover261019_he_full` (10-19, h100_174 GPU 7):** dataset
+  `handover_bottle_merged_261019` (the user's merge of reviewed runs: old 43, 25 segments of the 10-14 recording,
+  7 episodes of the 10-19 recording) converted with `prepare_wbt_sonic78.py ... --heldout 27 35` to
+  `handover_bottle_merged_sonic78_50hz_261019` (75 episodes; 73 / 60,526 frames for training). Job root
+  `g1_wbt_handover_261019`, init `init/groot_he` copied and retargeted to the new stats, same 16,000 steps
+  (8.5 passes). Started 10-19 09:16 UTC, exit 0 at 11:41 UTC, loss 0.141 at step 100 and 0.024 at 16k. On the Hub
+  as private `mncai/g1-wbt-handover-groot-handover261019-he-full` and on the workstation in
+  `/mnt/data/jihun/g1_models/wbt_groot_handover261019_he_full/pretrained_model` (sha256 `bb15edc3…`, same on the
+  host, the Hub and the workstation).
+  - **Robot (10-20, s09): 4/10**, against 9/10 for the 94-episode model; the reach stalls near the bottle. The
+    10-19 episodes each hold several handover cycles (median 6), so cut them per cycle before training on them
+    again. Details in the
+    [handover note](2026-10-02-g1-wbt-handover-training.md#real-robot-75-episode-merged-groot-he-2026-10-20).
+- **10-19 attempts cut, `groot_handover261020_he_full` (10-20, h100_174 GPU 2; GPU 7 was busy with Long-WAM):**
+  `handover_bottle_merged_261020` (107 episodes: the old 43, the same 25 10-14 segments, 39 single attempts of the
+  10-19 recording cut at the user's hand-marked exclusions) → `handover_bottle_merged_sonic78_50hz_261020` (105 /
+  58,054 frames for training). Job root `g1_wbt_handover_261020`, same init and recipe (16,000 steps, 8.8 passes),
+  loss 0.143 at step 100 and 0.023 at 16k. On the Hub as private
+  `mncai/g1-wbt-handover-groot-handover261020-he-full` and on the workstation in
+  `/mnt/data/jihun/g1_models/wbt_groot_handover261020_he_full/pretrained_model` (sha256 `b7ee9c8c…`, same as the
+  Hub). The 261019 workstation copy was deleted (Hub only).
+  - **Robot (10-20, s10): 8/10**; the reach is fixed, but successes are slower than s08's and one trial swayed after
+    the lift. Neither merged model replaced `groot_handover261015_he_full`: the user kept it as the reference model
+    (2026-10-22). Details in the
+    [handover note](2026-10-02-g1-wbt-handover-training.md#real-robot-105-episode-groot-he-with-the-10-19-attempts-cut-2026-10-20).
 
 ## 4. Recording command
 
