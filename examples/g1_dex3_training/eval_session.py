@@ -110,6 +110,39 @@ def start_trial_input(gate_dir: Path | None, trial: int) -> None:
         termios.tcflush(sys.stdin, termios.TCIFLUSH)
 
 
+class HandoverDetector:
+    """--end-on-handover: end the trial once one pick-and-handover attempt is complete, from the measured right hand
+    (mean of its 7 Dex3 joints: ~0 open, ~0.38 closed around the bottle). It fires when the hand, after being seen
+    open, stayed closed for at least ``min_hold_s`` (a grasp, not a flick) and then stayed open for ``open_s`` (the
+    release; a shorter reopen is a regrasp). A hand that starts closed (the startup fist) and only opens is not a
+    handover. One attempt per trial: in s17 (2026-10-23) second attempts within a trial were slower and less accurate,
+    because the training episodes end about 2 s after the release."""
+
+    def __init__(self, open_s: float = 1.0, min_hold_s: float = 0.5, closed_above: float = 0.19):
+        self.open_s, self.min_hold_s, self.closed_above = open_s, min_hold_s, closed_above
+        self.seen_open, self.held = False, False
+        self.closed_since: float | None = None
+        self.open_since: float | None = None
+
+    def update(self, t: float, right_hand: float) -> bool:
+        if not math.isfinite(right_hand):
+            return False
+        if right_hand > self.closed_above:
+            self.open_since = None
+            if self.seen_open:
+                if self.closed_since is None:
+                    self.closed_since = t
+                if t - self.closed_since >= self.min_hold_s:
+                    self.held = True
+            return False
+        self.seen_open, self.closed_since = True, None
+        if not self.held:
+            return False
+        if self.open_since is None:
+            self.open_since = t
+        return t - self.open_since >= self.open_s
+
+
 def stop_requested(gate_dir: Path | None, trial: int) -> bool:
     """Polled once per 50 Hz tick: the operator pressed Enter (or wrote stop.{trial})."""
     if gate_dir is not None:
