@@ -453,6 +453,23 @@ limit 0.05):
 and more accurate than the 261019 and 261020 models and their inference variants. Keep the s08 settings (blend 0.3,
 replan 0.4); chunk anchoring stays unmerged (PR #46) and, if tried again, should be tested on this model first.
 
+### Fixed anchoring with the reference model (2026-10-23)
+
+Same day, same server (`wbt_groot_handover261015_he_full` on workstation GPU 1, port 5571), 10 trials each, 30 s cap,
+fixed anchoring (PR #46 `ef31309e`: token dims only, from the sent token):
+
+| Session | Setting                | Success | Success time (median) | Stall per trial | 0.7–3 Hz share | Reversals at pick-up | Right-hand targets |
+| ------- | ---------------------- | ------- | --------------------- | --------------- | -------------- | -------------------- | ------------------ |
+| s16     | blend 0.3 (as s08)     | 8/10    | 14.6 s                | 0.2 s           | 0.90           | 2.68 / s             | −0.72 / +1.55 rad  |
+| s15     | `--chunk-anchor-s 1.0` | 8/10    | 12.4 s                | 0.0 s           | 0.69           | 2.01 / s             | −0.72 / +1.55 rad  |
+
+- Same success (s16: 2 drops; s15: 2 missed grasps). With anchoring there are no stalls, s08's speed comes back, and the
+  pick-up is steadier (fewer joint reversals, less 0.7–3 Hz wobble). The user saw more unstable output with the blend,
+  in unseen scenes and during the pick-up. The hand targets stay in range with the fixed code.
+- **Decision (user, 2026-10-23): anchoring τ 1.0 is the default.** PR #46 merged (`ec0f5750`); the real-robot
+  launcher passes `--chunk-anchor-s 1.0` (`ANCHOR_S`, 0 = off); the streamer's own default stays 0, so sims are
+  unchanged. Reference setup: `wbt_groot_handover261015_he_full` + anchoring 1.0.
+
 ## Incidents
 
 - **GPU 7 shared (10-02 12:17 UTC).** Session `lerobot-f0` started `groot_joint28_ho5_official_full` (40 GB) on
