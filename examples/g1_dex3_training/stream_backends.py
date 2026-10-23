@@ -388,12 +388,14 @@ class SonicBackend:
             stop.set()
             thread.join()
 
-    def hold_for_operator(self, prompt: str | None = None):
+    def hold_for_operator(self, prompt: str | None = None) -> bool:
         """Keep streaming the last token and hands (hands stay closed on a held bottle) until the operator has cleared
         the space and pressed Enter: the blend back to the rest pose sweeps the raised arm down (G1: into the box on
-        the table). Without usable stdin, hold until Ctrl-C. --gate-dir runs (sims) do not stop here."""
+        the table). Without usable stdin, hold until Ctrl-C. --gate-dir runs (sims) do not stop here.
+        Returns True for Enter (or a gate-dir run) and False for Ctrl-C: a cancel is no clearance confirmation, so
+        callers that would move into the box space (raise or go to the ready pose) must not move on it (PR #48)."""
         if self.a.gate_dir is not None:
-            return
+            return True
         token, hands = self.last_sent, self.last_hands
         flush_stdin()
         say(
@@ -408,12 +410,20 @@ class SonicBackend:
                 if usable:
                     pressed = enter_pressed(pending)
                     if pressed:
-                        return
+                        return True
                     if pressed is None:
                         usable = False
                         say("[streamer] stdin unusable: holding the current pose until Ctrl-C")
         except KeyboardInterrupt:
-            say("[streamer] Ctrl-C: returning to the initial pose")
+            say("[streamer] Ctrl-C")
+        return False
+
+    def raise_to_ready(self, prompt: str):
+        """--ready-pose session start: hold until Enter, then raise to the ready pose. Ctrl-C does not raise the arm: it
+        raises KeyboardInterrupt into the session cleanup (hold, then stance and planner mode)."""
+        if not self.hold_for_operator(prompt):
+            raise KeyboardInterrupt
+        self.go_ready()
 
     def finish(self, to_ready: bool = False):
         """End of an episode. to_ready (--ready-pose, all but the last trial): hold, then go to the ready pose and stay
@@ -421,16 +431,18 @@ class SonicBackend:
         a, startup = self.a, self.startup
         say(f"[streamer] token slew limit active on {self.slewed} ticks so far")
         if to_ready and self.ready is not None:
-            self.hold_for_operator(
+            if not self.hold_for_operator(
                 "[streamer] holding the current pose: press Enter to move to the ready pose (hand over the table)"
-            )
+            ):
+                raise KeyboardInterrupt  # cancelled: the session cleanup holds again, then stance + planner
             self.go_ready()
             return
         if self.at_ready and self.stance is not None:  # session end: from the ready pose down to the stance
             self.rest_token, self.rest_hands = self.stance
             self.at_ready = False
         rest_token, rest_hands = self.rest_token, self.rest_hands
-        self.hold_for_operator()
+        if not self.hold_for_operator():
+            say("[streamer] returning to the initial pose")
         last_token, last_hands = self.last_sent, self.last_hands
         for i in ticks(
             50

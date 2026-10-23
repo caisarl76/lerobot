@@ -12,12 +12,18 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
-import pandas as pd
+
+from lerobot.utils.import_utils import _pandas_available, require_package
+
+if TYPE_CHECKING or _pandas_available:
+    import pandas as pd
 
 
 def ready_pose(root: Path, episode: int) -> dict:
+    require_package("pandas", extra="dataset")
     files = sorted(root.glob("data/*/*.parquet"))
     df = pd.concat(pd.read_parquet(f) for f in files)
     g = df[df.episode_index == episode]

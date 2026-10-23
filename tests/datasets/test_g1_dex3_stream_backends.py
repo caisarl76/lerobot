@@ -143,6 +143,68 @@ class DecoupledBackendTests(unittest.TestCase):
 
 
 class SonicBackendTests(unittest.TestCase):
+    def _ready_backend(self):
+        """A backend in POSE mode at the stance with a ready pose, interactive (no gate dir), as in PR #48's review."""
+        pub = FakePub()
+        a = SimpleNamespace(
+            action_space="sonic78", max_token_step=0.0, gate_dir=None, ready_pose=None, end="planner",
+            handoff_blend_s=0.2,
+        )  # fmt: skip
+        b = SonicBackend(a, pub, None, lambda *a, **kw: None, 30, None)
+        b.pose = True
+        b.ready = (np.full(64, 0.25, np.float32), np.zeros(14, np.float32))
+        b.last_sent, b.last_hands = np.zeros(64, np.float32), np.zeros(14, np.float32)
+        b.stance = (b.last_sent.copy(), b.last_hands.copy())
+        b.planner = b.last_sent.copy()
+        return b, pub
+
+    def _no_wait(self, enter):
+        """Patch the hold loop: no sleeping, no stdin; enter_pressed behaves as `enter` (a value or an exception)."""
+        side = {"side_effect": enter} if isinstance(enter, type) else {"return_value": enter}
+        return contextlib.ExitStack(), [
+            mock.patch.object(stream_backends, "ticks", lambda n: iter(range(min(n, 1000)))),
+            mock.patch.object(stream_backends, "flush_stdin"),
+            mock.patch.object(stream_backends, "enter_pressed", **side),
+            contextlib.redirect_stdout(io.StringIO()),
+        ]
+
+    def test_hold_for_operator_tells_enter_from_ctrl_c(self):
+        for enter, confirmed in ((True, True), (KeyboardInterrupt, False)):
+            b, _ = self._ready_backend()
+            stack, patches = self._no_wait(enter)
+            with stack:
+                for cm in patches:
+                    stack.enter_context(cm)
+                self.assertIs(b.hold_for_operator(), confirmed)
+
+    def test_ctrl_c_at_the_raise_prompt_does_not_raise_the_arm(self):
+        b, pub = self._ready_backend()
+        stack, patches = self._no_wait(KeyboardInterrupt)
+        with stack:
+            for cm in patches:
+                stack.enter_context(cm)
+            with self.assertRaises(KeyboardInterrupt):
+                b.raise_to_ready("clear the space, then press Enter to raise")
+        self.assertFalse(b.at_ready)
+        np.testing.assert_allclose(b.last_sent, 0.0)  # still the stance: no move toward the ready token
+
+    def test_ctrl_c_at_the_trial_end_hold_goes_to_cleanup_not_to_the_ready_pose(self):
+        b, pub = self._ready_backend()
+        b.at_ready, (b.rest_token, b.rest_hands) = True, b.ready
+        b.last_sent = np.full(64, 0.6, np.float32)  # where the trial ended
+        stack, patches = self._no_wait(KeyboardInterrupt)
+        with stack:
+            for cm in patches:
+                stack.enter_context(cm)
+            with self.assertRaises(KeyboardInterrupt):
+                b.finish(to_ready=True)
+            np.testing.assert_allclose(b.last_sent, 0.6)  # held: no move to the ready pose
+            self.assertTrue(b.pose)
+            b.finish()  # the session cleanup: hold again; a second Ctrl-C returns to the stance and hands back (#43)
+        self.assertFalse(b.pose or b.at_ready)
+        np.testing.assert_allclose(b.last_sent, 0.0, atol=1e-6)  # the stance / planner token
+        self.assertEqual(decode(pub.sent[-1]), ("command", 1, 1))
+
     def test_ready_pose_session_waits_over_the_table_between_trials(self):
         """--ready-pose (2026-10-23): trials end at a recorded ready pose (hand over the box) and the next trial starts
         from it, so the arm never sweeps down through the box between trials; only the session start (raise) and end

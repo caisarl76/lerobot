@@ -1016,10 +1016,9 @@ def main():
                 if (
                     getattr(backend, "ready", None) is not None
                 ):  # session start: raise to the ready pose first
-                    backend.hold_for_operator(
+                    backend.raise_to_ready(
                         "[streamer] clear the space over the table, then press Enter to raise the arm to the ready pose"
                     )
-                    backend.go_ready()
                     with backend.holding():
                         gate(f"ready.{trial}", a.gate_dir, f"trial {trial + 1}/{a.trials}: ", consume=True)
             start_trial_input(a.gate_dir, trial)
