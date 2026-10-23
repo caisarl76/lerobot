@@ -143,6 +143,47 @@ class DecoupledBackendTests(unittest.TestCase):
 
 
 class SonicBackendTests(unittest.TestCase):
+    def test_ready_path_raises_and_lowers_along_the_recorded_trajectory(self):
+        """--ready-pose with raise/lower paths (2026-10-24): the session start plays the recorded raise (not a direct
+        stance -> ready blend through the box space) and the session end plays the re-encoded lowering."""
+        pub, rec, state = FakePub(), Recorder(), FakeState()
+        n = 20
+        raise_t = np.linspace(0.0, 0.2, n)[:, None].repeat(64, 1).astype(np.float32)
+        lower_t = raise_t[::-1].copy()
+        with backend_env() as gd:
+            path = gd / "ready.npz"
+            np.savez(
+                path, token=np.full(64, 0.3, np.float32), hands=np.zeros(14, np.float32),
+                raise_tokens=raise_t, raise_hands=np.zeros((n, 14), np.float32),
+                lower_tokens=lower_t, lower_hands=np.zeros((n, 14), np.float32),
+            )  # fmt: skip
+            a = SimpleNamespace(
+                handoff_blend_s=1.5, start="planner", end="planner", max_token_step=0.0, action_space="sonic78",
+                chunk_anchor_s=0.0, ready_pose=path, gate_dir=gd,
+            )  # fmt: skip
+            b = SonicBackend(a, pub, state, rec, 30, None)
+            b.start()
+            k = len(rec.rows)
+            b.raise_to_ready("raise")
+            phases = [r.phase for r in rec.rows[k:]]
+            self.assertEqual(phases, ["to raise start"] * 50 + ["raise"] * n + ["to ready"] * 50)
+            np.testing.assert_allclose(
+                rec.rows[k + 49].token, raise_t[0], atol=1e-6
+            )  # blend ends on the path start
+            for i in range(n):  # the recorded raise, one row per 50 Hz tick
+                np.testing.assert_allclose(rec.rows[k + 50 + i].token, raise_t[i], atol=1e-6)
+            np.testing.assert_allclose(b.last_sent, 0.3, atol=1e-6)
+            k = len(rec.rows)
+            b.finish()  # session end
+            phases = [r.phase for r in rec.rows[k:]]
+            self.assertEqual(phases[: 50 + n], ["to lower start"] * 50 + ["lower"] * n)
+            for i in range(n):
+                np.testing.assert_allclose(rec.rows[k + 50 + i].token, lower_t[i], atol=1e-6)
+            self.assertEqual(
+                phases[50 + n], "blend out"
+            )  # then the 1 s blend to the stance and the hand-back
+            self.assertEqual(decode(pub.sent[-1]), ("command", 1, 1))
+
     def _ready_backend(self):
         """A backend in POSE mode at the stance with a ready pose, interactive (no gate dir), as in PR #48's review."""
         pub = FakePub()
