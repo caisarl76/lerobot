@@ -19,7 +19,9 @@
 #
 # e.g. g1_groot_real_run.sh stream run20_he_groot_official_laptop_t0 "close a laptop g1"
 # Env: MODEL (checkpoint dir), GPU, PORT, NOISE_SCALE (default 0; empty = unscaled sampling), BLEND_S (streamer
-#      --chunk-blend-s, default 0.3; 0 = runs 20-21), CAM_FPS (default 30),
+#      --chunk-blend-s, default 0.3; 0 = runs 20-21), ANCHOR_S (streamer --chunk-anchor-s, default 1.0 since 2026-10-23:
+#      s15 vs s16 with the s08 model, no stalls and a steadier pick-up; overrides the blend for the token; 0 = off),
+#      CAM_FPS (default 30),
 #      POLICY_FPS (50 for the G1 WBT models; needs the PC2 streamer copy with --policy-fps),
 #      POLICY_SUBDIR (default pretrained_model), BACKBONE_DTYPE (default bfloat16, GR00T only; empty for others).
 set -e
@@ -28,7 +30,7 @@ MODEL=${MODEL:-/mnt/data/jihun/g1_models/he_groot_sonic78sonicstate_ho5_official
 # seams (runs 24-27, jerk p95 214-276 vs 315-514 without blend); blend 0.5 s similar (run 28); noise 0.5 was jerky inside
 # the chunks (run 29, jerk p95 669), so the default is back to 0. At noise 0 the arm can stall after ~15 s; if that
 # becomes the main problem, raise the noise only while the arm is stalled (impl log 10, option 4; not implemented).
-GPU=${GPU:-1}; PORT=${PORT:-5560}; NOISE_SCALE=${NOISE_SCALE-0}; BLEND_S=${BLEND_S-0.3}
+GPU=${GPU:-1}; PORT=${PORT:-5560}; NOISE_SCALE=${NOISE_SCALE-0}; BLEND_S=${BLEND_S-0.3}; ANCHOR_S=${ANCHOR_S-1.0}
 POLICY_SUBDIR=${POLICY_SUBDIR:-pretrained_model}  # pretrained_model_ema for Pi0.5
 BACKBONE_DTYPE=${BACKBONE_DTYPE-bfloat16}  # GR00T only; set empty (BACKBONE_DTYPE=) for other policies
 CAM_FPS=${CAM_FPS:-30}  # camera publish rate; capture is 30 Hz, so 30 is the max (server default 10)
@@ -64,13 +66,13 @@ stream)
   RUN=${2:?run name, e.g. run20_he_groot_official_laptop_t0}; TASK=${3:-close a laptop g1}; shift $(($# < 3 ? $# : 3))
   ssh -t pc2_222 "cd ~/g1_sonic_eval/code && ../.venv/bin/python -u sonic_policy_streamer.py \
     --policy-server tcp://$WS:$PORT --images zmq --camera-host localhost --task '$TASK' \
-    --start planner --end planner --duration-s 30 --replan-s 0.4 --max-token-step 0.1 ${BLEND_S:+--chunk-blend-s $BLEND_S} \
+    --start planner --end planner --duration-s 30 --replan-s 0.4 --max-token-step 0.1 ${BLEND_S:+--chunk-blend-s $BLEND_S} ${ANCHOR_S:+--chunk-anchor-s $ANCHOR_S} \
     ${POLICY_FPS:+--policy-fps $POLICY_FPS} --log ../runs/$RUN.npz $* 2>&1 | tee ../runs/$RUN.log" ;;
 session)
   SESSION=${2:?session name, e.g. s01_he_groot_laptop}; TASK=${3:-close a laptop g1}; shift $(($# < 3 ? $# : 3))
   ssh -t pc2_222 "mkdir -p ~/g1_sonic_eval/sessions && cd ~/g1_sonic_eval/code && ../.venv/bin/python -u sonic_policy_streamer.py \
     --policy-server tcp://$WS:$PORT --images zmq --camera-host localhost --task '$TASK' \
-    --start planner --end planner --duration-s ${MAX_S:-120} --replan-s 0.4 --max-token-step 0.1 ${BLEND_S:+--chunk-blend-s $BLEND_S} \
+    --start planner --end planner --duration-s ${MAX_S:-120} --replan-s 0.4 --max-token-step 0.1 ${BLEND_S:+--chunk-blend-s $BLEND_S} ${ANCHOR_S:+--chunk-anchor-s $ANCHOR_S} \
     ${POLICY_FPS:+--policy-fps $POLICY_FPS} --trials ${TRIALS:-10} --session-dir ../sessions/$SESSION $* \
     2>&1 | tee -a ../sessions/$SESSION.log" ;;
 pull)
