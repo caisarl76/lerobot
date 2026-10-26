@@ -153,6 +153,7 @@ range clamped to stand on the case: `BOTTLE=0.3675,-0.005 BOTTLE_JITTER=0.0525,0
 | --- | --- | --- | --- | --- | --- |
 | GR00T he (`wbt_groot_he_full`) | s03 | **8/20** (40%, 95% CI 22-61%) | 6/9 / 2/11 | 11 knocked over, 1 dropped | 6/11 (s05-s07) |
 | Pi0.5 he (`wbt_pi05_he_full`, EMA) | s03 | **14/20** (70%, 48-85%) | 8/9 / 6/11 | 5 knocked over, 1 missed | 3/5 (operator score) |
+| **GR00T handover261015 he (the model to use; robot s08 9/10, s15 8/10, s17 9/10)** | s03, 7.5 fps, s17 streamer args (chunk anchoring 1.0) | **0/20** (0-16%) | 0/9 / 0/11 | 15 knocked over, 3 missed grasp, 1 dropped, 1 no reach | 9/10 |
 | GR00T handover261020 he (robot s10 model) | s03 | **0/20** (0-16%) | 0/9 / 0/11 | 11 missed grasp, 6 knocked over, 3 no reach | 8/10 (s10) |
 | GR00T handover261020 he | s10 | **0/20** (0-16%) | 0/9 / 0/11 | 15 no reach, 3 knocked over, 2 missed | 8/10 (s10) |
 
@@ -160,6 +161,14 @@ range clamped to stand on the case: `BOTTLE=0.3675,-0.005 BOTTLE_JITTER=0.0525,0
   still ranks Pi0.5 above GR00T he, the opposite of the robot impression, but the intervals overlap and the robot
   scores come from few trials. GR00T's knock-overs concentrate on bottles on the robot's right and centre, where the
   right hand's path crosses the bottle top first.
+- **The 261015 model (2026-10-26/27) fails the same way.** Same 20 placements, still s03 composite at 7.5 fps (15 fps
+  lagged 1.3 s next to another session's sim), 8 cores, server on GPU host GPU 3 (GPU 2 was full), streamer args of
+  robot session s17 (`--chunk-anchor-s 1.0`, camera-age and token-echo watchdogs; main merged into this branch,
+  7cfe6a761): 0/20; at 15 of the placements GR00T he or Pi0.5 succeeded. At (0.400, +0.066) it moves at about half the
+  old GR00T's token speed (2.9 vs 5.1 per s), never commands the right hand closed (old GR00T: closes at 4.2 s to 1.53)
+  and pushes the bottle over after 11 s. Both models trained with the 10-14 recordings behave like this on rendered
+  pixels; the s10 model grasped with real frames (4/6). Next: the sim robot's look (silver forearm and wrist, Dex3
+  shading) and the bottle's look.
 - **The s10 model fails in sim, and not because of the room.** With the s03 background it moves little and never
   closes the hand; with an s10 background (its own room: speckled floor, case turned around; `bg_s10_p9.npy`) it
   raises the hand and stops to the right of the bottle ("did not reach"), resembling the s09 model's robot failure
