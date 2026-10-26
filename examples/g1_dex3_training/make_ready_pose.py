@@ -39,7 +39,10 @@ def load_episode(root: Path, episode: int):
 def raise_path(root: Path, episode: int, ready_state: np.ndarray, sonic_dir: Path) -> dict:
     """Recorded raise of `episode` up to its frame closest to `ready_state` (arms) before the first grasp, and the
     reversed measured joint path re-encoded for lowering, both at the dataset's 50 Hz."""
-    from sonic_targets import SonicEncoder, joint_chunk_to_sonic, load_joint_limits
+    try:  # package import (examples.g1_dex3_training.make_ready_pose) or the script run from its directory
+        from .sonic_targets import SonicEncoder, joint_chunk_to_sonic, load_joint_limits
+    except ImportError:
+        from sonic_targets import SonicEncoder, joint_chunk_to_sonic, load_joint_limits
 
     g = load_episode(root, episode)
     if g.empty:
