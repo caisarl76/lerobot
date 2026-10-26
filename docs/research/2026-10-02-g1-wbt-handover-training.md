@@ -470,6 +470,37 @@ fixed anchoring (PR #46 `ef31309e`: token dims only, from the sent token):
   launcher passes `--chunk-anchor-s 1.0` (`ANCHOR_S`, 0 = off); the streamer's own default stays 0, so sims are
   unchanged. Reference setup: `wbt_groot_handover261015_he_full` + anchoring 1.0.
 
+## One attempt per trial and the ready pose (2026-10-23 to 10-26)
+
+Reference setup throughout: `wbt_groot_handover261015_he_full` + anchoring 1.0, server port 5571, 30 s cap. Session
+command, operator flow and launcher defaults: [eval-logger workflow](2026-10-13-g1-eval-logger.md), section 2.
+
+| Session | Protocol                                                          | Success | Trial length         | Grasp (median) |
+| ------- | ----------------------------------------------------------------- | ------- | -------------------- | -------------- |
+| s17     | one spot, several attempts per trial, stance start                | 9/10    | 30 s cap (multi)     | 4.9 s (first)  |
+| s18     | one spot, `--end-on-handover 1.0`, stance start                   | 10/10   | 8.6–10.9 s           | 5.2 s          |
+| s19     | 5-spot grid, end-on-handover, `--ready-pose` (direct 1 s raise)   | 10/10   | 6.8–9.1 s (#1: 17 s) | 2.6 s          |
+| s20     | as s19, recorded raise and re-encoded lowering (PR #49), 2 trials | 2/2     | 10.5 s, 10.5 s       |                |
+
+- **Bottle spots.** s08–s16 and s19 cycle the bottle over 5 spots of the black-box grid (top row `o o o`, middle
+  `o x o`, bottom `x x x`; trial i at spot i mod 5); s17 and s18 used one spot, centered between the top two rows.
+- **s17: later attempts are worse.** Every first attempt in a trial ended in a handover (grasp ~4.9 s). Later attempts
+  in the same trial were slower (grasp ~8.5 s, 20 % of the time still) and gave the only failure (trial 3, grasp
+  missed on a 2nd attempt). The training episodes end about 2 s after the release and only 20 of 94 contain a
+  re-grasp, so a second attempt starts from a state the model has rarely seen. Hence one attempt per trial: PR #47
+  `--end-on-handover` (merged `0d97a7b5`).
+- **s18: 10/10**, every trial ended by itself with "handover complete", one attempt each, no regrasps, 3 % still.
+- **s19: 10/10 on the grid from the ready pose** (PR #48, merged `a662af02`): trials end and start at a recorded pose
+  with the hand over the box, so the arm no longer sweeps down through the box after each trial. The model never
+  started from this pose in training, but trials got faster than s18 from the stance (grasp 2.6 s vs 5.2 s). In s19
+  the session start still raised the arm in a direct 1 s token blend, 0.80 rad median / 0.95 max away from any
+  recorded raise.
+- **s20: recorded raise and lowering** (PR #49, merged `a6e267c6`): the measured raise stays 0.13 rad median / 0.26
+  max from the recorded path (local MuJoCo check 0.08 / 0.19) and reaches the ready pose within 0.23 rad (sim the
+  same). The 1 s blend from the stance to the raise start is still off-path (0.99 rad; the old episodes start from
+  less bent elbows than the robot's planner stance). The session-end lowering is not logged: it runs after the last
+  trial is saved.
+
 ## Incidents
 
 - **GPU 7 shared (10-02 12:17 UTC).** Session `lerobot-f0` started `groot_joint28_ho5_official_full` (40 GB) on
