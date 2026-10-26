@@ -1,6 +1,6 @@
 # G1 Dex3 model registry
 
-Generated 2026-10-26 05:45 UTC by `examples/g1_dex3_training/model_registry.py` (regenerate it after training or deleting runs; the CSV next to this file has the same rows).
+Generated 2026-10-26 08:42 UTC by `examples/g1_dex3_training/model_registry.py` (regenerate it after training or deleting runs; the CSV next to this file has the same rows).
 Paths are host paths under `/mnt/data01/jhkim/model_weight/g1_dex3_20260922` on the named host.
 
 ## combined_261009
@@ -88,6 +88,7 @@ Paths are host paths under `/mnt/data01/jhkim/model_weight/g1_dex3_20260922` on 
 | -------------------------------------------- | --------------- | ------ | ------------------------------------ | --------- | ------ | ---- | ---------------- | --- | -------- | ---------------- | ---------------------------------------------------------------- |
 | `act_handover261020_state46_he46_full`       | act             | 78D    | 240,000 (8 × 30000, accum 1)         | 2         | 030000 | 0    | 2026-10-26 05:18 | 0.0 | h100_174 |                  | mncai/g1-wbt-handover-act-handover261020-state46-he46-full       |
 | `diffusion_handover261020_state46_he46_full` | diffusion       | 78D    | 240,000 (64 × 3750, accum 1)         | 2         | 003750 | 0    | 2026-10-26 04:51 | 0.0 | h100_174 |                  | mncai/g1-wbt-handover-diffusion-handover261020-state46-he46-full |
+| `dm05_handover261020_state46_he46_full`      | dm05            | 78D    | 240,000 (32 × 7500, accum 1)         | 2         | 007500 | 0    | 2026-10-26 08:22 | 0.0 | h100_174 |                  | mncai/g1-wbt-handover-dm05-handover261020-state46-he46-full      |
 | `fastwam_handover261020_state46_he46_full`   | fastwam         | 78D    | 240,000 (8 × 30000, accum 4)         | 2         | 030000 | 0    | 2026-10-25 01:49 | 0.0 | h100_174 |                  | mncai/g1-wbt-handover-fastwam-handover261020-state46-he46-full   |
 | `groot_handover261020_he_full`               | groot           | 78D    | 512,000 (32 × 16000, accum 1)        | 2         | 016000 | 0    | 2026-10-20 08:11 | 0.0 | h100_174 | yes              | mncai/g1-wbt-handover-groot-handover261020-he-full               |
 | `groot_handover261020_state46_he46_full`     | groot           | 78D    | 512,000 (32 × 16000, accum 1)        | 2         | 016000 | 0    | 2026-10-21 12:52 | 0.0 | h100_174 |                  | mncai/g1-wbt-handover-groot-handover261020-state46-he46-full     |
