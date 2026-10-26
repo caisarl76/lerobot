@@ -212,6 +212,22 @@ def load_ready(path: Path) -> tuple[np.ndarray, np.ndarray]:
     return token, hands
 
 
+def load_ready_path(path: Path) -> dict | None:
+    """The optional raise / lower paths of a --ready-pose .npz (make_ready_pose.py --raise-episode), 50 Hz rows:
+    raise_tokens/raise_hands (recorded, played forward) and lower_tokens/lower_hands (the reversed joint path,
+    re-encoded). None for a pose-only file."""
+    z = np.load(path)
+    keys = ("raise_tokens", "raise_hands", "lower_tokens", "lower_hands")
+    if not all(k in z for k in keys):
+        return None
+    out = {k: z[k].astype(np.float32) for k in keys}
+    for k in ("raise", "lower"):
+        t, h = out[f"{k}_tokens"], out[f"{k}_hands"]
+        if t.ndim != 2 or t.shape[1] != 64 or h.shape != (len(t), 14) or len(t) < 2:
+            raise ValueError(f"{path}: bad {k} path, tokens {t.shape}, hands {h.shape}")
+    return out
+
+
 def load_startup(path: Path) -> dict:
     """--startup-tokens .npz from sonic_table_startup.py plan: tokens/hands (and rev_*) arrays and the path's fps."""
     z = np.load(path)
@@ -243,6 +259,7 @@ class SonicBackend:
         # --ready-pose: --trials sessions wait between trials at this pose (hand over the table) instead of handing back
         ready = getattr(a, "ready_pose", None)
         self.ready = load_ready(Path(ready)) if ready else None
+        self.ready_path = load_ready_path(Path(ready)) if ready else None
         self.at_ready = False
         self.stance: tuple[np.ndarray, np.ndarray] | None = (
             None  # the take-over rest pose, for the session end
@@ -355,6 +372,17 @@ class SonicBackend:
         joint_ref = None if self.jres is None else self.jres.token_at(t_ep)
         self.send(out[:64], out[64:], "episode", t_ep, k, chunk_t0, joint_ref=joint_ref)
 
+    def _blend_to(self, token, hands, phase, n=50):
+        last_token, last_hands = self.last_sent, self.last_hands
+        for i in ticks(n):
+            w = (i + 1) / n
+            self.send((1 - w) * last_token + w * token, (1 - w) * last_hands + w * hands, phase)
+
+    def _play50(self, tokens, hands, phase):
+        """A 50 Hz path (one row per tick: the recordings' rate)."""
+        for i in ticks(len(tokens)):
+            self.send(tokens[i], hands[i], phase)
+
     def go_ready(self):
         """--ready-pose: 1 s blend from the current command to the ready pose, which then is the rest pose (the next
         trial's hold and blend in start there)."""
@@ -423,6 +451,12 @@ class SonicBackend:
         raises KeyboardInterrupt into the session cleanup (hold, then stance and planner mode)."""
         if not self.hold_for_operator(prompt):
             raise KeyboardInterrupt
+        if (
+            self.ready_path is not None
+        ):  # along the recorded raise (it cleared the box), not straight to the pose
+            path = self.ready_path
+            self._blend_to(path["raise_tokens"][0], path["raise_hands"][0], "to raise start")
+            self._play50(path["raise_tokens"], path["raise_hands"], "raise")
         self.go_ready()
 
     def finish(self, to_ready: bool = False):
@@ -437,12 +471,19 @@ class SonicBackend:
                 raise KeyboardInterrupt  # cancelled: the session cleanup holds again, then stance + planner
             self.go_ready()
             return
+        lower = None
         if self.at_ready and self.stance is not None:  # session end: from the ready pose down to the stance
             self.rest_token, self.rest_hands = self.stance
             self.at_ready = False
+            lower = self.ready_path
         rest_token, rest_hands = self.rest_token, self.rest_hands
         if not self.hold_for_operator():
             say("[streamer] returning to the initial pose")
+        if (
+            lower is not None
+        ):  # retrace the recorded raise downward (re-encoded reverse), then blend to the stance
+            self._blend_to(lower["lower_tokens"][0], lower["lower_hands"][0], "to lower start")
+            self._play50(lower["lower_tokens"], lower["lower_hands"], "lower")
         last_token, last_hands = self.last_sent, self.last_hands
         for i in ticks(
             50
