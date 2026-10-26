@@ -129,4 +129,7 @@ On 10-26 the intermediate checkpoints and the HE smoke runs were also deleted. O
 
 - Offline and robot evaluation against the 28-D models. Use the same handover protocol as the reference model in [`2026-10-15-g1-handover-261014-out-of-view.md`](./2026-10-15-g1-handover-261014-out-of-view.md).
 - A 46-D deploy path for each policy. Only GR00T has one so far (`server46` on `feat/g1-groot-official46`). Loading the VLA-JEPA models needs the tied-key fix above.
-- Check whether the HE hand-order assumption holds, for example by comparing hand closure against the HE videos. If it is wrong, the HE right hand's index and middle pairs are swapped in both the 28-D and 46-D sets.
+- Settle the HE right-hand finger order (procedure in [the caveat](./2026-09-23-sonic-roundtrip-audit.md#caveat-dex3-finger-order-in-humanoid-everyday-unverified-2026-10-21)). Exactly one of the two HE sets is wrong, so fix only that one:
+  - **Raw HE `hand_joints` are Dex3 `hand_q` slots** (the 46-D assumption): the 46-D mapping is correct. The 28-D converter's right-hand swap (`raw[[0,1,2,5,6,3,4]]`) is wrong, so the 28-D/78-D HE models have the right index and middle pairs swapped.
+  - **Raw HE stores the right hand in URDF order** (thumb, index, middle): the 28-D swap is correct. The 46-D right hand (46-D[36:43]) has its index and middle pairs swapped.
+  - Thumbs are unaffected either way.
