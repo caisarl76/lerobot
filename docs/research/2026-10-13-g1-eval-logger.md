@@ -139,7 +139,12 @@ First real session (2026-10-14, `s00_test_he_groot_laptop`, HE GR00T, "close a l
 start and end follow a recorded raise and its re-encoded reverse (robot s20: 0.13 rad median / 0.26 max from the
 recorded path; the direct blend it replaced was 0.80 / 0.95). Still direct 1 s blends, each behind a hold: the move to
 the ready pose after each trial, the move from the stance to the raise start (0.99 rad off any recorded path, robot
-s20), and the error-cleanup path.
+s20), and the error-cleanup path. Our MuJoCo check of the recorded raise and lowering had no box in the scene. VoLoAgent's loop
+sim (sim-03, 2026-10-27; case 0.845 m high, front face 0.28 m in front of the pelvis, 0.35 m wide) found the right
+thumb resting on the case's top front-right corner from the lowering through the stance, at most 1.1 mm deep (a
+resting contact, not a strike; 0 contacts during trials; 1 sample of 0.1 mm with the left index finger in the raise
+start). In that layout the stance itself hangs the right hand over the case edge, so the case has to be moved away
+before the session-end lowering (VoLoAgent `docs/artifacts/g1_handover_20261026_autonomous_loop_sim/runs/sim-03/`).
 
 - **Problem:** at every episode end (operator stop, time cap, "no valid chunk", watchdog, stale state or camera)
   `SonicBackend.finish()` (`stream_backends.py`) blends from the last sent token straight to the rest token in 1 s,
