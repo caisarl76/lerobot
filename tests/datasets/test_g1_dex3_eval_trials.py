@@ -213,6 +213,74 @@ def test_two_trial_session_against_a_fake_rig(tmp_path):
     assert "success 1/2" in r.stdout
 
 
+def test_a_46d_server_gets_sonic46_states_and_the_log_keeps_what_was_sent(tmp_path):
+    """state_dim 46 (gr00t_official_server.py): chunk requests carry stream_backends.sonic46_state of the current
+    g1_debug message, and the trial log keeps exactly the submitted states, not telemetry sampled later."""
+    ports = {k: free_port() for k in ("policy", "state", "camera", "action")}
+    ctx, stop, received = zmq.Context(), threading.Event(), []
+    key = "observation.images.egocentric"
+
+    def policy(ctx, port, stop):  # serve_policy, but 46D and keeping the state of every chunk request
+        rep = ctx.socket(zmq.REP)
+        rep.bind(f"tcp://127.0.0.1:{port}")
+        while not stop.is_set():
+            if not rep.poll(50):
+                continue
+            req = msgpack.unpackb(rep.recv(), raw=False)
+            if req["op"] == "info":
+                out = {"image_keys": [key], "n_obs": 1, "shapes": {key: [3, 48, 64]}, "model": "/m/official46",
+                       "state_dim": 46}  # fmt: skip
+            else:
+                received.append(np.asarray(req["states"][0], np.float32))
+                out = {"chunk": np.zeros((40, 78), np.float32).tobytes(), "shape": [40, 78]}
+            rep.send(msgpack.packb(out, use_bin_type=True))
+        rep.close(0)
+
+    def state(pub, i):  # telemetry that changes with every message, so a later sample never equals a sent one
+        msg = {"body_q": [i * 1e-3] + [0.0] * 28, "left_hand_q": [float(j) for j in range(7)],
+               "right_hand_q": [0.0] * 7, "token_state": [0.0] * 64, "base_quat": [1.0, 0.0, 0.0, 0.0]}  # fmt: skip
+        pub.send(b"g1_debug" + msgpack.packb(msg, use_bin_type=True))
+
+    threads = [
+        threading.Thread(target=policy, args=(ctx, ports["policy"], stop)),
+        threading.Thread(target=publish, args=(ctx, ports["state"], stop, 0.02, state)),
+        threading.Thread(target=publish, args=(ctx, ports["camera"], stop, 1 / 30, camera)),
+    ]
+    gate, session = tmp_path / "gate", tmp_path / "session"
+    gate.mkdir()
+    for name in ("deploy_ready", "settled.0"):
+        (gate / name).touch()
+    (gate / "verdict.0").write_text(json.dumps({"verdict": "success"}))  # read when the trial ends
+    for t in threads:
+        t.start()
+    try:
+        r = subprocess.run(
+            [sys.executable, str(HERE / "sonic_policy_streamer.py"),
+             "--policy-server", f"tcp://127.0.0.1:{ports['policy']}", "--images", "zmq",
+             "--camera-host", "127.0.0.1", "--camera-port", str(ports["camera"]),
+             "--deploy-host", "127.0.0.1", "--state-port", str(ports["state"]), "--action-port", str(ports["action"]),
+             "--task", "pick", "--duration-s", "3", "--start", "planner", "--end", "planner",
+             "--handoff-blend-s", "0.2", "--trials", "1", "--session-dir", str(session), "--gate-dir", str(gate)],
+            capture_output=True, text=True, timeout=240, stdin=subprocess.DEVNULL,
+        )  # fmt: skip
+    finally:
+        stop.set()
+        for t in threads:
+            t.join()
+        ctx.term()
+    assert r.returncode == 0, r.stdout[-3000:] + r.stderr[-3000:]
+    log = np.load(session / "trial_000.npz")
+    logged = log["state46"]
+    assert logged.shape[1] == 46 and len(logged) >= 3
+    assert len(log["state46_wall"]) == len(log["state46_t_ep"]) == len(logged)
+    assert np.all(np.diff(log["state46_wall"]) > 0) and np.all(np.diff(log["state46_t_ep"]) >= 0)
+    # every logged row is a state the server received, in order (the last may still have been in flight)
+    sent = [next((k for k, s in enumerate(received) if np.array_equal(s, row)), None) for row in logged[:-1]]
+    assert None not in sent and sent == sorted(set(sent)), sent
+    np.testing.assert_array_equal(logged[0][29:36], [3, 4, 5, 6, 0, 1, 2])  # Dex3 hand_q in robot-model order
+    np.testing.assert_array_equal(logged[:, 43:46], np.tile([0.0, 0.0, -1.0], (len(logged), 1)))  # upright
+
+
 # ---------------------------------------------------------------- faults during a trial: the robot is handed back
 # The deploy holds the last streamed token in POSE mode (no stream timeout in g1_deploy_onnx_ref's zmq_manager), so the
 # streamer must blend out and send PLANNER on every fault, including errors that end the process.
