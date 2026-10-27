@@ -5,7 +5,7 @@ Every VLA was retrained with the official 46-D SONIC state instead of the 28-D j
 1. A Humanoid Everyday (HE) pretrain.
 2. A fine-tune on the merged handover set, initialized from that pretrain.
 
-All 23 runs finished with exit 0 and are uploaded to private `mncai` repos. Nothing is evaluated yet, offline or on the robot.
+All 23 runs finished with exit 0 and are uploaded to private `mncai` repos. The handover fine-tunes are evaluated offline (2026-10-27, [below](#offline-evaluation-2026-10-27)); none has run on the robot yet.
 
 ## State layout and datasets
 
@@ -86,6 +86,49 @@ The policies that already had a 28-D handover fine-tune keep that recipe: GR00T,
 | Diffusion | default cosine, 500 warmup                                                             |
 | ACT       | constant lr                                                                            |
 
+## Offline evaluation (2026-10-27)
+
+`openloop_smooth.py` on held-out episodes 27 and 35, replanning every 20 frames (0.4 s at 50 Hz), with zero sampling noise (`temp:0`), as in the [10-06 comparison](./2026-10-02-g1-wbt-handover-training.md#held-out-open-loop-comparison-2026-10-06). Run on h100_174 GPU 4, each model downloaded from the Hub into its training code tree; Pi0.5 and Diffusion use their EMA weights. Std units of the dataset's action; err = mean |executed − recorded|, seam = jump at the chunk switch. The recording's step is 0.019 (tokens) and 0.009 (hands).
+
+The 28-D comparators are the merged_261020 models on `handover_bottle_merged_sonic78_50hz_261020`, the same episodes without the 46-D state.
+
+| Model                    | Tokens err | Tokens seam | Hands err | Hands seam |
+| ------------------------ | ---------- | ----------- | --------- | ---------- |
+| **state46 fine-tunes**   |            |             |           |            |
+| FastWAM                  | **0.261**  | 0.164       | 0.088     | 0.147      |
+| VLA-JEPA (replan 7)      | 0.265      | **0.106**   | 0.069     | 0.095      |
+| Psi0                     | 0.278      | 0.163       | 0.097     | 0.065      |
+| Pi0.5                    | 0.279      | 0.170       | 0.069     | 0.130      |
+| XR-1                     | 0.279      | 0.164       | 0.195     | 0.144      |
+| MolmoAct2 (random noise) | 0.280      | 0.192       | 0.085     | **0.059**  |
+| Diffusion                | 0.285      | 0.204       | 0.126     | 0.117      |
+| ACT                      | 0.290      | 0.170       | 0.120     | 0.066      |
+| DM05                     | 0.293      | 0.198       | 0.235     | 0.212      |
+| GR00T                    | 0.297      | 0.167       | **0.032** | 0.083      |
+| X-VLA                    | 0.303      | 0.196       | 0.096     | 0.141      |
+| LaWAM                    | 0.375      | 0.286       | 0.112     | 0.111      |
+| **28-D comparators**     |            |             |           |            |
+| GR00T he (robot s10)     | 0.298      | 0.172       | 0.070     | 0.146      |
+| GR00T base               | 0.320      | 0.185       | 0.075     | 0.148      |
+| LaWAM he                 | 0.369      | 0.271       | 0.115     | 0.136      |
+
+- The 46-D state doesn't change the token error: GR00T 0.297 vs 0.298 (28-D he), LaWAM 0.375 vs 0.369.
+- GR00T's hands improve with it: err 0.032 vs 0.070 and seam 0.083 vs 0.146. The 28-D GR00T he is the s10 model (8/10 on the robot).
+- All models but LaWAM fall within 0.261–0.303 on tokens. With 2 held-out episodes, differences of a few hundredths are within the noise; robot or sim runs should decide.
+- LaWAM is the worst on tokens with either state. DM05 and XR-1 have the largest hand errors (XR-1 predicts hands relative to the measured state, as in 10-06).
+- VLA-JEPA replans every 7 frames, its chunk length, so its seam isn't comparable and it has no overlap.
+- MolmoAct2 at zero noise predicts the same action for every frame of a chunk (step and curvature 0.000, token err 0.307), so it is shown with random noise.
+- GR00T he vs base keeps the 10-06 gap (0.298 vs 0.320 here, 0.315 vs 0.332 then), on a different dataset.
+
+Eval pitfalls:
+
+- **Stale eval script.** The `lerobot-g1-psi0-xr1-dev` tree on h100_174 has an old `openloop_smooth.py`: it ignores `REPLAN` and `temp:`, has no err, and doesn't skip zero-std dimensions (XR-1 hands came out at ~104 std). The eval used the `lerobot-g1-newvla-261014` copies of `openloop_smooth.py` (identical to main) and `sonic_policy_streamer.py` with each tree's policy code.
+- **FastWAM on CPU.** `ChunkPolicy` loads every policy on the CPU first and then moves it. FastWAM fixes its device when it is built, so the UMT5 token ids stay on the CPU and the eval fails with a device mismatch. Load FastWAM directly on the GPU.
+- **VLA-JEPA.** The eval copy's `config.json` sets `reinit_modules` to null, which avoids the strict-load failure above.
+- **Hub access.** The repos are private under `mncai`; a fine-grained token scoped to the user only gets 404 on them.
+
+Outputs: h100_174 `~/state46_ft/eval/results/` (runner `eval_state46.sh`, `models.tsv`).
+
 ## Per-policy 46-D changes
 
 Without these settings the state is silently cut off or misread:
@@ -127,7 +170,7 @@ On 10-26 the intermediate checkpoints and the HE smoke runs were also deleted. O
 
 ## Next
 
-- Offline and robot evaluation against the 28-D models. Use the same handover protocol as the reference model in [`2026-10-15-g1-handover-261014-out-of-view.md`](./2026-10-15-g1-handover-261014-out-of-view.md).
+- Robot evaluation against the 28-D models, starting with GR00T 46-D (the hand gain above). Use the same handover protocol as the reference model in [`2026-10-15-g1-handover-261014-out-of-view.md`](./2026-10-15-g1-handover-261014-out-of-view.md).
 - A 46-D deploy path for each policy. Only GR00T has one so far (`server46` on `feat/g1-groot-official46`). Loading the VLA-JEPA models needs the tied-key fix above.
 - Settle the HE right-hand finger order (procedure in [the caveat](./2026-09-23-sonic-roundtrip-audit.md#caveat-dex3-finger-order-in-humanoid-everyday-unverified-2026-10-21)). Exactly one of the two HE sets is wrong, so fix only that one:
   - **Raw HE `hand_joints` are Dex3 `hand_q` slots** (the 46-D assumption): the 46-D mapping is correct. The 28-D converter's right-hand swap (`raw[[0,1,2,5,6,3,4]]`) is wrong, so the 28-D/78-D HE models have the right index and middle pairs swapped.
