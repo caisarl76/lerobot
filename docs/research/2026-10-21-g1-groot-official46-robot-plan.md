@@ -55,7 +55,7 @@ PORT=5560 POLICY_FPS=50 MAX_S=30 TRIALS=10 ./g1_groot_real_run.sh session sNN_no
 ```
 
 Run `deploy` and `camera` as usual, then `pull` each session and review it in the eval logger. The official run's trial
-logs carry `state46`, the exact 46-D state the model saw, for checks against the training distribution.
+logs carry `state46`: one row per chunk request with the exact 46-D state sent to the model, plus `state46_wall` and `state46_t_ep` (when it was sent), for checks against the training distribution.
 
 ## NVIDIA's own client (cross-check, about 5 trials, after the three sessions)
 

@@ -850,7 +850,7 @@ def main():
         )
     state_dim = getattr(policy, "state_dim", 28)
     if state_dim != 28 and (a.images != "zmq" or a.rtc or policy.n_obs != 1):
-        p.error(f"a {state_dim}D-state policy server needs --images zmq (live robot state), one step and no --rtc")
+        p.error(f"a {state_dim}D-state server needs --images zmq (live robot state), one step and no --rtc")
     if a.images == "zmq":
         images = LiveImages(
             ctx, a.camera_host, a.camera_port, policy.image_keys, policy.shapes, a.stereo_camera, a.task
@@ -891,8 +891,8 @@ def main():
     log = {
         k: [] for k in ("wall", "t_ep", "phase", "frame", "token", "hands", "chunk_t0", "state", "joint_ref")
     }
-    if state_dim == 46:
-        log["state46"] = []  # what the official GR00T sees, for offline checks against its training data
+    if state_dim == 46:  # one row per chunk request: the exact state sent to the official GR00T, and when
+        log.update(state46=[], state46_wall=[], state46_t_ep=[])
     no_ref = np.full(31, np.nan, np.float32)
 
     def record(token, hands, phase, t_ep, k, chunk_t0, joint_ref):
@@ -910,8 +910,6 @@ def main():
             ("joint_ref", ref),
         ):
             log[key].append(val)  # fmt: skip
-        if state_dim == 46:
-            log["state46"].append(sonic46_state(msg) if msg else np.full(46, np.nan, np.float32))
         if msg and t_ep >= 0:
             history.append((t_ep, log["state"][-1], log["wall"][-1]))
             del history[:-200]
@@ -933,8 +931,12 @@ def main():
 
     def robot_states(t_ep):
         """Robot state at t_ep - i/fps (oldest first), nearest earlier tick; the current state if none yet."""
-        if state_dim == 46:  # official GR00T: the current 46D state, one observation step
-            return [sonic46_state(state.latest())]
+        # official GR00T: the current 46D state, one observation step, logged as it is submitted
+        if state_dim == 46:
+            now = sonic46_state(state.latest())
+            for key, val in (("state46", now), ("state46_wall", time.time()), ("state46_t_ep", t_ep)):
+                log[key].append(val)
+            return [now]
         now = observation_state(state.latest())
         out = []
         for i in reversed(range(policy.n_obs)):
