@@ -290,6 +290,31 @@ def test_cached_inference_paths_support_fullgraph_compile():
     torch.testing.assert_close(output, expected)
 
 
+def test_device_follows_moves_after_build():
+    expert_kwargs = {
+        "hidden_dim": 8,
+        "action_dim": 3,
+        "ffn_dim": 16,
+        "text_dim": 8,
+        "freq_dim": 8,
+        "eps": 1.0e-6,
+        "num_heads": 2,
+        "attn_head_dim": 4,
+        "num_layers": 1,
+        "fp32_attention": False,
+    }
+    video_expert = ActionDiT(**expert_kwargs)
+    action_expert = ActionDiT(**expert_kwargs)
+    mot = MoT(mixtures={"video": video_expert, "action": action_expert}, mot_checkpoint_mixed_attn=False)
+    model = FastWAM(
+        video_expert=video_expert, action_expert=action_expert, mot=mot, vae=nn.Identity(), text_dim=8
+    )
+    assert model.device == torch.device("cpu")
+    # Built on the CPU, then moved (as a CPU-first checkpoint load does): inputs must follow the weights.
+    model.to("meta")
+    assert model.device.type == "meta"
+
+
 class CoreWithFrozenComponents(FakeFastWAMCore):
     """Fake core mirroring the real one: frozen VAE / text encoder held as
     *unregistered* attributes (via `object.__setattr__`) so they are excluded from
