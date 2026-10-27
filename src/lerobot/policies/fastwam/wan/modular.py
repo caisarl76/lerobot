@@ -907,12 +907,17 @@ class FastWAM(torch.nn.Module):
         self.train_scheduler = self.train_video_scheduler
         self.infer_scheduler = self.infer_video_scheduler
 
-        self.device = torch.device(device)
         self.torch_dtype = torch_dtype
         self.loss_lambda_video = float(loss_lambda_video)
         self.loss_lambda_action = float(loss_lambda_action)
 
-        self.to(self.device)
+        self.to(torch.device(device))
+
+    @property
+    def device(self) -> torch.device:
+        # Read from the weights, not stored at build time: a model built on the CPU and moved with `.to()` must send
+        # its inputs (text token ids, latents) to where the weights went.
+        return next(self.mot.parameters()).device
 
     @classmethod
     def from_wan22_pretrained(
