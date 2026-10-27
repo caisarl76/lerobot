@@ -1,5 +1,5 @@
 """Isaac Lab scene for the sim hosts, with the interface of sim_scene.Scene (MuJoCo): G1 29 + Dex3 from
-g1_29dof_with_hand.urdf (the twin of gear_sonic's MuJoCo model), the optional tabletop, a bottle, and the head
+Unitree's g1_29dof_with_hand_rev_1_0.urdf (unitree_ros, as in gear_sonic/data/robots/g1), the optional tabletop, a bottle, and the head
 camera (D435 mount on torso_link, 640 x 480 at 30 Hz, published like g1_head_camera_server.py as "egocentric").
 
 The SONIC deploy talks to this scene exactly as to gear_sonic's MuJoCo sim: Unitree DDS on lo through gear_sonic's
@@ -40,7 +40,10 @@ except ImportError:
 GEAR_ROOT = Path(os.environ.get("GEAR_ROOT", Path.home() / "work" / "GR00T-WholeBodyControl"))
 # cyclonedds 0.10.2 for Python 3.11 is built from source against this install; the system libddsc is older
 CYCLONEDDS_LIB = Path(os.environ.get("CYCLONEDDS_LIB", Path.home() / "work" / "cyclonedds_v0.10.2" / "lib"))
-URDF = GEAR_ROOT / "gear_sonic/data/robot_model/model_data/g1/g1_29dof_with_hand.urdf"
+# Unitree's official G1 + Dex3 model (unitree_ros, identical up to the material declarations). Runs to 2026-10-27 used
+# gear_sonic robot_model's older g1_29dof_with_hand.urdf: same arm and head-camera kinematics in the world, but a
+# 1.8 kg heavier torso, torso_link 1 cm higher and the thumb_1 limit -0.72 instead of -0.61 rad
+URDF = GEAR_ROOT / "gear_sonic/data/robots/g1/g1_29dof_with_hand_rev_1_0.urdf"
 CAMERA_JSON = Path(__file__).parent / "cameras" / "d435i_head.json"
 FPS, W, H = 30, 640, 480
 CAMERA_FPS = float(os.environ.get("HEAD_CAMERA_FPS", FPS))  # e.g. 15 for COMPOSITE_BG: its extra render pass lags at 30
@@ -74,6 +77,14 @@ MUJOCO_ACTUATORS = BODY[:15] + BODY[15:22] + DEX3_MOTORS[:7] + BODY[22:] + DEX3_
 HAND_PERM = [DEX3_MOTORS.index(n) for n in HANDS]
 assert (len(BODY), len(DEX3_MOTORS) // 2) == (NB, NH), "dds_publisher layout differs from BODY / DEX3_MOTORS"  # bridge order -> dataset order (sim_scene records HANDS)
 CAMERA_KEYS = ("parent", "pos", "rot_wxyz", "width", "height", "fx", "fy", "cx", "cy")
+
+
+def robot_look(link: str) -> str:
+    """The material a robot link renders with: the URDF's dark parts, the black Dex3 (from the wrist_yaw motor on), metal."""
+    if "_hand_" in link or link.endswith("wrist_yaw_link"):
+        return "dex3_black"
+    return "g1_dark" if link in ("pelvis", "left_hip_pitch_link", "right_hip_pitch_link", "left_ankle_roll_link",
+                                 "right_ankle_roll_link") else "g1_metal"
 
 
 def sample_bottle_xy(seed: int, center, jitter_m) -> np.ndarray:
@@ -237,7 +248,7 @@ class Scene:
                 spawn=sim_utils.UrdfFileCfg(
                     asset_path=str(URDF), fix_base=False, merge_fixed_joints=True, activate_contact_sensors=True,
                     # one conversion reused by every run (default: a new timestamped dir per run, ~35 MB each)
-                    usd_dir=os.environ.get("ISAAC_USD_DIR", "/tmp/IsaacLab/g1_29dof_with_hand") + (
+                    usd_dir=os.environ.get("ISAAC_USD_DIR", f"/tmp/IsaacLab/{URDF.stem}") + (
                         "_decomp" if COLLIDER == "convex_decomposition" else ""),
                     collider_type=COLLIDER,
                     joint_drive=sim_utils.UrdfConverterCfg.JointDriveCfg(
@@ -310,11 +321,16 @@ class Scene:
 
             UsdPhysics.MassAPI(stage.GetPrimAtPath("/World/envs/env_0/Bottle")).CreateCenterOfMassAttr(
                 Gf.Vec3f(0.0, 0.0, float(os.environ["BOTTLE_COM_Z"]) - BOTTLE_H / 2))
-        # the real Dex3 hands are black; the URDF meshes render white
-        black = sim_utils.PreviewSurfaceCfg(diffuse_color=(0.03, 0.03, 0.03), roughness=0.4)
-        black.func("/World/Looks/dex3_black", black)
-        for path in sim_utils.find_matching_prim_paths("/World/envs/env_0/Robot/.*_(hand_.*|wrist_yaw)_link"):
-            sim_utils.bind_visual_material(path, "/World/Looks/dex3_black")
+        # Isaac's URDF importer drops the URDF colours (every link renders white): satin aluminium for the G1's shell (the
+        # head-camera forearm 163 vs the real 192-210 grey levels; gear_sonic g1_29dof_textured.usd's 0.575 / 0.9 / 0.25
+        # renders it at 140, 0.9 / 0.2 looks like white plastic), its textured dark parts, and the black Dex3 hands
+        looks = {"g1_metal": sim_utils.PreviewSurfaceCfg(diffuse_color=(0.85,) * 3, metallic=0.4, roughness=0.4),
+                 "g1_dark": sim_utils.PreviewSurfaceCfg(diffuse_color=(0.105,) * 3, metallic=0.85, roughness=0.3),
+                 "dex3_black": sim_utils.PreviewSurfaceCfg(diffuse_color=(0.03, 0.03, 0.03), roughness=0.4)}  # fmt: skip
+        for name, look in looks.items():
+            look.func(f"/World/Looks/{name}", look)
+        for path in sim_utils.find_matching_prim_paths("/World/envs/env_0/Robot/.*"):
+            sim_utils.bind_visual_material(path, f"/World/Looks/{robot_look(path.rsplit('/', 1)[1])}")
         k = [cam["fx"], 0.0, cam["cx"], 0.0, cam["fy"], cam["cy"], 0.0, 0.0, 1.0]
         # COMPOSITE_BG=<real head frame .npy, the camera server's array convention>: publish the rendered robot and bottle
         # over it (a test of the rendered scene's look; the case and room come from the real frame)

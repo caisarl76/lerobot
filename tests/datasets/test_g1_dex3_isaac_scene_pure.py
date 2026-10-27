@@ -117,3 +117,15 @@ def test_look_at_points_the_camera_x_axis_at_the_target():
     R = isc.quat_wxyz_to_matrix(isc.look_at_wxyz(pos, target))
     np.testing.assert_allclose(R[:, 0], (target - pos) / np.linalg.norm(target - pos), atol=1e-9)  # x forward
     assert abs(R[2, 1]) < 1e-9 and R[2, 2] > 0  # no roll: y stays horizontal, z up
+
+
+def test_robot_look_follows_the_real_g1_finish():
+    assert isc.robot_look("right_hand_index_1_link") == isc.robot_look("left_wrist_yaw_link") == "dex3_black"
+    assert isc.robot_look("pelvis") == isc.robot_look("left_hip_pitch_link") == "g1_dark"
+    assert isc.robot_look("right_elbow_link") == isc.robot_look("torso_link") == "g1_metal"
+
+
+def test_head_camera_mount_matches_the_official_urdf():
+    cam = isc.load_camera(isc.CAMERA_JSON)  # Unitree g1_29dof_with_hand_rev_1_0.urdf d435_joint on torso_link
+    assert isc.URDF.name == "g1_29dof_with_hand_rev_1_0.urdf"
+    np.testing.assert_allclose(cam["pos"], [0.0576235, 0.01753, 0.42987])
