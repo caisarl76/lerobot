@@ -12,7 +12,9 @@ Two steps, so nothing has to be installed on the hosts:
     ... collect h100 ... -> ... upload h100 mncai [run ...]
   render   (on the workstation): merge the hosts' JSON lines with the local model copies into a table
     python model_registry.py render --local /mnt/data/jihun/g1_models --out docs/research/g1-model-registry \
-      h100.jsonl h100_174.jsonl
+      h100.jsonl h100_174.jsonl docs/research/g1-model-registry-isaac.jsonl
+           The last file holds hand-written records in the same format for runs trained outside LeRobot
+           (Isaac-GR00T); keep it up to date by hand.
 
 Columns: run name, dataset group (base folder), policy type, action space, dataset root, held-out episodes
 excluded, samples = micro-batch x steps (LeRobot steps count micro-batches; accumulation only groups them into updates), final step, exit status, finished (UTC), weight size, host path,
@@ -196,7 +198,9 @@ def render(paths: list[str], local: list[str], out: str) -> None:
     ]
     copies = local_copies(local)
     for r in records:
-        r["workstation_copy"] = " ".join(copies.get((r["run"], r["dataset"]), []))
+        r["workstation_copy"] = " ".join(copies.get((r["run"], r["dataset"]), [])) or r.get(
+            "workstation_copy", ""
+        )
         r["hf_repo"] = f"https://huggingface.co/{repo_id(r)}" if uploadable(r) else ""
     records.sort(key=lambda r: (r["group"], r["policy"] or "", r["run"], r["host"]))
     with open(f"{out}.csv", "w", newline="") as f:
