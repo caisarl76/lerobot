@@ -26,7 +26,7 @@ The three robot comparisons:
    Merge it, or run from it, then copy the streamer files to PC2 with `g1_groot_real_run.sh sync`. The streamer stays compatible with 28-D servers (`state_dim` defaults to 28).
 3. **Workstation environments.**
    - Official model: `/mnt/data/jihun/venvs/isaac-gr00t-2a08eec` with source `/mnt/data/jihun/code/isaac-gr00t-2a08eec`. These are the `server46` defaults.
-   - LeRobot models (`server`): `uv run --project ../..` from a checkout that has a synced env. Running `server` from a worktree without one makes uv build a partial `.venv` there. One was left at `.claude/worktrees/g1-official46/.venv`; delete it.
+   - LeRobot models (`server`): `uv run --project ../..` from a checkout that has a synced env. Running `server` from a worktree without one makes uv build a partial `.venv` there (one was made and deleted on 2026-10-21).
 4. **GPU, one model at a time.** GPU 1 (RTX 3060, 12 GB) holds one model:
    - LeRobot GR00T needs about 9.4 GB.
    - The official model needs about 7.4 GB at 0.13 s per chunk.
@@ -38,19 +38,19 @@ The three robot comparisons:
 - `POLICY_FPS=50 MAX_S=30 TRIALS=10`, one attempt per trial, task `pick drink bottle from the table and handover`.
 - Defaults: noise 0, `--chunk-blend-s 0.3`, replan 0.4 s.
 - Use the same table, bottle and placement for all models, and alternate the order if more than one day is used.
-- Suggested session names (continue from s12): s13 official46, s14 no-HE, s15 s10 rerun. Rerunning s10 on the same day controls for day effects; s11 and s12 showed run-to-run variance from the stall issue.
+- Use the next free session numbers (s13–s15 have since been used for the chunk-anchoring sessions): official46, no-HE, then an s10 rerun the same day. Rerunning s10 controls for day effects; s11 and s12 showed run-to-run variance from the stall issue.
 
 ```bash
 cd examples/g1_dex3_training
 # official 46-D through our streamer
 MODEL=/mnt/data/jihun/g1_models/wbt_groot_official46_handover261020_base_20k GPU=1 PORT=5562 NOISE_SCALE=0 \
   ./g1_groot_real_run.sh server46
-PORT=5562 POLICY_FPS=50 MAX_S=30 TRIALS=10 ./g1_groot_real_run.sh session s13_official46_handover \
+PORT=5562 POLICY_FPS=50 MAX_S=30 TRIALS=10 ./g1_groot_real_run.sh session sNN_official46_handover \
   "pick drink bottle from the table and handover"
 PORT=5562 ./g1_groot_real_run.sh stop
 # no-HE control (then s10 the same way, with its MODEL)
 MODEL=/mnt/data/jihun/g1_models/wbt_groot_handover261020_base_full GPU=1 PORT=5560 ./g1_groot_real_run.sh server
-PORT=5560 POLICY_FPS=50 MAX_S=30 TRIALS=10 ./g1_groot_real_run.sh session s14_nohe_handover \
+PORT=5560 POLICY_FPS=50 MAX_S=30 TRIALS=10 ./g1_groot_real_run.sh session sNN_nohe_handover \
   "pick drink bottle from the table and handover"
 ```
 
