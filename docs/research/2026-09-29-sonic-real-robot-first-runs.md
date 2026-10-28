@@ -135,9 +135,38 @@ open-loop predictions are already jerky. See the open issue
 
 ## Known issues
 
-- **Open: GR00T predictions are jerky although the dataset replays smoothly** (possibly undertraining: batch 4, 40K
-  steps ≈ 9 % of one pass over HE), see
-  [`2026-09-29-issue-groot-jerky-predictions.md`](./2026-09-29-issue-groot-jerky-predictions.md).
+- **Resolved for inference (2026-10-08): GR00T jerky motion.** The jumps came from switching chunks in one tick;
+  noise scale 0 plus `--chunk-blend-s 0.3` is smooth on the robot (runs 24-28), and `g1_groot_real_run.sh` defaults to
+  it. See [`2026-09-29-issue-groot-jerky-predictions.md`](./2026-09-29-issue-groot-jerky-predictions.md).
+- **Open, for future research: the HE GR00T closes the laptop only part way** ("close a laptop g1", runs 20-29).
+  - With the smooth setting the arm moves for ~15 s, then stops and stays still to the end of the 30 s episode (mean
+    arm speed per 5 s window drops to ~0.01 rad/s in runs 24, 26, 27, 28); the episode length is not the limit.
+  - Noise scale 0.5 keeps the arm moving longer (~20 s, run 29) but is jerky inside the chunks, so it is not a fix.
+  - Leading hypothesis (user, 2026-10-08): **the visual difference between the HE recordings and the current
+    inference scene.** The camera geometry matches (D435i 640×480 = HE `egocentric`, see "Head camera"), so the gap
+    would be in appearance: room, lighting, table, laptop model and its position, background. A policy that no longer
+    recognises the scene would stall in a "done-looking" pose instead of finishing.
+  - Ways to test it: (1) put HE frames of the same task next to live D435i frames (and compare image statistics);
+    (2) open loop, feed the recorded robot-run frames to the policy and compare its chunks with those for HE frames
+    of the same phase; (3) rearrange the scene closer to HE (laptop model/pose, table, light) and rerun;
+    (4) fine-tune on a few robot demonstrations or train with stronger appearance augmentation.
+  - **Findings (2026-10-09, before any live frame):**
+    - The HE scene is very consistent over the 40 demos (episodes 79-118, ~6-8 s each): one silver/black Dell laptop
+      open at a narrow angle, close to the camera and centred, beige table, grey tiled floor, a black pole on the left,
+      bright diffuse light; the right hand comes in from the right and presses the lid's top edge.
+    - The robot's joint state stays inside HE's per-joint q01-q99 throughout runs 20-29 (only finger joints LH1/RH1
+      slightly out), so no single joint is out of distribution.
+    - Open-loop probe (GR00T, noise 0, HE frames of 6 laptop episodes): with HE's own state the predicted motion over a
+      chunk tracks the demos (at 75 % of the close 0.52 vs recorded 0.58 action std). With the robot's state from the
+      stalled phase (run 24, t 20 s) and the same HE images, it drops to 0.17 at 50 % and 0.13 at 75 % (recorded
+      0.55 / 0.58); early frames still give full motion. **The state, not only the image, makes GR00T stop.**
+    - The robot's stalled arm pose is closest to HE's end-of-episode ("done", arm back) pose in runs 24, 26, 27 and 28
+      (0.32-0.40 std vs ~1.1 at mid-close). So the robot plays out the demonstrated reach-press-retract in ~15 s
+      and ends in the "finished" pose without the lid closed; the press likely lands differently because the laptop
+      geometry differs from HE (position, opening angle, height), and once the arm is home the state says "done".
+    - Consistent with XR-1 trained without state closing the laptop 2/3 in the same scene.
+    - Next: (a) place the laptop as in HE (centred, close, narrow opening) and rerun; (b) a live frame to confirm the
+      geometry difference; (c) model side: train without state or with state dropout so progress comes from the image.
 - H100 GPU 7: NVIDIA's sim host segfaults during the TensorRT build (twice, ~4 min after start); GPU 6 works.
 - The VPN to H100 stalls intermittently (SSH up to 15 s); copying a 12.6 GB checkpoint took 0.5–2 h.
 - `sonic_official_sim_eval.sh` relaunches forever after a sim-host crash and hangs if the streamer dies early.
