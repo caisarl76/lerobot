@@ -168,6 +168,17 @@ def plane_homography(cam: dict, ref_pos, ref_rot, cur_pos, cur_rot, plane_z: flo
     return np.append(h, 1.0).reshape(3, 3)
 
 
+def follow_background(bg: np.ndarray, m: np.ndarray, fill: np.ndarray) -> np.ndarray:
+    """COMPOSITE_FOLLOW: bg warped by the homography m; pixels the real frame doesn't cover (the head turned past its edge)
+    come from fill, the render. BORDER_REPLICATE smeared the edge column into stripes over up to a third of the frame."""
+    import cv2
+
+    h, w = fill.shape[:2]
+    out = cv2.warpPerspective(bg, m, (w, h))
+    covered = cv2.warpPerspective(np.ones(bg.shape[:2], np.uint8), m, (w, h), flags=cv2.INTER_NEAREST)
+    return np.where(covered[..., None] > 0, out, fill)
+
+
 def quat_wxyz_to_matrix(q) -> np.ndarray:
     w, x, y, z = (float(v) for v in q)
     return np.array([
@@ -514,7 +525,7 @@ class Scene:
             bg = self.bg
             if self.bg_follow and self.bg_ref is not None:
                 m = plane_homography(self.cam, *self.bg_ref, *self.camera_pose(), TABLE_TOP_Z)
-                bg = cv2.warpPerspective(self.bg, m, (W, H), borderMode=cv2.BORDER_REPLICATE)
+                bg = follow_background(self.bg, m, rgb)
             rgb = composite(rgb, seg, self.camera.data.info[0]["instance_id_segmentation_fast"]["idToLabels"], bg)
         _, jpg = cv2.imencode(".jpg", rgb, [int(cv2.IMWRITE_JPEG_QUALITY), 90])  # RGB as is, like the camera server
         msg = {"timestamps": {"egocentric": time.time()}, "images": {"egocentric": base64.b64encode(jpg).decode()}}

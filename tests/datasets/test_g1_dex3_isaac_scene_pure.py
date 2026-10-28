@@ -112,6 +112,15 @@ def test_plane_homography_follows_camera_motion():
     np.testing.assert_allclose(w[:2] / w[2], cur[:2], atol=1e-6)
 
 
+def test_follow_background_fills_uncovered_pixels_from_the_render():
+    bg = np.arange(48 * 64 * 3, dtype=np.uint8).reshape(48, 64, 3)
+    fill = np.full_like(bg, 7)
+    M = np.array([[1.0, 0, 10], [0, 1, 0], [0, 0, 1]])  # the real frame moved 10 px right: columns 0-9 have no data
+    out = isc.follow_background(bg, M, fill)
+    np.testing.assert_array_equal(out[:, :10], 7)  # the render, not the replicated edge column
+    np.testing.assert_array_equal(out[:, 10:], bg[:, :54])
+
+
 def test_look_at_points_the_camera_x_axis_at_the_target():
     pos, target = np.array([1.3, -0.9, 1.5]), np.array([0.4, -0.05, 0.9])
     R = isc.quat_wxyz_to_matrix(isc.look_at_wxyz(pos, target))
