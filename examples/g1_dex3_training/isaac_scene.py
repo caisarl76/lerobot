@@ -105,10 +105,12 @@ def parse_friction(text: str | None) -> tuple[float, float] | None:
     return static, dynamic
 
 
-def composite(rgb: np.ndarray, seg: np.ndarray, id_to_labels: dict, bg: np.ndarray) -> np.ndarray:
-    """COMPOSITE_BG test: the rendered robot and bottle pixels over a real head frame (everything else from bg)."""
-    keep = [int(i) for i, path in id_to_labels.items() if "/Robot/" in str(path) or "/Bottle/" in str(path)]
-    return np.where(np.isin(seg, keep)[..., None], rgb, bg)
+def composite(rgb: np.ndarray, seg: np.ndarray, id_to_labels: dict, bg: np.ndarray,
+              keep: tuple[str, ...] = ("/Robot/", "/Bottle/")) -> np.ndarray:  # fmt: skip
+    """COMPOSITE_BG test: the rendered pixels of the prims under keep (robot and bottle) over a real head frame (everything
+    else from bg). keep=("/Robot/",) (COMPOSITE_ROBOT_ONLY=1) with a bg that holds the real bottle at the sim bottle's spot."""
+    ids = [int(i) for i, path in id_to_labels.items() if any(k in str(path) for k in keep)]
+    return np.where(np.isin(seg, ids)[..., None], rgb, bg)
 
 
 def load_camera(path) -> dict:
@@ -526,7 +528,8 @@ class Scene:
             if self.bg_follow and self.bg_ref is not None:
                 m = plane_homography(self.cam, *self.bg_ref, *self.camera_pose(), TABLE_TOP_Z)
                 bg = follow_background(self.bg, m, rgb)
-            rgb = composite(rgb, seg, self.camera.data.info[0]["instance_id_segmentation_fast"]["idToLabels"], bg)
+            keep = ("/Robot/",) if os.environ.get("COMPOSITE_ROBOT_ONLY") == "1" else ("/Robot/", "/Bottle/")
+            rgb = composite(rgb, seg, self.camera.data.info[0]["instance_id_segmentation_fast"]["idToLabels"], bg, keep)
         _, jpg = cv2.imencode(".jpg", rgb, [int(cv2.IMWRITE_JPEG_QUALITY), 90])  # RGB as is, like the camera server
         msg = {"timestamps": {"egocentric": time.time()}, "images": {"egocentric": base64.b64encode(jpg).decode()}}
         with contextlib.suppress(zmq.Again):  # no subscriber / buffer full: drop, as the camera server does

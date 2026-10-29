@@ -78,6 +78,8 @@ def test_composite_keeps_robot_and_bottle_pixels_only():
               "3": "/World/envs/env_0/Table/geometry/mesh", "4": "/World/ground/Environment", "0": "BACKGROUND"}  # fmt: skip
     out = isc.composite(rgb, seg, labels, bg)
     np.testing.assert_array_equal(out[..., 0], [[200, 200, 10], [10, 10, 200]])  # robot, bottle | case, floor, sky
+    out = isc.composite(rgb, seg, labels, bg, keep=("/Robot/",))  # the real bottle in bg stays visible
+    np.testing.assert_array_equal(out[..., 0], [[200, 10, 10], [10, 10, 200]])
 
 
 def test_parse_friction():
@@ -115,8 +117,8 @@ def test_plane_homography_follows_camera_motion():
 def test_follow_background_fills_uncovered_pixels_from_the_render():
     bg = np.arange(48 * 64 * 3, dtype=np.uint8).reshape(48, 64, 3)
     fill = np.full_like(bg, 7)
-    M = np.array([[1.0, 0, 10], [0, 1, 0], [0, 0, 1]])  # the real frame moved 10 px right: columns 0-9 have no data
-    out = isc.follow_background(bg, M, fill)
+    m = np.array([[1.0, 0, 10], [0, 1, 0], [0, 0, 1]])  # the real frame moved 10 px right: columns 0-9 have no data
+    out = isc.follow_background(bg, m, fill)
     np.testing.assert_array_equal(out[:, :10], 7)  # the render, not the replicated edge column
     np.testing.assert_array_equal(out[:, 10:], bg[:, :54])
 
