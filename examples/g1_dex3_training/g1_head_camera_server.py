@@ -8,7 +8,9 @@ to NVIDIA's deploy. Needs only numpy, opencv-python-headless and pyzmq (no lerob
 
 Name the stream after the policy's camera key so the streamer uses it as is, e.g. a mono head camera for a
 one-camera model trained on cam_left_high:
-  python g1_head_camera_server.py --device /dev/video4 --name cam_left_high
+  python g1_head_camera_server.py --name cam_left_high
+--device defaults to the colour node of the D435i (found by USB product name, so /dev/videoN renumbering after a
+reboot or replug does not matter); pass /dev/videoN to pick a node directly.
 --snapshot saves one frame as PNG and exits (check colour, exposure and framing against the training images).
 """
 
@@ -18,14 +20,43 @@ import contextlib
 import json
 import threading
 import time
+from pathlib import Path
 
 import cv2
 import zmq
 
 
+def find_rgb_node(model: str) -> str:
+    """/dev/videoN of the colour stream of the one USB camera whose product name contains `model`. RealSense UVC
+    interfaces are labelled "<product> Depth" / "<product> RGB"; index 0 is the frame node (1 = metadata)."""
+    found = []
+    for v in sorted(Path("/sys/class/video4linux").glob("video*")):
+        intf = (v / "device").resolve()
+        label = intf / "interface"
+        product = intf.parent / "product"
+        if not (label.exists() and product.exists()):
+            continue
+        if (
+            (v / "index").read_text().strip() == "0"
+            and label.read_text().strip().endswith("RGB")
+            and model.lower() in product.read_text().lower()
+        ):
+            found.append((f"/dev/{v.name}", product.read_text().strip(), f"usb {intf.parent.name}"))
+    if len(found) != 1:
+        raise SystemExit(
+            f"need exactly one RGB camera matching {model!r}, found {found or 'none'}: pass --device /dev/videoN"
+        )
+    print(f"[camera] {model!r} -> {found[0]}", flush=True)
+    return found[0][0]
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--device", default="/dev/video4", help="V4L2 device of the colour stream")
+    p.add_argument(
+        "--device",
+        default="435i",
+        help="V4L2 device of the colour stream: /dev/videoN, or a USB product-name substring (default: the head D435i)",
+    )
     p.add_argument("--name", default="cam_left_high", help="stream name = the policy's camera key suffix")
     p.add_argument("--width", type=int, default=640)
     p.add_argument("--height", type=int, default=480)
@@ -50,6 +81,8 @@ def main():
         help="--out-size with another aspect ratio: stretch to fill, or keep the aspect and pad with black",
     )
     a = p.parse_args()
+    if not a.device.startswith("/dev/"):
+        a.device = find_rgb_node(a.device)
     out = tuple(int(v) for v in a.out_size.lower().split("x")) if a.out_size else None
 
     def fit(bgr):
