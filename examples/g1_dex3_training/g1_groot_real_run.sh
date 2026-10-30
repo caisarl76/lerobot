@@ -75,7 +75,7 @@ deploy)
       --input-type zmq_manager --zmq-host localhost real' ;;
 camera)
   ssh -t pc2_222 "cd ~/g1_sonic_eval && .venv/bin/python code/g1_head_camera_server.py \
-    --device /dev/video4 --name egocentric --width 640 --height 480 --publish-fps $CAM_FPS" ;;
+    --name egocentric --width 640 --height 480 --publish-fps $CAM_FPS" ;;
 stream)
   RUN=${2:?run name, e.g. run20_he_groot_official_laptop_t0}; TASK=${3:-close a laptop g1}; shift $(($# < 3 ? $# : 3))
   ssh -t pc2_222 "cd ~/g1_sonic_eval/code && ../.venv/bin/python -u sonic_policy_streamer.py \
