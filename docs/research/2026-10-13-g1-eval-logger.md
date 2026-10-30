@@ -4,12 +4,14 @@ Operator-judged trials on the G1, exported as a LeRobot dataset with the operato
 (failed subtask and failure frame) by a VLM and reviewed by a human in the dataset visualizer. Spec:
 `docs/superpowers/specs/2026-10-13-g1-eval-logger-design.md`.
 
-Run the launcher commands from `examples/g1_dex3_training/` on the workstation.
+Run the launcher commands from `examples/g1_dex3_training/` on the workstation, in a clean checkout of `main` (the
+robot sessions since 2026-10-23 used the worktree `.claude/worktrees/g1-robot-main`, detached at `main`): `sync` copies
+whatever that checkout holds to PC2.
 
 ## 1. Start
 
 ```bash
-./g1_groot_real_run.sh sync      # once per code change: copies sonic_policy_streamer.py, stream_backends.py, eval_session.py, sonic_targets.py, wbc_common.py, sonic_token_stream.py to PC2
+./g1_groot_real_run.sh sync      # once per code change: copies sonic_policy_streamer.py, stream_backends.py, eval_session.py, sonic_targets.py, wbc_common.py, sonic_token_stream.py and ready_pose_261020_ep76.npz to PC2
 ./g1_groot_real_run.sh server    # workstation policy server; wait for "ready on port"
 ./g1_groot_real_run.sh deploy    # PC2 NVIDIA SONIC deploy; wait for "Init Done"
 ./g1_groot_real_run.sh camera    # PC2 D435i head camera
@@ -20,6 +22,52 @@ Run the launcher commands from `examples/g1_dex3_training/` on the workstation.
 ```bash
 TRIALS=10 ./g1_groot_real_run.sh session s01_<model>_<task> "<task text>"
 ```
+
+Reference handover session (s18–s20, 2026-10-23/26):
+
+```bash
+MODEL=/mnt/data/jihun/g1_models/wbt_groot_handover261015_he_full GPU=1 PORT=5571 ./g1_groot_real_run.sh server
+PORT=5571 POLICY_FPS=50 MAX_S=30 ./g1_groot_real_run.sh session s21_wbt_groot_handover261015_he_<what> \
+    "pick drink bottle from the table and handover" --hold-rest-s 1.5 --max-token-step 0.05
+```
+
+Launcher defaults for `session` (each env var empty or 0 turns its option off):
+
+| Env var           | Default                      | Streamer option                        | Since                                     |
+| ----------------- | ---------------------------- | -------------------------------------- | ----------------------------------------- |
+| `NOISE_SCALE`     | 0                            | server: flow sampling noise            | 2026-10-08                                |
+| `BLEND_S`         | 0.3                          | `--chunk-blend-s` (hands, with anchor) | 2026-10-08                                |
+| `ANCHOR_S`        | 1.0                          | `--chunk-anchor-s` (token dims)        | 2026-10-23, PR #46                        |
+| `END_ON_HANDOVER` | 1.0                          | `--end-on-handover OPEN_S`             | 2026-10-23, PR #47                        |
+| `READY_POSE`      | `ready_pose_261020_ep76.npz` | `--ready-pose`                         | 2026-10-23, PR #48 (paths: 10-26, PR #49) |
+
+- **End on handover:** a trial ends by itself ("handover complete") once the measured right hand (mean of its 7
+  joints, closed above 0.19) was seen open, then closed for at least 0.5 s, then open for `OPEN_S` (default 1 s): one
+  pick-and-handover attempt per trial. s17 showed later attempts in a trial are slower and fail more (the training
+  episodes end about 2 s after the release). Enter still stops a trial early; the 30 s cap and the safety stops stay.
+- **Ready pose:** trials start and end at a recorded pose with the right hand over the box (merged_261020 episode 76,
+  the attempt start closest to the median of the 39 cut 10-19 attempts), not at the standing stance: the return to the
+  stance after each trial swept the arm into the box. Rebuild the file with `make_ready_pose.py` (its docstring has the
+  command). At the session start the arm follows a recorded raise (old-set episode 11, frames 0–82, tokens as recorded);
+  at the session end it follows that raise's measured joint path reversed and re-encoded with the SONIC encoder (a
+  reversed token sequence is not a reversed motion). Between trials a thread keeps streaming the held pose at 50 Hz
+  (POSE mode needs a token every 20 ms), so the verdict and save run while the robot holds still.
+
+Operator flow with these defaults:
+
+1. Enter at "Init Done"; Enter once the robot stands in position at the table (planner mode).
+2. Session start: "clear the space over the table" + Enter: the arm raises along the recorded path to the ready pose.
+3. Each trial: "place the bottle" + Enter at the ready pose; the trial runs and ends at the handover (or Enter / cap /
+   safety stop).
+4. Trial end: the robot holds its pose; Enter moves it to the ready pose (1 s blend), then `s` / `f` (+ reason, note) /
+   `r`.
+5. Session end (after the last trial, or Ctrl-C between trials): the robot holds; Enter lowers the arm along the
+   re-encoded reverse path, blends to the stance and hands back to PLANNER. The hold prompt there still says "move the
+   box": with the recorded lowering the box can stay.
+
+Ctrl-C at any hold never moves the arm toward the box: the session cleanup holds again, then lowers to the stance and
+hands back. With `--gate-dir` (sims, external drivers) the file gates `ready.N` replace the start prompts, but the
+clearance holds are skipped, so the driver has to make sure the space is clear itself.
 
 `TRIALS` defaults to 10, `MAX_S` (per-trial cap) to 120. Extra streamer args go after the task text, e.g.
 `--failure-reasons "a,b,c"` replaces the default failure menu (default: `eval_session.DEFAULT_FAILURE_REASONS`). The remote shell re-splits the arguments, so reasons containing spaces need nested quoting: `--failure-reasons "'grasp failed,dropped it'"`.
@@ -86,7 +134,17 @@ First real session (2026-10-14, `s00_test_he_groot_laptop`, HE GR00T, "close a l
 
 ## 8. Future work: safe hand settle
 
-**Status: not started (marked by the user, 2026-10-21).**
+**Status (2026-10-26): partly covered by fixed paths, the automatic return is not started** (marked by the user,
+2026-10-21). PR #43 holds the pose until Enter at every episode end; with `--ready-pose` (PRs #48/#49) the session
+start and end follow a recorded raise and its re-encoded reverse (robot s20: 0.13 rad median / 0.26 max from the
+recorded path; the direct blend it replaced was 0.80 / 0.95). Still direct 1 s blends, each behind a hold: the move to
+the ready pose after each trial, the move from the stance to the raise start (0.99 rad off any recorded path, robot
+s20), and the error-cleanup path. Our MuJoCo check of the recorded raise and lowering had no box in the scene. VoLoAgent's loop
+sim (sim-03, 2026-10-27; case 0.845 m high, front face 0.28 m in front of the pelvis, 0.35 m wide) found the right
+thumb resting on the case's top front-right corner from the lowering through the stance, at most 1.1 mm deep (a
+resting contact, not a strike; 0 contacts during trials; 1 sample of 0.1 mm with the left index finger in the raise
+start). In that layout the stance itself hangs the right hand over the case edge, so the case has to be moved away
+before the session-end lowering (VoLoAgent `docs/artifacts/g1_handover_20261026_autonomous_loop_sim/runs/sim-03/`).
 
 - **Problem:** at every episode end (operator stop, time cap, "no valid chunk", watchdog, stale state or camera)
   `SonicBackend.finish()` (`stream_backends.py`) blends from the last sent token straight to the rest token in 1 s,
