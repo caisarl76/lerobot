@@ -501,6 +501,23 @@ command, operator flow and launcher defaults: [eval-logger workflow](2026-10-13-
   less bent elbows than the robot's planner stance). The session-end lowering is not logged: it runs after the last
   trial is saved.
 
+## Autonomous loop and task close (2026-10-27 to 10-30)
+
+VoLoAgent's autonomous loop (branch `work/g1-autonomous-loop-20261026`, ledger
+`docs/superpowers/plans/2026-10-26-g1-autonomous-handover-loop-ledger.md`) runs the same model, streamer path and
+ready pose as s20. After each trial the arm holds the offer pose, then moves to ready when the bottle is taken.
+
+- **Robot runs:** ready-A-r38 7/10 (2 drops at the handover, 1 missed grasp). ready-A-r40 had 9 handovers and 1
+  operator stop; the torque detector ended all 9 holds, with no Enter.
+- **Camera "bottle taken" route (R29) is off by default (R30).** At the offer pose the head camera sees only an edge
+  of the bottle. In r33 the route ended 4 of 6 holds with the bottle still on the palm. On the s17–s20 frames,
+  Qwen3-VL-4B gave 14 false "not on hand" answers in 164 frames with the bottle in the robot hand, all with the
+  bottle at the top-right image edge. 2 of 32 episodes had 3 or more in a row.
+- **R33 (user, 10-30):** with the route on (`--taken-vlm-frames 3`, tests only), the camera checks one frame per
+  second, and 3 "hand empty" answers in a row move the arm. Any other answer starts the check again. VoLoAgent
+  PR #10.
+- The demo is done, and this closes the handover-bottle task.
+
 ## Incidents
 
 - **GPU 7 shared (10-02 12:17 UTC).** Session `lerobot-f0` started `groot_joint28_ho5_official_full` (40 GB) on
