@@ -313,18 +313,20 @@ class Scene:
 
         stage = sim_utils.get_current_stage()
         UsdGeom.Imageable(stage.GetPrimAtPath("/World/envs/env_0/Bottle/geometry/mesh")).MakeInvisible()
-        # clear PET with water: a thin glass shell around a light grey core matches the real bottle's look in the head
-        # frames (body brightness 134 vs 144 real; the opaque grey was 190, glass alone 71: it shows the black case)
+        # clear PET with water: a thin glass shell around a light blue core and a green-yellow cap, matched to s10 trial 0's
+        # first head frame at the same pose (cap RGB 197/231/130 vs 202/244/116 real, body 126/145/154 vs 138/160/170; the
+        # grey core and yellow cap gave 141/145/150 and 205/208/133). The opaque grey was 190, glass alone 71 (it shows the
+        # black case); PreviewSurface opacity renders opaque in the real-time RTX path
         import carb
 
         carb.settings.get_settings().set("/rtx/translucency/enabled", True)  # glass renders black without it
         pet = sim_utils.GlassMdlCfg(glass_color=(0.95, 0.97, 1.0), glass_ior=1.45, thin_walled=True)
         water = sim_utils.CylinderCfg(radius=0.027, height=0.100, visual_material=sim_utils.PreviewSurfaceCfg(
-            diffuse_color=(0.88, 0.915, 0.94), roughness=0.3))  # visual only
+            diffuse_color=(0.70, 0.92, 1.0), roughness=0.3))  # visual only
         water.func("/World/envs/env_0/Bottle/water", water, translation=(0.0, 0.0, 0.055 - BOTTLE_H / 2))
         # colliders under the rigid root: one body, its mass stays 0.5 kg
         for name, shape, r, h, zc in BOTTLE_PARTS:
-            look = sim_utils.PreviewSurfaceCfg(diffuse_color=(0.78, 0.86, 0.12)) if name == "cap" else pet
+            look = sim_utils.PreviewSurfaceCfg(diffuse_color=(0.35, 0.85, 0.10)) if name == "cap" else pet
             part = (sim_utils.ConeCfg if shape == "cone" else sim_utils.CylinderCfg)(
                 radius=r, height=h, collision_props=sim_utils.CollisionPropertiesCfg(), visual_material=look,
                 physics_material=mats["BOTTLE"])
