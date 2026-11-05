@@ -341,3 +341,23 @@ def test_column_views_are_rebuilt_after_set_transform(tmp_path, lerobot_dataset_
 
     result = reader._query_hf_dataset(query_indices)
     assert torch.equal(result["action"], 2 * baseline["action"])
+
+
+def test_query_videos_holds_last_decodable_frame(tmp_path, lerobot_dataset_factory, monkeypatch):
+    """A query past the episode's video segment (one more data row than video frames) is held at its last frame."""
+    dataset = lerobot_dataset_factory(
+        root=tmp_path / "ds", total_episodes=2, total_frames=20, use_videos=True
+    )
+    reader = dataset.reader
+    vid_key = dataset.meta.video_keys[0]
+    ep = dataset.meta.episodes[0]
+    t0, t1 = ep[f"videos/{vid_key}/from_timestamp"], ep[f"videos/{vid_key}/to_timestamp"]
+    seen = []
+
+    def fake_decode(video_path, timestamps, *args, **kwargs):
+        seen.extend(timestamps)
+        return torch.zeros(len(timestamps), 3, 1, 1)
+
+    monkeypatch.setattr("lerobot.datasets.dataset_reader.decode_video_frames", fake_decode)
+    reader._query_videos({vid_key: [0.0, t1 - t0]}, 0)
+    assert seen == pytest.approx([t0, t1 - 1 / dataset.meta.fps])
