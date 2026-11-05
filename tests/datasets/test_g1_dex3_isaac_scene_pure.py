@@ -97,6 +97,13 @@ def test_bottle_xy_per_axis_jitter_is_seeded_and_bounded():
     np.testing.assert_array_equal(isc.sample_bottle_xy(7, [0.3, 0.0], 0.04), isc.sample_bottle_xy(7, [0.3, 0.0], 0.04))  # paired
 
 
+def test_case_offset_turns_about_the_pivot_then_shifts():
+    pivot = np.array([0.01, 0.0])
+    np.testing.assert_allclose(isc.case_offset([0.4, -0.05], pivot, [0.0, 0.0, 0.0]), [0.4, -0.05])
+    np.testing.assert_allclose(isc.case_offset([0.41, 0.0], pivot, [0.0, 0.0, 90.0]), [0.01, 0.4], atol=1e-12)
+    np.testing.assert_allclose(isc.case_offset([0.41, 0.0], pivot, [-0.01, 0.02, 90.0]), [0.0, 0.42], atol=1e-12)
+
+
 def test_plane_homography_follows_camera_motion():
     cam = {"fx": 615.0, "fy": 615.0, "cx": 320.0, "cy": 240.0}
     a = np.radians(48)  # pitched down, x forward / z up (Isaac "world" camera convention)

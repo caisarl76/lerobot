@@ -54,6 +54,10 @@ BAND_Z = 1.0  # root height while hanging on the band (gear_sonic: the deploy st
 # (2026-10-19; the head-frame fit gave 0.42 x 0.32 x 0.846); replays and the parity runs used sim_scene's 0.80 m slab
 CASE = (0.475, 0.35, float(os.environ.get("CASE_TOP_Z", "0.845")))  # CASE_TOP_Z: e.g. the +5 cm runs
 TABLE_TOP_Z = CASE[2]
+# CASE_OFFSET=dx,dy,yaw_deg: the case and the bottle spots on it turned by yaw about the robot root (at the table placement)
+# and shifted, i.e. the robot stands off the case's axis. The s10 head frame's fit (case bumpers + bottle through the sim
+# head camera) gives -0.010,-0.044,7.3: the real robot faces ~7 deg right of the case. Unset: squared to the robot.
+CASE_OFFSET = np.array([float(v) for v in os.environ.get("CASE_OFFSET", "0,0,0").split(",")])
 # URDF_COLLIDER=convex_decomposition: the robot's collision meshes keep their concavity (convex_hull, the default, makes
 # the wrist_yaw mesh 10.5x and the Dex3 palm 1.5x their volume: the hand meets the bottle where the real one passes)
 COLLIDER = os.environ.get("URDF_COLLIDER", "convex_hull")
@@ -92,6 +96,14 @@ def sample_bottle_xy(seed: int, center, jitter_m) -> np.ndarray:
     rng = np.random.default_rng(seed)
     j = np.broadcast_to(np.asarray(jitter_m, float), (2,))
     return np.asarray(center, float) + rng.uniform(-j, j)
+
+
+def case_offset(xy, pivot, offset) -> np.ndarray:
+    """A point of the case frame (the case squared to the robot) in the world under CASE_OFFSET (dx, dy, yaw_deg): turned
+    by yaw about pivot, then shifted by (dx, dy)."""
+    a = np.radians(offset[2])
+    v = np.asarray(xy, float) - pivot
+    return pivot + np.array([np.cos(a) * v[0] - np.sin(a) * v[1], np.sin(a) * v[0] + np.cos(a) * v[1]]) + offset[:2]
 
 
 def parse_friction(text: str | None) -> tuple[float, float] | None:
@@ -223,6 +235,7 @@ class Scene:
         self.out = Path(out)
         self.out.mkdir(parents=True, exist_ok=True)
         self.table_gap = float(table_gap_cm) if table_gap_cm else None
+        self.case_pivot = None  # the root xy at the table placement (CASE_OFFSET turns about it)
         self.table_top_z = TABLE_TOP_Z  # the judge reads it (sim_trials)
         cam = load_camera(camera_json)
 
@@ -594,9 +607,12 @@ class Scene:
         with self.lock:
             root = self.robot.data.root_state_w[0].cpu().numpy()
             edge = root[0] + 0.08 + self.table_gap / 100
-            pose = torch.tensor([[edge + CASE[0] / 2, root[1], CASE[2] / 2, 1.0, 0.0, 0.0, 0.0]], device=self.sim.device)
+            self.case_pivot = root[:2].copy()
+            x, y = case_offset([edge + CASE[0] / 2, root[1]], self.case_pivot, CASE_OFFSET)
+            a = np.radians(CASE_OFFSET[2]) / 2
+            pose = torch.tensor([[x, y, CASE[2] / 2, np.cos(a), 0.0, 0.0, np.sin(a)]], dtype=torch.float32, device=self.sim.device)
             self.table_obj.write_root_pose_to_sim(pose)
-        self.mark(f"table placed: near edge {self.table_gap:g} cm from the torso (x = {edge:.3f} m)")
+        self.mark(f"table placed: near edge {self.table_gap:g} cm from the torso (x = {edge:.3f} m), offset {CASE_OFFSET.tolist()}")
 
     def reset_trial(self, seed: int, bottle_xy, jitter_m: float) -> None:
         """Robot back to the deploy's standing pose (as key 'backspace'); bottle parked off the table (the caller places
@@ -614,10 +630,12 @@ class Scene:
         self.fall = FallDetector()
 
     def place_bottle(self, seed: int, bottle_xy, jitter_m: float) -> None:
-        """Bottle upright on the table at bottle_xy (world, table placed) + uniform +-jitter_m (scalar or x, y), at rest."""
+        """Bottle upright on the table at bottle_xy (the case frame: world with CASE_OFFSET unset) + uniform +-jitter_m (scalar or x, y), at rest."""
         import torch
 
         x, y = sample_bottle_xy(seed, bottle_xy, jitter_m)
+        if self.case_pivot is not None:
+            x, y = case_offset([x, y], self.case_pivot, CASE_OFFSET)
         with self.lock:
             dev = self.sim.device
             z = TABLE_TOP_Z + BOTTLE_H / 2
