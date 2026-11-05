@@ -11,7 +11,29 @@ Goal: compare on the robot three GR00T N1.7 models trained on the same 105 hando
 
 The three robot comparisons:
 - **s10 vs no-HE** measures what HE pretraining adds on this dataset.
-- **no-HE vs official** measures what NVIDIA's setup adds with the init held constant: the 46-D state, NVIDIA's pretrained G1 SONIC embodiment head, and teleop hand targets instead of `action.wbc`.
+- **no-HE vs official** measures what NVIDIA's setup adds with the init held constant: the 46-D state, Isaac-GR00T's image
+  geometry (no letterbox), teleop hand targets instead of `action.wbc`, and 20k instead of 16k steps. The embodiment tag is
+  not a difference: `UNITREE_G1_SONIC` (slot 11) and `new_embodiment` (slot 10) are both untrained in
+  `nvidia/GR00T-N1.7-3B` (std 0.0200 = the init in all three per-embodiment layers; only slots 24-27 are pretrained).
+
+## Robot results (2026-11-05)
+
+One day, launcher defaults (chunk anchoring 1.0, end on handover, ready pose), 10 trials each, one attempt per trial.
+A fourth model joined: `groot_handover261020_state46_he46_full` (HE 46-D pretrain, 46-D fine-tune, LeRobot recipe),
+served by `sonic_policy_server.py`, which reports `state_dim` from the policy config.
+
+| Session | Model | Score | Median success time | Failures |
+|---|---|---|---|---|
+| s25 | official 46-D (base init) | 10/10 | 7.8 s | - |
+| s26 | no-HE 28-D (base init) | 3/10 | 16.3 s | 5 stalled, 1 no reach, 1 grasp missed |
+| s27 | s10 model, HE 28-D | 7/10 | 9.1 s | 1 dropped, 1 no reach, 1 grasp missed |
+| s28 | HE 46-D, LeRobot recipe | 6/10 | 7.0 s | 4 stalled |
+
+Measured on the right arm, s25 stood still 19 % of the episode (longest pause 1.5 s); s28 29 % (5.3 s), s26 46 %.
+The 46-D state alone does not explain s25 (s28 has it). Both recipes apply Isaac's train-time crop 0.95 and colour
+jitter; the official run used `letter_box_transform: false` (640x480 -> 341x256), LeRobot's default is true
+(padded square, the scene in about 256x192). A run with only that and 20k steps changed
+(`groot_handover261020_state46_he46_nolb20k_full`, h100_174) tests the image difference next.
 
 ## Before the session
 
