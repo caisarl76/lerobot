@@ -271,14 +271,6 @@ def cast_groot_backbone(policy, dtype) -> None:
             param.data = param.data.to(dtype)
 
 
-def policy_state_dim(input_features: dict) -> int:
-    """observation.state width the policy was trained on. 46: the 46D SONIC state (prepare_state46.py), so the
-    streamer sends stream_backends.sonic46_state; policies without a state input (LaWAM) get the 28D one, which they
-    ignore."""
-    state = input_features.get("observation.state")
-    return int(state.shape[0]) if state else 28
-
-
 class ChunkPolicy:
     def __init__(
         self,
@@ -324,7 +316,10 @@ class ChunkPolicy:
         self.image_keys = [k for k in cfg.input_features if "image" in k]
         self.shapes = {k: tuple(cfg.input_features[k].shape) for k in self.image_keys}  # (C, H, W)
         self.n_obs = int(getattr(cfg, "n_obs_steps", 1) or 1)  # diffusion conditions on 2 frames
-        self.state_dim = policy_state_dim(cfg.input_features)
+        # 46: trained on the 46D SONIC state (prepare_state46.py), so the streamer sends stream_backends.sonic46_state;
+        # policies without a state input (LaWAM) get the 28D one, which they ignore
+        state = cfg.input_features.get("observation.state")
+        self.state_dim = int(state.shape[0]) if state else 28
 
     def chunk(self, states: list[np.ndarray], images: list[dict], task: str, **rtc) -> np.ndarray:
         """states/images: the last n_obs observations, oldest first (1/fps apart); task: instruction text.
