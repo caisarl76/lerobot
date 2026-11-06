@@ -382,7 +382,9 @@ class DatasetReader(BaseDatasetReader):
 
         def _decode_single(vid_key: str, query_ts: list[float]) -> tuple[str, torch.Tensor]:
             from_timestamp = ep[f"videos/{vid_key}/from_timestamp"]
-            shifted_query_ts = [from_timestamp + ts for ts in query_ts]
+            # Some recorded episodes have one more data row than video frames; hold the last decodable frame.
+            last_ts = ep[f"videos/{vid_key}/to_timestamp"] - 1 / self._meta.fps
+            shifted_query_ts = [min(from_timestamp + ts, last_ts) for ts in query_ts]
             video_path = self.root / self._meta.get_video_file_path(ep_idx, vid_key)
             frames = decode_video_frames(
                 video_path,
