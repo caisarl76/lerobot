@@ -4,8 +4,10 @@ work (50 Hz tokens, table startup/shutdown, planner hand-back, safety stops) and
 across a VPN that only allows robot -> H100 (decided 2026-09-27).
 
 Protocol (ZMQ REQ/REP, msgpack):
-  {"op": "info"}  -> {"image_keys": [...], "n_obs": int, "shapes": {key: [C, H, W]}, "model": policy path}
-  {"op": "chunk", "states": [[28 floats]] * n_obs, "images": [{key: jpeg bytes}] * n_obs, "task": str,
+  {"op": "info"}  -> {"image_keys": [...], "n_obs": int, "shapes": {key: [C, H, W]}, "model": policy path,
+                      "state_dim": 28 or 46 (the policy's observation.state width; 46 makes the streamer send
+                      stream_backends.sonic46_state)}
+  {"op": "chunk", "states": [[state_dim floats]] * n_obs, "images": [{key: jpeg bytes}] * n_obs, "task": str,
    "rtc": {"offset": int, "delay": int} (optional, streamer --rtc)}
                   -> {"chunk": float32 bytes, "shape": [T, 78], "latency_s": float}
 With "rtc" the chunk is generated from the unplayed tail (rows offset..) of the last chunk this server returned,
@@ -61,11 +63,12 @@ def main():
     policy = ChunkPolicy(a.policy_path, a.device, a.backbone_dtype, a.noise_seed, a.noise_scale)
     blank = [{k: np.zeros(policy.shapes[k][1:] + (3,), np.uint8) for k in policy.image_keys}] * policy.n_obs
     for _ in range(3):  # warm up on this (the serving) thread: VLA first calls take 2-5 s
-        policy.chunk([np.zeros(28, np.float32)] * policy.n_obs, blank, "warm up")
+        policy.chunk([np.zeros(policy.state_dim, np.float32)] * policy.n_obs, blank, "warm up")
     sock = zmq.Context().socket(zmq.REP)
     sock.bind(f"tcp://*:{a.port}")
     print(
-        f"[server] {a.policy_path} ready on port {a.port}: {policy.image_keys}, n_obs {policy.n_obs}",
+        f"[server] {a.policy_path} ready on port {a.port}: {policy.image_keys}, n_obs {policy.n_obs}, "
+        f"state {policy.state_dim}D",
         flush=True,
     )
     served = 0
@@ -78,6 +81,7 @@ def main():
                     "n_obs": policy.n_obs,
                     "shapes": policy.shapes,
                     "model": a.policy_path,
+                    "state_dim": policy.state_dim,
                 }
             else:
                 started = time.monotonic()

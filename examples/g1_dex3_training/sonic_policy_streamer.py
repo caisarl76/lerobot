@@ -316,6 +316,10 @@ class ChunkPolicy:
         self.image_keys = [k for k in cfg.input_features if "image" in k]
         self.shapes = {k: tuple(cfg.input_features[k].shape) for k in self.image_keys}  # (C, H, W)
         self.n_obs = int(getattr(cfg, "n_obs_steps", 1) or 1)  # diffusion conditions on 2 frames
+        # 46: trained on the 46D SONIC state (prepare_state46.py), so the streamer sends stream_backends.sonic46_state;
+        # policies without a state input (LaWAM) get the 28D one, which they ignore
+        state = cfg.input_features.get("observation.state")
+        self.state_dim = int(state.shape[0]) if state else 28
 
     def chunk(self, states: list[np.ndarray], images: list[dict], task: str, **rtc) -> np.ndarray:
         """states/images: the last n_obs observations, oldest first (1/fps apart); task: instruction text.
@@ -504,7 +508,9 @@ class RemotePolicy:
         self.image_keys, self.n_obs = info["image_keys"], int(info["n_obs"])
         self.shapes = {k: tuple(v) for k, v in info["shapes"].items()}
         self.model = info.get("model")  # the served checkpoint (None from a server that predates the field)
-        self.state_dim = int(info.get("state_dim", 28))  # 46: official GR00T (gr00t_official_server.py)
+        self.state_dim = int(
+            info.get("state_dim", 28)
+        )  # 46: a 46D-state model (official GR00T or a state46 fine-tune)
 
     def _ask(self, req: dict) -> dict:
         import msgpack
@@ -920,7 +926,7 @@ def main():
     log = {
         k: [] for k in ("wall", "t_ep", "phase", "frame", "token", "hands", "chunk_t0", "state", "joint_ref")
     }
-    if state_dim == 46:  # one row per chunk request: the exact state sent to the official GR00T, and when
+    if state_dim == 46:  # one row per chunk request: the exact 46D state sent, and when
         log.update(state46=[], state46_wall=[], state46_t_ep=[])
     no_ref = np.full(31, np.nan, np.float32)
 
@@ -960,7 +966,7 @@ def main():
 
     def robot_states(t_ep):
         """Robot state at t_ep - i/fps (oldest first), nearest earlier tick; the current state if none yet."""
-        # official GR00T: the current 46D state, one observation step, logged as it is submitted
+        # 46D-state model: the current 46D state, one observation step, logged as it is submitted
         if state_dim == 46:
             now = sonic46_state(state.latest())
             for key, val in (("state46", now), ("state46_wall", time.time()), ("state46_t_ep", t_ep)):
