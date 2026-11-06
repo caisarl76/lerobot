@@ -36,6 +36,16 @@ def decode(jpeg: bytes, shape: tuple) -> np.ndarray:
     return img if img.shape[:2] == (h, w) else cv2.resize(img, (w, h), interpolation=cv2.INTER_AREA)
 
 
+def info_reply(policy: ChunkPolicy, model: str) -> dict:
+    return {
+        "image_keys": policy.image_keys,
+        "n_obs": policy.n_obs,
+        "shapes": policy.shapes,
+        "model": model,
+        "state_dim": policy.state_dim,
+    }
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--policy-path", required=True)
@@ -76,13 +86,7 @@ def main():
         req = msgpack.unpackb(sock.recv(), raw=False)
         try:
             if req["op"] == "info":
-                rep = {
-                    "image_keys": policy.image_keys,
-                    "n_obs": policy.n_obs,
-                    "shapes": policy.shapes,
-                    "model": a.policy_path,
-                    "state_dim": policy.state_dim,
-                }
+                rep = info_reply(policy, a.policy_path)
             else:
                 started = time.monotonic()
                 images = [{k: decode(v, policy.shapes[k]) for k, v in im.items()} for im in req["images"]]
