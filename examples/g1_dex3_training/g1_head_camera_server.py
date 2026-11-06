@@ -12,6 +12,11 @@ one-camera model trained on cam_left_high:
 --device defaults to the colour node of the D435i (found by USB product name, so /dev/videoN renumbering after a
 reboot or replug does not matter); pass /dev/videoN to pick a node directly.
 --snapshot saves one frame as PNG and exits (check colour, exposure and framing against the training images).
+
+--ir-device adds the D435i's left IR image as '<name>_ir' in the same messages: 8-bit grayscale from the stereo module,
+which keeps its full ~89 deg 16:9 view (the colour camera tops out at ~70 deg). The IR node is the one whose
+`v4l2-ctl -d /dev/videoN --list-formats` lists GREY. Over USB2, 640x480@30 colour + 640x360@30 IR and 424x240@60
+colour + 480x270@60 IR both run at full rate. The IR emitter's dot pattern shows in the image when the emitter is on.
 """
 
 import argparse
@@ -70,6 +75,10 @@ def main():
     p.add_argument("--port", type=int, default=5555)
     p.add_argument("--quality", type=int, default=80, help="JPEG quality (ImageServer uses 80)")
     p.add_argument("--snapshot", help="save one frame (after --out-size) to this PNG path and exit")
+    p.add_argument("--ir-device", help="V4L2 node of the IR stream (GREY); also publish it as '<name>_ir'")
+    p.add_argument(
+        "--ir-size", default="640x360", help="IR WxH, captured at --fps (16:9 sizes keep the full view)"
+    )
     p.add_argument(
         "--out-size",
         help="WxH sent to the streamer, e.g. 640x480 (the model size) from a wider 1280x720 capture",
@@ -84,6 +93,8 @@ def main():
     if not a.device.startswith("/dev/"):
         a.device = find_rgb_node(a.device)
     out = tuple(int(v) for v in a.out_size.lower().split("x")) if a.out_size else None
+    ir_w, ir_h = (int(v) for v in a.ir_size.lower().split("x"))
+    ir_name = f"{a.name}_ir"
 
     def fit(bgr):
         if out is None or (bgr.shape[1], bgr.shape[0]) == out:
@@ -98,26 +109,40 @@ def main():
             small, top, out[1] - h - top, left, out[0] - w - left, cv2.BORDER_CONSTANT, value=(0, 0, 0)
         )
 
-    cap = cv2.VideoCapture(a.device, cv2.CAP_V4L2)
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, a.width)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, a.height)
-    cap.set(cv2.CAP_PROP_FPS, a.fps)
-    ok, frame = cap.read()
-    if not ok or frame is None:
-        raise SystemExit(f"cannot read frames from {a.device}")
-    if frame.shape[:2] != (a.height, a.width):
-        raise SystemExit(f"{a.device} gives {frame.shape[1]}x{frame.shape[0]}, not {a.width}x{a.height}")
+    def open_camera(device, width, height, fourcc=None):
+        cap = cv2.VideoCapture(device, cv2.CAP_V4L2)
+        if fourcc:
+            cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*fourcc))
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+        cap.set(cv2.CAP_PROP_FPS, a.fps)
+        ok, frame = cap.read()
+        if not ok or frame is None:
+            raise SystemExit(f"cannot read frames from {device}")
+        if frame.shape[:2] != (height, width):
+            raise SystemExit(f"{device} gives {frame.shape[1]}x{frame.shape[0]}, not {width}x{height}")
+        return cap
+
+    cap = open_camera(a.device, a.width, a.height)
+    # OpenCV converts GREY to 3 equal channels: JPEG spends almost nothing on the flat chroma.
+    ir_cap = open_camera(a.ir_device, ir_w, ir_h, "GREY") if a.ir_device else None
     if a.snapshot:
         for _ in range(30):  # let auto exposure settle
             ok, frame = cap.read()
+            if ir_cap:
+                ok, ir_frame = ir_cap.read()
         frame = fit(frame)
         cv2.imwrite(a.snapshot, frame)  # imwrite takes BGR, as read
         print(f"saved {a.snapshot} ({frame.shape[1]}x{frame.shape[0]})")
+        if ir_cap:
+            ir_path = a.snapshot.removesuffix(".png") + "_ir.png"
+            cv2.imwrite(ir_path, ir_frame)
+            print(f"saved {ir_path} ({ir_frame.shape[1]}x{ir_frame.shape[0]})")
         return
 
-    latest, lock = [None, 0.0], threading.Lock()
+    latest, latest_ir, lock = [None, 0.0], [None, 0.0], threading.Lock()
 
-    def capture():
+    def capture(cap, slot):
         # Drain the camera at its own rate with grab() (no colour conversion) and retrieve() (the costly
         # YUYV -> BGR conversion) only the frames that get published.
         next_retrieve = 0.0
@@ -132,31 +157,43 @@ def main():
             if ok:
                 next_retrieve = now + 1 / a.publish_fps
                 with lock:
-                    latest[:] = [bgr, time.time()]
+                    slot[:] = [bgr, time.time()]
 
-    threading.Thread(target=capture, daemon=True).start()
+    threading.Thread(target=capture, args=(cap, latest), daemon=True).start()
+    if ir_cap:
+        threading.Thread(target=capture, args=(ir_cap, latest_ir), daemon=True).start()
+
+    def jpeg(img):
+        _, jpg = cv2.imencode(".jpg", img, [int(cv2.IMWRITE_JPEG_QUALITY), a.quality])
+        return base64.b64encode(jpg).decode("ascii")
+
     sock = zmq.Context().socket(zmq.PUB)
     sock.setsockopt(zmq.SNDHWM, 20)
     sock.setsockopt(zmq.LINGER, 0)
     sock.bind(f"tcp://*:{a.port}")
     print(
         f"[camera] {a.device} {a.width}x{a.height}@{a.fps} as '{a.name}' on port {a.port}, "
-        f"publishing at {a.publish_fps:g} Hz" + (f" as {out[0]}x{out[1]} ({a.fit})" if out else ""),
+        f"publishing at {a.publish_fps:g} Hz"
+        + (f" as {out[0]}x{out[1]} ({a.fit})" if out else "")
+        + (f", IR {a.ir_device} {ir_w}x{ir_h} as '{ir_name}'" if ir_cap else ""),
         flush=True,
     )
-    sent, last = 0, 0.0
+    sent, last, last_ir = 0, 0.0, 0.0
     while True:
         started = time.monotonic()
         with lock:
-            bgr, stamp = latest
+            (bgr, stamp), (ir, ir_stamp) = list(latest), list(latest_ir)
         if bgr is not None and stamp > last:
-            rgb = cv2.cvtColor(fit(bgr), cv2.COLOR_BGR2RGB)
-            _, jpg = cv2.imencode(".jpg", rgb, [int(cv2.IMWRITE_JPEG_QUALITY), a.quality])
-            encoded = base64.b64encode(jpg).decode("ascii")
+            msg = {
+                "timestamps": {a.name: stamp},
+                "images": {a.name: jpeg(cv2.cvtColor(fit(bgr), cv2.COLOR_BGR2RGB))},
+            }
+            # IR rides along with the colour frame, and only when it has a new frame.
+            if ir is not None and ir_stamp > last_ir:
+                msg["timestamps"][ir_name], msg["images"][ir_name] = ir_stamp, jpeg(ir)
+                last_ir = ir_stamp
             with contextlib.suppress(zmq.Again):  # no subscriber / buffer full: drop
-                sock.send_string(
-                    json.dumps({"timestamps": {a.name: stamp}, "images": {a.name: encoded}}), zmq.NOBLOCK
-                )
+                sock.send_string(json.dumps(msg), zmq.NOBLOCK)
             last, sent = stamp, sent + 1
             if sent % int(a.publish_fps * 60) == 0:
                 print(f"[camera] {sent} frames sent", flush=True)
