@@ -61,12 +61,12 @@ Operator flow with these defaults:
    safety stop).
 4. Trial end: the robot holds its pose; Enter moves it to the ready pose (1 s blend), then `s` / `f` (+ reason, note) /
    `r`.
-5. Session end (after the last trial, or Ctrl-C between trials): the robot holds; Enter lowers the arm along the
-   re-encoded reverse path, blends to the stance and hands back to PLANNER. The hold prompt there still says "move the
-   box": with the recorded lowering the box can stay.
+5. Session end (after the last trial, or Ctrl-C between trials): the robot holds; move the box away before pressing
+   Enter. The arm then lowers along the re-encoded reverse path, blends to the stance and hands back to PLANNER. A
+   simulation found hand contact with the case during lowering and at the stance (section 8).
 
-Ctrl-C at any hold never moves the arm toward the box: the session cleanup holds again, then lowers to the stance and
-hands back. With `--gate-dir` (sims, external drivers) the file gates `ready.N` replace the start prompts, but the
+Ctrl-C at a hold starts cleanup, which holds again before lowering to the stance and handing back; clear the box before
+allowing that lowering. With `--gate-dir` (sims, external drivers) the file gates `ready.N` replace the start prompts, but the
 clearance holds are skipped, so the driver has to make sure the space is clear itself.
 
 `TRIALS` defaults to 10, `MAX_S` (per-trial cap) to 120. Extra streamer args go after the task text, e.g.
