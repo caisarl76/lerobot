@@ -31,7 +31,7 @@ PORT=5571 POLICY_FPS=50 MAX_S=30 ./g1_groot_real_run.sh session s21_wbt_groot_ha
     "pick drink bottle from the table and handover" --hold-rest-s 1.5 --max-token-step 0.05
 ```
 
-Launcher defaults for `session` (each env var empty or 0 turns its option off):
+Launcher defaults for `session` (an empty env var omits its option):
 
 | Env var           | Default                      | Streamer option                        | Since                                     |
 | ----------------- | ---------------------------- | -------------------------------------- | ----------------------------------------- |
@@ -40,6 +40,9 @@ Launcher defaults for `session` (each env var empty or 0 turns its option off):
 | `ANCHOR_S`        | 1.0                          | `--chunk-anchor-s` (token dims)        | 2026-10-23, PR #46                        |
 | `END_ON_HANDOVER` | 1.0                          | `--end-on-handover OPEN_S`             | 2026-10-23, PR #47                        |
 | `READY_POSE`      | `ready_pose_261020_ep76.npz` | `--ready-pose`                         | 2026-10-23, PR #48 (paths: 10-26, PR #49) |
+
+For `BLEND_S`, `ANCHOR_S` and `END_ON_HANDOVER`, 0 disables the respective behavior. `NOISE_SCALE=0` sets zero
+sampling noise; an empty value omits the override. Set `READY_POSE` empty to disable it; `0` is treated as a filename.
 
 - **End on handover:** a trial ends by itself ("handover complete") once the measured right hand (mean of its 7
   joints, closed above 0.19) was seen open, then closed for at least 0.5 s, then open for `OPEN_S` (default 1 s): one

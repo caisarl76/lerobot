@@ -504,8 +504,9 @@ command, operator flow and launcher defaults: [eval-logger workflow](2026-10-13-
 ## Autonomous loop and task close (2026-10-27 to 10-30)
 
 VoLoAgent's autonomous loop (branch `work/g1-autonomous-loop-20261026`, ledger
-`docs/superpowers/plans/2026-10-26-g1-autonomous-handover-loop-ledger.md`) runs the same model, streamer path and
-ready pose as s20. After each trial the arm holds the offer pose, then moves to ready when the bottle is taken.
+`docs/superpowers/plans/2026-10-26-g1-autonomous-handover-loop-ledger.md`) runs the same model and streamer path as
+s20. Its later runs use ready pose A in place of s20's episode-76 ready pose. After each trial the arm holds the offer
+pose, then moves to ready when the bottle is taken.
 
 - **Robot runs:** ready-A-r38 7/10 (2 drops at the handover, 1 missed grasp). ready-A-r40 had 9 handovers and 1
   operator stop; the torque detector ended all 9 holds, with no Enter.
