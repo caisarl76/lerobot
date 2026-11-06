@@ -140,7 +140,7 @@ def main():
             print(f"saved {ir_path} ({ir_frame.shape[1]}x{ir_frame.shape[0]})")
         return
 
-    latest, latest_ir, lock = [None, 0.0], [None, 0.0], threading.Lock()
+    latest, latest_ir, cond = [None, 0.0], [None, 0.0], threading.Condition()
 
     def capture(cap, slot):
         # Drain the camera at its own rate with grab() (no colour conversion) and retrieve() (the costly
@@ -155,9 +155,12 @@ def main():
                 continue
             ok, bgr = cap.retrieve()
             if ok:
-                next_retrieve = now + 1 / a.publish_fps
-                with lock:
+                # Half a camera frame of slack: frames arrive with jitter, and a frame a few ms early must not be
+                # skipped (it was: 25.8 Hz instead of 30 at --publish-fps == --fps == 30).
+                next_retrieve = now + 1 / a.publish_fps - 0.5 / a.fps
+                with cond:
                     slot[:] = [bgr, time.time()]
+                    cond.notify_all()
 
     threading.Thread(target=capture, args=(cap, latest), daemon=True).start()
     if ir_cap:
@@ -180,8 +183,11 @@ def main():
     )
     sent, last, last_ir = 0, 0.0, 0.0
     while True:
-        started = time.monotonic()
-        with lock:
+        # Woken by each new frame, so the capture thread alone sets the rate (a fixed-period loop beats against
+        # the camera clock and misses frames).
+        with cond:
+            if latest[1] <= last:
+                cond.wait(timeout=1.0)
             (bgr, stamp), (ir, ir_stamp) = list(latest), list(latest_ir)
         if bgr is not None and stamp > last:
             msg = {
@@ -197,7 +203,6 @@ def main():
             last, sent = stamp, sent + 1
             if sent % int(a.publish_fps * 60) == 0:
                 print(f"[camera] {sent} frames sent", flush=True)
-        time.sleep(max(0.0, 1 / a.publish_fps - (time.monotonic() - started)))
 
 
 if __name__ == "__main__":
