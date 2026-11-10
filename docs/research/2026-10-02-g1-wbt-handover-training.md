@@ -494,8 +494,9 @@ unknown, since a release looks the same as a drop.
   success came from a later attempt (grasp at 19.4 s). Trial 3 (`trial_002`) is unknown from the hand data alone:
   its first attempt released at 8.1 s, but a later attempt failed, so the trial is an operator fail and the hand
   cannot tell that release from a drop. Later attempts in the same trial were slower (grasp ~8.5 s, 20 % of the time
-  still) and gave the only operator failure (trial 3, grasp missed on a 2nd attempt). The training episodes end about 2 s after the release and only 20 of 94 contain a
-  re-grasp, so a second attempt starts from a state the model has rarely seen. Hence one attempt per trial: PR #47
+  still) and gave the only operator failure (trial 3, grasp missed on a 2nd attempt). The training episodes end about
+  2 s after the release and only 20 of 94 contain a re-grasp, so a second attempt starts from a state the model has
+  rarely seen. Hence one attempt per trial: PR #47
   `--end-on-handover` (merged `0d97a7b5`).
 - **s18: 10/10**, every trial ended by itself with "handover complete", one attempt each, no regrasps, 3 % still.
 - **s19: 10/10 on the grid from the ready pose** (PR #48, merged `a662af02`): trials end and start at a recorded pose
