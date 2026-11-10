@@ -240,28 +240,38 @@ def first_attempt(trial_npz: Path, operator_success: bool) -> str:
     """ "success", "fail" or "unknown" for the trial's first pick-and-handover attempt, from the measured right hand.
 
     The attempt ends where --end-on-handover ends a live trial (HandoverDetector: a grasp held, then released), or
-    at a release the operator stopped sooner. Later attempts in the trial are ignored. The attempt failed if the hand
-    closed on air first, or never held and released. A release looks the same as a drop, so it counts as a success
-    only when the operator's trial verdict is success; a release in a failed trial (a drop, or a later attempt
-    failed: s17 trial 2) is "unknown", as are an empty episode, missing hand data, and a fail an operator success
-    contradicts. Unknown trials need a review of their camera frames."""
+    at a release the operator stopped sooner. The attempt failed if the hand closed on air first, or never held and
+    released. A release looks the same as a drop, so it counts as a success only when the operator's trial verdict is
+    success and no grasp follows it (else the success may come from the later attempt, after a drop). "unknown": a
+    release in a failed trial (a drop, or a later attempt failed: s17 trial_002), a release followed by another grasp,
+    an empty episode, missing hand data, and a fail an operator success contradicts. Unknown trials need a review of
+    their camera frames."""
     z = np.load(trial_npz)
     episode = z["phase"] == "episode"
     hand, wall = np.abs(z["state"][episode][:, RIGHT_HAND]).mean(1), z["wall"][episode]
     if not len(hand):
         return "unknown"
-    detector = HandoverDetector()
-    for h, t in zip(hand, wall, strict=True):
+    detector, end = HandoverDetector(), len(hand)
+    for i, (h, t) in enumerate(zip(hand, wall, strict=True)):
         if not math.isfinite(h):
             return "unknown"  # a gap could hide a closure on air
         if detector.seen_open and h > AIR_MEAN:
             return "fail"
         if detector.update(h, now=t):
+            end = i + 1
             break
-    released = detector.held and detector.open_since is not None
-    if released:
-        return "success" if operator_success else "unknown"
-    return "unknown" if operator_success else "fail"
+    if not (detector.held and detector.open_since is not None):
+        return "unknown" if operator_success else "fail"
+    if not operator_success:
+        return "unknown"
+    later = HandoverDetector()
+    for h, t in zip(hand[end:], wall[end:], strict=True):
+        if not math.isfinite(h):
+            return "unknown"  # a gap could hide a later grasp
+        later.update(h, now=t)
+        if later.held:
+            return "unknown"  # the operator's success may come from this later attempt
+    return "success"
 
 
 def summarize(session_dir: Path) -> str:

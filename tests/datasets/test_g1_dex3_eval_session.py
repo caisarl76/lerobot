@@ -114,7 +114,9 @@ HANDOVER = (OPEN, HOLD, (0.01, 1.5))
         (HANDOVER, True, "success"),
         (HANDOVER, False, "unknown"),  # a release looks the same as a drop
         ((*HANDOVER, AIR, OPEN), False, "unknown"),  # a later attempt missed (s17 trial 2)
-        ((*HANDOVER, AIR, OPEN), True, "success"),
+        ((*HANDOVER, AIR, OPEN), True, "unknown"),  # the success may come from the later attempt
+        ((*HANDOVER, *HANDOVER), True, "unknown"),  # a drop, then a handover on the second attempt
+        ((*HANDOVER, (0.55, 0.3), OPEN), True, "success"),  # a flick after the release is not an attempt
         ((OPEN, AIR, OPEN, *HANDOVER), True, "fail"),  # missed, then regrasped (s03 trial 4)
         ((OPEN, HOLD, AIR, OPEN), False, "fail"),  # dropped while carrying: the hand closed further
         ((OPEN, HOLD, (0.01, 0.3)), True, "success"),  # the operator stopped right after the release
