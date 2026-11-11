@@ -37,6 +37,10 @@ DEFAULT_FAILURE_REASONS = (
 SAFETY_STOP = "safety stop (watchdog)"
 # every trial of a session shares these (a resumed session must not change them)
 SESSION_KEYS = ("task", "action_space", "policy_server", "policy_path")
+# Right Dex3 hand, mean |q| over its 7 joints in the 28D state (rad). Robot sessions s01-s08 (10-08..10-16, one drink
+# bottle): open ~0.01, closed on the bottle 0.51-0.63 (0.73 once, a partial hold), closed on air 0.86-0.93.
+RIGHT_HAND = slice(21, 28)
+AIR_MEAN = 0.79
 
 
 def parse_reasons(text: str | None) -> list[str]:
@@ -232,8 +236,71 @@ def load_frames(path: Path) -> tuple[np.ndarray, np.ndarray, list[bytes]]:
     return z["t_recv"], z["names"], [raw[a:b] for a, b in zip(offsets[:-1], offsets[1:], strict=True)]
 
 
+def first_attempt(trial_npz: Path, operator_success: bool) -> str:
+    """ "success", "fail" or "unknown" for the trial's first pick-and-handover attempt, from the measured right hand.
+
+    The attempt ends where --end-on-handover ends a live trial (HandoverDetector: a grasp held, then released), or
+    at a release the operator stopped sooner. The attempt failed if the hand closed on air first, or never held and
+    released. A release looks the same as a drop, so it counts as a success only when the operator's trial verdict is
+    success and no grasp follows it (else the success may come from the later attempt, after a drop). "unknown": a
+    release in a failed trial (a drop, or a later attempt failed: s17 trial_002), a release followed by another grasp,
+    an empty episode, missing hand data, and a fail an operator success contradicts. Unknown trials need a review of
+    their camera frames."""
+    z = np.load(trial_npz)
+    episode = z["phase"] == "episode"
+    hand, wall = np.abs(z["state"][episode][:, RIGHT_HAND]).mean(1), z["wall"][episode]
+    if not len(hand):
+        return "unknown"
+    detector, end = HandoverDetector(), len(hand)
+    for i, (h, t) in enumerate(zip(hand, wall, strict=True)):
+        if not math.isfinite(h):
+            return "unknown"  # a gap could hide a closure on air
+        if detector.seen_open and h > AIR_MEAN:
+            return "fail"
+        if detector.update(h, now=t):
+            end = i + 1
+            break
+    if not (detector.held and detector.open_since is not None):
+        return "unknown" if operator_success else "fail"
+    if not operator_success:
+        return "unknown"
+    later = HandoverDetector()
+    later.seen_open = True  # the hand was open at the release: a grasp right after it counts
+    for h, t in zip(hand[end:], wall[end:], strict=True):
+        if not math.isfinite(h):
+            return "unknown"  # a gap could hide a later grasp
+        later.update(h, now=t)
+        if later.held:
+            return "unknown"  # the operator's success may come from this later attempt
+    return "success"
+
+
 def summarize(session_dir: Path) -> str:
-    lines = [json.loads(s) for s in (Path(session_dir) / "results.jsonl").read_text().splitlines()]
-    ok = sum(line["verdict"] == "success" for line in lines)
+    """Operator successes, and first-attempt successes (first_attempt). Operators stop some trials at the first miss
+    and let others regrasp, so only the first attempt compares across sessions; other differences, such as the time
+    limit, remain."""
+    session_dir = Path(session_dir)
+    lines = [json.loads(s) for s in (session_dir / "results.jsonl").read_text().splitlines()]
+    first = {
+        f"trial_{line['trial']:03d}": first_attempt(
+            session_dir / f"trial_{line['trial']:03d}.npz", line["verdict"] == "success"
+        )
+        for line in lines
+    }
+    unknown = [t for t, r in first.items() if r == "unknown"]
+    first_score = f"first attempt {sum(r == 'success' for r in first.values())}/{len(lines)}"
+    if unknown:
+        first_score += f" ({len(unknown)} unknown, review {', '.join(unknown)})"
     reasons = Counter(line["reason"] for line in lines if line["verdict"] == "fail")
-    return "; ".join([f"success {ok}/{len(lines)}", *(f"{r}: {n}" for r, n in reasons.most_common())])
+    return "; ".join(
+        [
+            f"success {sum(line['verdict'] == 'success' for line in lines)}/{len(lines)}",
+            first_score,
+            *(f"{r}: {c}" for r, c in reasons.most_common()),
+        ]
+    )
+
+
+if __name__ == "__main__":  # rescore recorded sessions: python eval_session.py SESSION_DIR...
+    for d in sys.argv[1:]:
+        print(f"{d}: {summarize(Path(d))}")
