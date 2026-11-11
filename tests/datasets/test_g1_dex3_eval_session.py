@@ -104,8 +104,12 @@ def right_hand_log(*segments):
     return log
 
 
-OPEN, HOLD, AIR = (0.01, 1.0), (0.55, 2.0), (0.9, 1.0)  # bottle 0.51-0.63, air 0.86-0.93 (s01-s08)
-HANDOVER = (OPEN, HOLD, (0.01, 1.5))
+HAND_OPEN, HAND_HOLD, HAND_AIR = (
+    (0.01, 1.0),
+    (0.55, 2.0),
+    (0.9, 1.0),
+)  # bottle 0.51-0.63, air 0.86-0.93 (s01-s08)
+HANDOVER = (HAND_OPEN, HAND_HOLD, (0.01, 1.5))
 
 
 @pytest.mark.parametrize(
@@ -113,18 +117,31 @@ HANDOVER = (OPEN, HOLD, (0.01, 1.5))
     [
         (HANDOVER, True, "success"),
         (HANDOVER, False, "unknown"),  # a release looks the same as a drop
-        ((*HANDOVER, AIR, OPEN), False, "unknown"),  # a later attempt missed (s17 trial 2)
-        ((*HANDOVER, AIR, OPEN), True, "unknown"),  # the success may come from the later attempt
+        ((*HANDOVER, HAND_AIR, HAND_OPEN), False, "unknown"),  # a later attempt missed (s17 trial 2)
+        ((*HANDOVER, HAND_AIR, HAND_OPEN), True, "unknown"),  # the success may come from the later attempt
         ((*HANDOVER, *HANDOVER), True, "unknown"),  # a drop, then a handover on the second attempt
-        ((*HANDOVER, (0.55, 0.3), OPEN), True, "success"),  # a flick after the release is not an attempt
-        ((OPEN, AIR, OPEN, *HANDOVER), True, "fail"),  # missed, then regrasped (s03 trial 4)
-        ((OPEN, HOLD, AIR, OPEN), False, "fail"),  # dropped while carrying: the hand closed further
-        ((OPEN, HOLD, (0.01, 0.3)), True, "success"),  # the operator stopped right after the release
-        ((AIR, *HANDOVER), True, "success"),  # the startup fist is not a miss
-        ((OPEN, HOLD), False, "fail"),  # still holding at the end
-        ((OPEN, HOLD), True, "unknown"),  # the recording contradicts the operator
-        ((OPEN,), False, "fail"),
-        ((OPEN, (np.nan, 0.5), *HANDOVER), True, "unknown"),  # a gap could hide a miss
+        ((*HANDOVER, (0.55, 0.3), HAND_OPEN), True, "success"),  # a flick after the release is not an attempt
+        (
+            (HAND_OPEN, HAND_HOLD, (0.01, 1.02), HAND_HOLD),
+            True,
+            "unknown",
+        ),  # a grasp right after the release fires
+        ((HAND_OPEN, HAND_AIR, HAND_OPEN, *HANDOVER), True, "fail"),  # missed, then regrasped (s03 trial 4)
+        (
+            (HAND_OPEN, HAND_HOLD, HAND_AIR, HAND_OPEN),
+            False,
+            "fail",
+        ),  # dropped while carrying: the hand closed further
+        (
+            (HAND_OPEN, HAND_HOLD, (0.01, 0.3)),
+            True,
+            "success",
+        ),  # the operator stopped right after the release
+        ((HAND_AIR, *HANDOVER), True, "success"),  # the startup fist is not a miss
+        ((HAND_OPEN, HAND_HOLD), False, "fail"),  # still holding at the end
+        ((HAND_OPEN, HAND_HOLD), True, "unknown"),  # the recording contradicts the operator
+        ((HAND_OPEN,), False, "fail"),
+        ((HAND_OPEN, (np.nan, 0.5), *HANDOVER), True, "unknown"),  # a gap could hide a miss
     ],
 )
 def test_first_attempt(tmp_path, segments, operator_success, expected):

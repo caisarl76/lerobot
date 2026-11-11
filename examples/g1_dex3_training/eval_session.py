@@ -265,6 +265,7 @@ def first_attempt(trial_npz: Path, operator_success: bool) -> str:
     if not operator_success:
         return "unknown"
     later = HandoverDetector()
+    later.seen_open = True  # the hand was open at the release: a grasp right after it counts
     for h, t in zip(hand[end:], wall[end:], strict=True):
         if not math.isfinite(h):
             return "unknown"  # a gap could hide a later grasp

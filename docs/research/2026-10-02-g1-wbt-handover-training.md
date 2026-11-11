@@ -491,10 +491,11 @@ success may come from the later attempt).
   `o x o`, bottom `x x x`; trial i at spot i mod 5); s17 and s18 used one spot, centered between the top two rows.
 - **s17: later attempts are worse.** First attempt from the hand data: 2/10 with 7 unknown, since in seven trials
   another grasp follows the first release (trials 1, 2, 4, 5, 9, 10, operator successes) or a later attempt failed
-  (trial 3, `trial_002`, the operator fail). Camera frames around each first release settle all seven: the bottle
-  leaves the hand without landing on the box, and in trials 2, 3, 4 and 10 the recipient's gloved hand is at the
-  bottle. With that review, 9/10 first attempts ended in a handover (grasp ~4.9 s). Trial 7 (`trial_006`) missed on
-  its first attempt because the bottle was placed late: the camera shows an empty box top until about 16 s, the hand
+  (trial 3, `trial_002`, the operator fail). In camera frames around each first release, the recipient's gloved hand
+  is at the bottle in trials 2, 3, 4 and 10; in trials 1, 5 and 9 no glove is visible, only that the bottle leaves the
+  hand without landing on the box, which is weaker evidence. The camera reviewer's estimate is 9/10 first attempts
+  ended in a handover (grasp ~4.9 s), with those three the least certain. Trial 7 (`trial_006`) missed on its first
+  attempt because the bottle was placed late: the camera shows an empty box top until about 16 s, the hand
   closed on air (mean |q| 0.91) from 4.5 s, and the operator's success came from a later attempt (grasp at 19.4 s).
   Later attempts in the same trial were slower (grasp ~8.5 s, 20 % of the time still) and gave the only operator
   failure (trial 3, grasp missed on a 2nd attempt). The training episodes end about 2 s after the release and only 20
