@@ -8,8 +8,15 @@ to NVIDIA's deploy. Needs only numpy, opencv-python-headless and pyzmq (no lerob
 
 Name the stream after the policy's camera key so the streamer uses it as is, e.g. a mono head camera for a
 one-camera model trained on cam_left_high:
-  python g1_head_camera_server.py --device /dev/video4 --name cam_left_high
+  python g1_head_camera_server.py --name cam_left_high
+--device defaults to the colour node of the D435i (found by USB product name, so /dev/videoN renumbering after a
+reboot or replug does not matter); pass /dev/videoN to pick a node directly.
 --snapshot saves one frame as PNG and exits (check colour, exposure and framing against the training images).
+
+--ir-device adds the D435i's left IR image as '<name>_ir' in the same messages: 8-bit grayscale from the stereo module,
+which keeps its full ~89 deg 16:9 view (the colour camera tops out at ~70 deg). The IR node is the one whose
+`v4l2-ctl -d /dev/videoN --list-formats` lists GREY. Over USB2, 640x480@30 colour + 640x360@30 IR and 424x240@60
+colour + 480x270@60 IR both run at full rate. The IR emitter's dot pattern shows in the image when the emitter is on.
 """
 
 import argparse
@@ -18,14 +25,43 @@ import contextlib
 import json
 import threading
 import time
+from pathlib import Path
 
 import cv2
 import zmq
 
 
+def find_rgb_node(model: str) -> str:
+    """/dev/videoN of the colour stream of the one USB camera whose product name contains `model`. RealSense UVC
+    interfaces are labelled "<product> Depth" / "<product> RGB"; index 0 is the frame node (1 = metadata)."""
+    found = []
+    for v in sorted(Path("/sys/class/video4linux").glob("video*")):
+        intf = (v / "device").resolve()
+        label = intf / "interface"
+        product = intf.parent / "product"
+        if not (label.exists() and product.exists()):
+            continue
+        if (
+            (v / "index").read_text().strip() == "0"
+            and label.read_text().strip().endswith("RGB")
+            and model.lower() in product.read_text().lower()
+        ):
+            found.append((f"/dev/{v.name}", product.read_text().strip(), f"usb {intf.parent.name}"))
+    if len(found) != 1:
+        raise SystemExit(
+            f"need exactly one RGB camera matching {model!r}, found {found or 'none'}: pass --device /dev/videoN"
+        )
+    print(f"[camera] {model!r} -> {found[0]}", flush=True)
+    return found[0][0]
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--device", default="/dev/video4", help="V4L2 device of the colour stream")
+    p.add_argument(
+        "--device",
+        default="435i",
+        help="V4L2 device of the colour stream: /dev/videoN, or a USB product-name substring (default: the head D435i)",
+    )
     p.add_argument("--name", default="cam_left_high", help="stream name = the policy's camera key suffix")
     p.add_argument("--width", type=int, default=640)
     p.add_argument("--height", type=int, default=480)
@@ -39,6 +75,10 @@ def main():
     p.add_argument("--port", type=int, default=5555)
     p.add_argument("--quality", type=int, default=80, help="JPEG quality (ImageServer uses 80)")
     p.add_argument("--snapshot", help="save one frame (after --out-size) to this PNG path and exit")
+    p.add_argument("--ir-device", help="V4L2 node of the IR stream (GREY); also publish it as '<name>_ir'")
+    p.add_argument(
+        "--ir-size", default="640x360", help="IR WxH, captured at --fps (16:9 sizes keep the full view)"
+    )
     p.add_argument(
         "--out-size",
         help="WxH sent to the streamer, e.g. 640x480 (the model size) from a wider 1280x720 capture",
@@ -50,7 +90,11 @@ def main():
         help="--out-size with another aspect ratio: stretch to fill, or keep the aspect and pad with black",
     )
     a = p.parse_args()
+    if not a.device.startswith("/dev/"):
+        a.device = find_rgb_node(a.device)
     out = tuple(int(v) for v in a.out_size.lower().split("x")) if a.out_size else None
+    ir_w, ir_h = (int(v) for v in a.ir_size.lower().split("x"))
+    ir_name = f"{a.name}_ir"
 
     def fit(bgr):
         if out is None or (bgr.shape[1], bgr.shape[0]) == out:
@@ -65,26 +109,40 @@ def main():
             small, top, out[1] - h - top, left, out[0] - w - left, cv2.BORDER_CONSTANT, value=(0, 0, 0)
         )
 
-    cap = cv2.VideoCapture(a.device, cv2.CAP_V4L2)
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, a.width)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, a.height)
-    cap.set(cv2.CAP_PROP_FPS, a.fps)
-    ok, frame = cap.read()
-    if not ok or frame is None:
-        raise SystemExit(f"cannot read frames from {a.device}")
-    if frame.shape[:2] != (a.height, a.width):
-        raise SystemExit(f"{a.device} gives {frame.shape[1]}x{frame.shape[0]}, not {a.width}x{a.height}")
+    def open_camera(device, width, height, fourcc=None):
+        cap = cv2.VideoCapture(device, cv2.CAP_V4L2)
+        if fourcc:
+            cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*fourcc))
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+        cap.set(cv2.CAP_PROP_FPS, a.fps)
+        ok, frame = cap.read()
+        if not ok or frame is None:
+            raise SystemExit(f"cannot read frames from {device}")
+        if frame.shape[:2] != (height, width):
+            raise SystemExit(f"{device} gives {frame.shape[1]}x{frame.shape[0]}, not {width}x{height}")
+        return cap
+
+    cap = open_camera(a.device, a.width, a.height)
+    # OpenCV converts GREY to 3 equal channels: JPEG spends almost nothing on the flat chroma.
+    ir_cap = open_camera(a.ir_device, ir_w, ir_h, "GREY") if a.ir_device else None
     if a.snapshot:
         for _ in range(30):  # let auto exposure settle
             ok, frame = cap.read()
+            if ir_cap:
+                ok, ir_frame = ir_cap.read()
         frame = fit(frame)
         cv2.imwrite(a.snapshot, frame)  # imwrite takes BGR, as read
         print(f"saved {a.snapshot} ({frame.shape[1]}x{frame.shape[0]})")
+        if ir_cap:
+            ir_path = a.snapshot.removesuffix(".png") + "_ir.png"
+            cv2.imwrite(ir_path, ir_frame)
+            print(f"saved {ir_path} ({ir_frame.shape[1]}x{ir_frame.shape[0]})")
         return
 
-    latest, lock = [None, 0.0], threading.Lock()
+    latest, latest_ir, cond = [None, 0.0], [None, 0.0], threading.Condition()
 
-    def capture():
+    def capture(cap, slot):
         # Drain the camera at its own rate with grab() (no colour conversion) and retrieve() (the costly
         # YUYV -> BGR conversion) only the frames that get published.
         next_retrieve = 0.0
@@ -97,37 +155,54 @@ def main():
                 continue
             ok, bgr = cap.retrieve()
             if ok:
-                next_retrieve = now + 1 / a.publish_fps
-                with lock:
-                    latest[:] = [bgr, time.time()]
+                # Half a camera frame of slack: frames arrive with jitter, and a frame a few ms early must not be
+                # skipped (it was: 25.8 Hz instead of 30 at --publish-fps == --fps == 30).
+                next_retrieve = now + 1 / a.publish_fps - 0.5 / a.fps
+                with cond:
+                    slot[:] = [bgr, time.time()]
+                    cond.notify_all()
 
-    threading.Thread(target=capture, daemon=True).start()
+    threading.Thread(target=capture, args=(cap, latest), daemon=True).start()
+    if ir_cap:
+        threading.Thread(target=capture, args=(ir_cap, latest_ir), daemon=True).start()
+
+    def jpeg(img):
+        _, jpg = cv2.imencode(".jpg", img, [int(cv2.IMWRITE_JPEG_QUALITY), a.quality])
+        return base64.b64encode(jpg).decode("ascii")
+
     sock = zmq.Context().socket(zmq.PUB)
     sock.setsockopt(zmq.SNDHWM, 20)
     sock.setsockopt(zmq.LINGER, 0)
     sock.bind(f"tcp://*:{a.port}")
     print(
         f"[camera] {a.device} {a.width}x{a.height}@{a.fps} as '{a.name}' on port {a.port}, "
-        f"publishing at {a.publish_fps:g} Hz" + (f" as {out[0]}x{out[1]} ({a.fit})" if out else ""),
+        f"publishing at {a.publish_fps:g} Hz"
+        + (f" as {out[0]}x{out[1]} ({a.fit})" if out else "")
+        + (f", IR {a.ir_device} {ir_w}x{ir_h} as '{ir_name}'" if ir_cap else ""),
         flush=True,
     )
-    sent, last = 0, 0.0
+    sent, last, last_ir = 0, 0.0, 0.0
     while True:
-        started = time.monotonic()
-        with lock:
-            bgr, stamp = latest
+        # Woken by each new frame, so the capture thread alone sets the rate (a fixed-period loop beats against
+        # the camera clock and misses frames).
+        with cond:
+            if latest[1] <= last:
+                cond.wait(timeout=1.0)
+            (bgr, stamp), (ir, ir_stamp) = list(latest), list(latest_ir)
         if bgr is not None and stamp > last:
-            rgb = cv2.cvtColor(fit(bgr), cv2.COLOR_BGR2RGB)
-            _, jpg = cv2.imencode(".jpg", rgb, [int(cv2.IMWRITE_JPEG_QUALITY), a.quality])
-            encoded = base64.b64encode(jpg).decode("ascii")
+            msg = {
+                "timestamps": {a.name: stamp},
+                "images": {a.name: jpeg(cv2.cvtColor(fit(bgr), cv2.COLOR_BGR2RGB))},
+            }
+            # IR rides along with the colour frame, and only when it has a new frame.
+            if ir is not None and ir_stamp > last_ir:
+                msg["timestamps"][ir_name], msg["images"][ir_name] = ir_stamp, jpeg(ir)
+                last_ir = ir_stamp
             with contextlib.suppress(zmq.Again):  # no subscriber / buffer full: drop
-                sock.send_string(
-                    json.dumps({"timestamps": {a.name: stamp}, "images": {a.name: encoded}}), zmq.NOBLOCK
-                )
+                sock.send_string(json.dumps(msg), zmq.NOBLOCK)
             last, sent = stamp, sent + 1
             if sent % int(a.publish_fps * 60) == 0:
                 print(f"[camera] {sent} frames sent", flush=True)
-        time.sleep(max(0.0, 1 / a.publish_fps - (time.monotonic() - started)))
 
 
 if __name__ == "__main__":
